@@ -4,10 +4,11 @@ import React, { useEffect, useState, useCallback } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import {
   Sparkles, Loader2, Trash2, Download, Calendar, FileText,
-  ChevronDown, Bot, RefreshCw, Clock, BookOpen,
+  ChevronDown, Bot, RefreshCw, Clock, BookOpen, Menu,
 } from 'lucide-react'
 import { cn, formatRelativeTime } from '@/lib/utils'
 import { Sidebar } from '@/components/layout/Sidebar'
+import { useSidebar } from '@/components/layout/SidebarContext'
 
 function stripMarkdown(text: string): string {
   return text
@@ -98,6 +99,7 @@ const PERIOD_COLORS: Record<string, string> = {
 }
 
 export default function SummariesPage() {
+  const { toggle } = useSidebar()
   const [summaries, setSummaries] = useState<Summary[]>([])
   const [loading, setLoading] = useState(true)
   const [generating, setGenerating] = useState(false)
@@ -181,20 +183,23 @@ export default function SummariesPage() {
   return (
     <div className="h-screen flex bg-background">
       <Sidebar />
-      <main className="flex-1 overflow-y-auto relative">
+      <main className="flex-1 overflow-y-auto relative pb-20 md:pb-0">
         <div className="fixed inset-0 pointer-events-none circuit-grid opacity-20" />
 
         {/* Header */}
-        <div className="sticky top-0 z-10 bg-background/85 backdrop-blur-md border-b border-border px-8 py-4">
+        <div className="sticky top-0 z-10 bg-background/85 backdrop-blur-md border-b border-border px-4 md:px-8 py-4">
           <div className="max-w-4xl mx-auto flex items-center justify-between">
-            <div>
-              <h1 className="font-display text-xl font-black text-foreground flex items-center gap-2.5 tracking-tight">
-                <Sparkles className="w-5 h-5 text-accent" />
-                AI Summaries
-              </h1>
-              <p className="text-xs text-muted mt-0.5">
-                {summaries.length} summar{summaries.length !== 1 ? 'ies' : 'y'} generated
-              </p>
+            <div className="flex items-center gap-2">
+              <button onClick={toggle} className="md:hidden p-2 -ml-1 rounded-xl text-muted active:bg-surface" aria-label="Open menu"><Menu className="w-5 h-5" /></button>
+              <div>
+                <h1 className="font-display text-xl font-black text-foreground flex items-center gap-2.5 tracking-tight">
+                  <Sparkles className="w-5 h-5 text-accent" />
+                  AI Summaries
+                </h1>
+                <p className="text-xs text-muted mt-0.5">
+                  {summaries.length} summar{summaries.length !== 1 ? 'ies' : 'y'} generated
+                </p>
+              </div>
             </div>
             <div className="flex items-center gap-2">
               {/* Export format */}
@@ -227,7 +232,7 @@ export default function SummariesPage() {
           </div>
         </div>
 
-        <div className="max-w-4xl mx-auto px-8 py-8 relative z-10 space-y-8">
+        <div className="max-w-4xl mx-auto px-4 md:px-8 py-8 relative z-10 space-y-8">
 
           {/* Generator */}
           <div className="glass-gold rounded-2xl p-6 space-y-5">

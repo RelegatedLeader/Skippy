@@ -5,11 +5,12 @@ import { motion, AnimatePresence } from 'framer-motion'
 import {
   GraduationCap, Flame, Zap, RotateCcw, ChevronRight,
   Volume2, Mic, MicOff, RefreshCw, Trophy,
-  CheckCircle2, XCircle, ArrowLeft, BookOpen, Star, MessageSquare,
+  CheckCircle2, XCircle, ArrowLeft, BookOpen, Star, MessageSquare, Menu,
 } from 'lucide-react'
 import Link from 'next/link'
 import { cn } from '@/lib/utils'
 import { Sidebar } from '@/components/layout/Sidebar'
+import { useSidebar } from '@/components/layout/SidebarContext'
 import { useNotifications } from '@/components/notifications/NotificationProvider'
 import { xpForExercise, type ExerciseType } from '@/lib/srs'
 
@@ -125,6 +126,7 @@ const EXERCISE_META: Record<ExerciseType, { icon: string; name: string; desc: st
 // ── Main Page ─────────────────────────────────────────────────────────────────
 
 export default function LearnPage() {
+  const { toggle } = useSidebar()
   const [view, setView] = useState<PageView>('dashboard')
   const [stats, setStats] = useState<StatsData | null>(null)
   const [queue, setQueue] = useState<WordItem[]>([])
@@ -225,7 +227,7 @@ export default function LearnPage() {
   return (
     <div className="h-screen flex bg-background">
       <Sidebar />
-      <main className="flex-1 overflow-y-auto relative">
+      <main className="flex-1 overflow-y-auto relative pb-20 md:pb-0">
         <div className="fixed inset-0 pointer-events-none circuit-grid opacity-20" />
 
         {/* XP Pops */}
@@ -244,6 +246,11 @@ export default function LearnPage() {
               </motion.div>
             ))}
           </AnimatePresence>
+        </div>
+
+        {/* Mobile hamburger — only shown below md */}
+        <div className="md:hidden flex items-center px-4 pt-3 -mb-3">
+          <button onClick={toggle} className="p-2 -ml-1 rounded-xl text-muted active:bg-surface" aria-label="Open menu"><Menu className="w-5 h-5" /></button>
         </div>
 
         <AnimatePresence mode="wait">

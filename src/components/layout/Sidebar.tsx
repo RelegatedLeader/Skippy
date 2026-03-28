@@ -3,9 +3,11 @@
 import Link from 'next/link'
 import Image from 'next/image'
 import { usePathname } from 'next/navigation'
-import { MessageSquare, FileText, Brain, Settings, Info, Swords, Sparkles, CheckSquare, Flame, Trophy, GraduationCap } from 'lucide-react'
+import { motion, AnimatePresence } from 'framer-motion'
+import { MessageSquare, FileText, Brain, Settings, Info, Swords, Sparkles, CheckSquare, Flame, Trophy, GraduationCap, X } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useNotifications } from '@/components/notifications/NotificationProvider'
+import { useSidebar } from './SidebarContext'
 
 interface SidebarProps {
   children?: React.ReactNode
@@ -22,15 +24,21 @@ const navItems = [
   { href: '/learn',      icon: GraduationCap,  label: 'Learn' },
 ]
 
-export function Sidebar({ children, className }: SidebarProps) {
+// Shared inner content used by both desktop and mobile drawers
+function SidebarInner({
+  showClose,
+  onClose,
+  children,
+}: {
+  showClose?: boolean
+  onClose?: () => void
+  children?: React.ReactNode
+}) {
   const pathname = usePathname()
   const { urgentCount, userStats } = useNotifications()
 
   return (
-    <aside
-      className={cn('flex flex-col h-full border-r', className)}
-      style={{ background: 'rgba(10, 26, 53, 0.98)', borderColor: 'rgba(30,58,110,0.9)' }}
-    >
+    <>
       {/* Logo */}
       <div className="flex items-center gap-3 px-4 py-5 border-b" style={{ borderColor: 'rgba(30,58,110,0.7)' }}>
         <div className="relative flex-shrink-0">
@@ -55,7 +63,6 @@ export function Sidebar({ children, className }: SidebarProps) {
               <div className="w-1.5 h-1.5 rounded-full bg-accent/70 animate-blink" />
               <span className="text-[10px] text-muted/60 uppercase tracking-wider">Online</span>
             </div>
-            {/* XP level badge */}
             {userStats && (
               <span className="flex items-center gap-0.5 text-[10px] font-bold text-yellow-400/70">
                 <Trophy className="w-2.5 h-2.5" />
@@ -70,6 +77,17 @@ export function Sidebar({ children, className }: SidebarProps) {
             )}
           </div>
         </div>
+        {showClose && (
+          <button
+            onClick={onClose}
+            className="p-1.5 rounded-lg text-muted hover:text-foreground transition-colors flex-shrink-0"
+            onMouseEnter={e => (e.currentTarget.style.background = 'rgba(15,39,89,0.8)')}
+            onMouseLeave={e => (e.currentTarget.style.background = '')}
+            aria-label="Close menu"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        )}
       </div>
 
       {/* Navigation */}
@@ -165,6 +183,56 @@ export function Sidebar({ children, className }: SidebarProps) {
           </button>
         </Link>
       </div>
-    </aside>
+    </>
+  )
+}
+
+export function Sidebar({ children, className }: SidebarProps) {
+  const { isOpen, close } = useSidebar()
+
+  const sharedStyle = {
+    background: 'rgba(10, 26, 53, 0.98)',
+    borderColor: 'rgba(30,58,110,0.9)',
+  }
+
+  return (
+    <>
+      {/* ── Desktop: static sidebar (hidden on mobile) ── */}
+      <aside
+        className={cn('hidden md:flex flex-col h-full w-64 flex-shrink-0 border-r', className)}
+        style={sharedStyle}
+      >
+        <SidebarInner>{children}</SidebarInner>
+      </aside>
+
+      {/* ── Mobile: overlay backdrop ── */}
+      <AnimatePresence>
+        {isOpen && (
+          <motion.div
+            key="sidebar-backdrop"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.2 }}
+            className="fixed inset-0 z-40 md:hidden"
+            style={{ background: 'rgba(6,13,26,0.8)', backdropFilter: 'blur(4px)' }}
+            onClick={close}
+          />
+        )}
+      </AnimatePresence>
+
+      {/* ── Mobile: sliding drawer ── */}
+      <motion.aside
+        initial={false}
+        animate={{ x: isOpen ? 0 : '-100%' }}
+        transition={{ type: 'spring', stiffness: 340, damping: 34 }}
+        className="fixed top-0 left-0 bottom-0 z-50 flex flex-col w-[280px] border-r md:hidden overflow-hidden"
+        style={sharedStyle}
+      >
+        <SidebarInner showClose onClose={close}>
+          {children}
+        </SidebarInner>
+      </motion.aside>
+    </>
   )
 }

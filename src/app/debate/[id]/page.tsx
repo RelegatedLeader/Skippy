@@ -5,10 +5,11 @@ import { useParams, useRouter } from 'next/navigation'
 import { motion, AnimatePresence } from 'framer-motion'
 import {
   Swords, Bot, User, Trophy, Flag, Save, ArrowLeft,
-  ChevronRight, Loader2, CheckCircle, AlertTriangle, Equal, Cpu
+  ChevronRight, Loader2, CheckCircle, AlertTriangle, Equal, Cpu, Menu
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Sidebar } from '@/components/layout/Sidebar'
+import { useSidebar } from '@/components/layout/SidebarContext'
 
 interface DebateRound {
   id: string; roundNumber: number; userArgument: string; aiRebuttal: string; userScore: number; aiScore: number; usedModel?: string
@@ -23,6 +24,7 @@ const MAX_ROUNDS = 6
 
 export default function DebateSessionPage() {
   const { id } = useParams<{ id: string }>()
+  const { toggle } = useSidebar()
   const router = useRouter()
   const [debate, setDebate] = useState<Debate | null>(null)
   const [loading, setLoading] = useState(true)
@@ -116,7 +118,7 @@ export default function DebateSessionPage() {
   }, [debate, id, concluding, fetchDebate])
 
   if (loading) return (
-    <div className="h-screen flex bg-background">
+    <div className="h-[calc(100dvh-3.5rem)] md:h-screen flex bg-background">
       <Sidebar />
       <div className="flex-1 flex items-center justify-center gap-3 text-muted">
         <Bot className="w-5 h-5 text-accent animate-pulse" strokeWidth={1.5} />
@@ -126,7 +128,7 @@ export default function DebateSessionPage() {
   )
 
   if (!debate) return (
-    <div className="h-screen flex bg-background">
+    <div className="h-[calc(100dvh-3.5rem)] md:h-screen flex bg-background">
       <Sidebar />
       <div className="flex-1 flex items-center justify-center text-muted text-sm">Debate not found.</div>
     </div>
@@ -140,12 +142,13 @@ export default function DebateSessionPage() {
   const isLastRound = debate.rounds.length >= MAX_ROUNDS - 1
 
   return (
-    <div className="h-screen flex bg-background overflow-hidden">
+    <div className="h-[calc(100dvh-3.5rem)] md:h-screen flex bg-background overflow-hidden">
       <Sidebar />
       <div className="flex-1 flex flex-col min-w-0">
         {/* ── Header ── */}
-        <div className="flex-shrink-0 border-b border-border bg-background/90 backdrop-blur-md px-6 py-3">
-          <div className="flex items-center gap-4">
+        <div className="flex-shrink-0 border-b border-border bg-background/90 backdrop-blur-md px-3 md:px-6 py-3">
+          <div className="flex items-center gap-2 md:gap-4">
+            <button onClick={toggle} className="md:hidden p-2 rounded-xl text-muted active:bg-surface" aria-label="Open menu"><Menu className="w-5 h-5" /></button>
             <button onClick={() => router.push('/debate')}
               className="p-2 rounded-xl text-muted hover:text-foreground hover:bg-surface transition-colors">
               <ArrowLeft className="w-4 h-4" />
@@ -429,11 +432,11 @@ function ConclusionScreen({ debate, onViewNote, onBack }: { debate: Debate; onVi
   const winLabel = debate.winner === 'user' ? 'You won the debate!' : debate.winner === 'ai' ? 'Skippy wins this one.' : 'It\'s a draw.'
 
   return (
-    <div className="h-screen flex bg-background">
+    <div className="h-[calc(100dvh-3.5rem)] md:h-screen flex bg-background">
       <Sidebar />
-      <div className="flex-1 overflow-y-auto">
+      <div className="flex-1 overflow-y-auto pb-20 md:pb-0">
         <div className="fixed inset-0 pointer-events-none circuit-grid opacity-15" />
-        <div className="max-w-2xl mx-auto px-8 py-16 relative z-10">
+        <div className="max-w-2xl mx-auto px-4 md:px-8 py-16 relative z-10">
           <motion.div
             initial={{ opacity: 0, scale: 0.95 }}
             animate={{ opacity: 1, scale: 1 }}

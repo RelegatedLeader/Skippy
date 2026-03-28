@@ -5,10 +5,11 @@ import { motion } from 'framer-motion'
 import {
   Settings, Shield, Lock, Download, Trash2, User, Bot,
   CheckCircle2, AlertTriangle, Eye, Copy, Check,
-  Sparkles, Save, Loader2,
+  Sparkles, Save, Loader2, Menu,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Sidebar } from '@/components/layout/Sidebar'
+import { useSidebar } from '@/components/layout/SidebarContext'
 
 const SECTION_VARIANTS = {
   hidden: { opacity: 0, y: 16 },
@@ -16,6 +17,7 @@ const SECTION_VARIANTS = {
 }
 
 export default function SettingsPage() {
+  const { toggle } = useSidebar()
   const [exportFormat, setExportFormat] = useState<'txt' | 'md' | 'json'>('md')
   const [copied, setCopied] = useState(false)
   const [showClearConfirm, setShowClearConfirm] = useState(false)
@@ -84,21 +86,24 @@ export default function SettingsPage() {
   return (
     <div className="h-screen flex bg-background">
       <Sidebar />
-      <main className="flex-1 overflow-y-auto relative">
+      <main className="flex-1 overflow-y-auto relative pb-20 md:pb-0">
         <div className="fixed inset-0 pointer-events-none circuit-grid opacity-20" />
 
         {/* Header */}
-        <div className="sticky top-0 z-10 bg-background/85 backdrop-blur-md border-b border-border px-8 py-4">
-          <div className="max-w-3xl mx-auto">
-            <h1 className="font-display text-xl font-black text-foreground flex items-center gap-2.5 tracking-tight">
-              <Settings className="w-5 h-5 text-accent" />
-              Settings
-            </h1>
-            <p className="text-xs text-muted mt-0.5">Security, data, and preferences</p>
+        <div className="sticky top-0 z-10 bg-background/85 backdrop-blur-md border-b border-border px-4 md:px-8 py-4">
+          <div className="max-w-3xl mx-auto flex items-center gap-2">
+            <button onClick={toggle} className="md:hidden p-2 -ml-1 rounded-xl text-muted active:bg-surface" aria-label="Open menu"><Menu className="w-5 h-5" /></button>
+            <div>
+              <h1 className="font-display text-xl font-black text-foreground flex items-center gap-2.5 tracking-tight">
+                <Settings className="w-5 h-5 text-accent" />
+                Settings
+              </h1>
+              <p className="text-xs text-muted mt-0.5">Security, data, and preferences</p>
+            </div>
           </div>
         </div>
 
-        <div className="max-w-3xl mx-auto px-8 py-8 relative z-10 space-y-6">
+        <div className="max-w-3xl mx-auto px-4 md:px-8 py-8 relative z-10 space-y-6">
 
           {/* Custom Instructions */}
           <motion.section custom={0} variants={SECTION_VARIANTS} initial="hidden" animate="visible">

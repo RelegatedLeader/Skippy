@@ -3,9 +3,10 @@
 import { useEffect, useState, useCallback } from 'react'
 import { useRouter } from 'next/navigation'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Plus, Search, Pin, Trash2, FileText, Clock, Tag, Bot } from 'lucide-react'
+import { Plus, Search, Pin, Trash2, FileText, Clock, Tag, Bot, Menu } from 'lucide-react'
 import { cn, formatRelativeTime, truncate } from '@/lib/utils'
 import { Sidebar } from '@/components/layout/Sidebar'
+import { useSidebar } from '@/components/layout/SidebarContext'
 
 interface Note { id: string; title: string; content: string; tags: string[]; color: string; pinned: boolean; createdAt: string; updatedAt: string }
 
@@ -17,6 +18,7 @@ function getPreview(content: string) {
 
 export default function NotesPage() {
   const router = useRouter()
+  const { toggle } = useSidebar()
   const [notes, setNotes] = useState<Note[]>([])
   const [loading, setLoading] = useState(true)
   const [searchQuery, setSearchQuery] = useState('')
@@ -69,19 +71,22 @@ export default function NotesPage() {
   return (
     <div className="h-screen flex bg-background">
       <Sidebar />
-      <main className="flex-1 overflow-y-auto relative">
+      <main className="flex-1 overflow-y-auto relative pb-20 md:pb-0">
         {/* Subtle bg */}
         <div className="fixed inset-0 pointer-events-none circuit-grid opacity-25" />
 
         {/* Header */}
-        <div className="sticky top-0 z-10 bg-background/85 backdrop-blur-md border-b border-border px-8 py-4">
+        <div className="sticky top-0 z-10 bg-background/85 backdrop-blur-md border-b border-border px-4 md:px-8 py-4">
           <div className="max-w-6xl mx-auto flex items-center justify-between">
-            <div>
-              <h1 className="font-display text-xl font-black text-foreground flex items-center gap-2.5 tracking-tight">
-                <FileText className="w-5 h-5 text-accent" />
-                Notes
-              </h1>
-              <p className="text-xs text-muted mt-0.5">{notes.length} note{notes.length !== 1 ? 's' : ''}</p>
+            <div className="flex items-center gap-2">
+              <button onClick={toggle} className="md:hidden p-2 -ml-1 rounded-xl text-muted active:bg-surface" aria-label="Open menu"><Menu className="w-5 h-5" /></button>
+              <div>
+                <h1 className="font-display text-xl font-black text-foreground flex items-center gap-2.5 tracking-tight">
+                  <FileText className="w-5 h-5 text-accent" />
+                  Notes
+                </h1>
+                <p className="text-xs text-muted mt-0.5">{notes.length} note{notes.length !== 1 ? 's' : ''}</p>
+              </div>
             </div>
             <motion.button
               whileHover={{ scale: 1.03 }} whileTap={{ scale: 0.97 }}
@@ -94,7 +99,7 @@ export default function NotesPage() {
           </div>
         </div>
 
-        <div className="max-w-6xl mx-auto px-8 py-6 relative z-10">
+        <div className="max-w-6xl mx-auto px-4 md:px-8 py-6 relative z-10">
           {/* Search + filter */}
           <div className="flex flex-col sm:flex-row gap-3 mb-6">
             <div className="relative flex-1">

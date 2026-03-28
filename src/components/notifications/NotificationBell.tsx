@@ -74,7 +74,7 @@ export function NotificationBell() {
     : 0
 
   return (
-    <div ref={panelRef} className="fixed bottom-6 right-4 z-[200]">
+    <div ref={panelRef} className="fixed bottom-[4.5rem] md:bottom-6 right-4 z-[200]">
       {/* Bell button */}
       <button
         onClick={() => setOpen(v => !v)}

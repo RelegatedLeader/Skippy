@@ -3,8 +3,9 @@
 import { useEffect, useState, useCallback } from 'react'
 import { useRouter } from 'next/navigation'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Swords, Plus, Trophy, Equal, Trash2, Clock, ChevronRight, Bot, Shield, Zap, Cpu } from 'lucide-react'
+import { Swords, Plus, Trophy, Equal, Trash2, Clock, ChevronRight, Bot, Shield, Zap, Cpu, Menu } from 'lucide-react'
 import { Sidebar } from '@/components/layout/Sidebar'
+import { useSidebar } from '@/components/layout/SidebarContext'
 import { cn, formatRelativeTime } from '@/lib/utils'
 
 type DebateModel = 'grok' | 'claude' | 'auto'
@@ -39,6 +40,7 @@ const TOPIC_IDEAS = [
 
 export default function DebatePage() {
   const router = useRouter()
+  const { toggle } = useSidebar()
   const [debates, setDebates] = useState<Debate[]>([])
   const [loading, setLoading] = useState(true)
   const [creating, setCreating] = useState(false)
@@ -89,18 +91,21 @@ export default function DebatePage() {
   return (
     <div className="h-screen flex bg-background">
       <Sidebar />
-      <main className="flex-1 overflow-y-auto relative">
+      <main className="flex-1 overflow-y-auto relative pb-20 md:pb-0">
         <div className="fixed inset-0 pointer-events-none circuit-grid opacity-20" />
 
         {/* Header */}
-        <div className="sticky top-0 z-10 bg-background/85 backdrop-blur-md border-b border-border px-8 py-4">
+        <div className="sticky top-0 z-10 bg-background/85 backdrop-blur-md border-b border-border px-4 md:px-8 py-4">
           <div className="max-w-4xl mx-auto flex items-center justify-between">
-            <div>
-              <h1 className="font-display text-xl font-black text-foreground flex items-center gap-2.5 tracking-tight">
-                <Swords className="w-5 h-5 text-accent" />
-                Debate Arena
-              </h1>
-              <p className="text-xs text-muted mt-0.5">Challenge your thinking. Skippy pushes back.</p>
+            <div className="flex items-center gap-2">
+              <button onClick={toggle} className="md:hidden p-2 -ml-1 rounded-xl text-muted active:bg-surface" aria-label="Open menu"><Menu className="w-5 h-5" /></button>
+              <div>
+                <h1 className="font-display text-xl font-black text-foreground flex items-center gap-2.5 tracking-tight">
+                  <Swords className="w-5 h-5 text-accent" />
+                  Debate Arena
+                </h1>
+                <p className="text-xs text-muted mt-0.5">Challenge your thinking. Skippy pushes back.</p>
+              </div>
             </div>
             <motion.button
               whileHover={{ scale: 1.03 }} whileTap={{ scale: 0.97 }}
@@ -113,7 +118,7 @@ export default function DebatePage() {
           </div>
         </div>
 
-        <div className="max-w-4xl mx-auto px-8 py-6 relative z-10 space-y-6">
+        <div className="max-w-4xl mx-auto px-4 md:px-8 py-6 relative z-10 space-y-6">
 
           {/* Create form */}
           <AnimatePresence>

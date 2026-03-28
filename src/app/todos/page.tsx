@@ -2,10 +2,11 @@
 
 import { useEffect, useState, useCallback } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { CheckSquare, Plus, Trash2, Zap, Flame, Trophy, X, ArrowLeft, RefreshCw, Circle, CheckCircle2, AlertCircle, ChevronDown, ChevronUp } from 'lucide-react'
+import { CheckSquare, Plus, Trash2, Zap, Flame, Trophy, X, ArrowLeft, RefreshCw, Circle, CheckCircle2, AlertCircle, ChevronDown, ChevronUp, Menu } from 'lucide-react'
 import Link from 'next/link'
 import { cn } from '@/lib/utils'
 import { Sidebar } from '@/components/layout/Sidebar'
+import { useSidebar } from '@/components/layout/SidebarContext'
 import { useNotifications } from '@/components/notifications/NotificationProvider'
 
 interface Todo {
@@ -44,6 +45,7 @@ function formatDue(dueDate: string): { text: string; urgent: boolean } {
 type Filter = 'all' | 'today' | 'upcoming' | 'anytime' | 'done'
 
 export default function TodosPage() {
+  const { toggle } = useSidebar()
   const [todos, setTodos] = useState<Todo[]>([])
   const [loading, setLoading] = useState(true)
   const [filter, setFilter] = useState<Filter>('all')
@@ -153,15 +155,16 @@ export default function TodosPage() {
   return (
     <div className="h-screen flex bg-background">
       <Sidebar />
-      <main className="flex-1 overflow-y-auto relative">
+      <main className="flex-1 overflow-y-auto relative pb-20 md:pb-0">
         <div className="fixed inset-0 pointer-events-none circuit-grid opacity-20" />
 
         {/* Header */}
-        <div className="sticky top-0 z-10 bg-background/85 backdrop-blur-md border-b border-border px-8 py-4">
+        <div className="sticky top-0 z-10 bg-background/85 backdrop-blur-md border-b border-border px-4 md:px-8 py-4">
           <div className="max-w-3xl mx-auto">
             <div className="flex items-center justify-between mb-4">
-              <div className="flex items-center gap-3">
-                <Link href="/chat" className="p-2 rounded-xl text-muted hover:text-foreground hover:bg-surface transition-colors">
+              <div className="flex items-center gap-2">
+                <button onClick={toggle} className="md:hidden p-2 -ml-1 rounded-xl text-muted active:bg-surface" aria-label="Open menu"><Menu className="w-5 h-5" /></button>
+                <Link href="/chat" className="hidden md:block p-2 rounded-xl text-muted hover:text-foreground hover:bg-surface transition-colors">
                   <ArrowLeft className="w-4 h-4" />
                 </Link>
                 <div>
@@ -244,7 +247,7 @@ export default function TodosPage() {
           </div>
         </div>
 
-        <div className="max-w-3xl mx-auto px-8 py-6 relative z-10 space-y-4">
+        <div className="max-w-3xl mx-auto px-4 md:px-8 py-6 relative z-10 space-y-4">
           {/* Add form */}
           {!showAddForm ? (
             <button onClick={() => setShowAddForm(true)}

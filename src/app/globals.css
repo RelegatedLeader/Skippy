@@ -25,6 +25,18 @@
 body {
   color: rgb(var(--foreground));
   background: rgb(var(--background));
+  /* Prevent double-tap zoom on mobile interactive elements */
+  touch-action: manipulation;
+}
+
+/* ── Mobile tap highlight remove ── */
+a, button {
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* ── Safe-area utility for bottom padding (iPhone notch) ── */
+.pb-safe {
+  padding-bottom: env(safe-area-inset-bottom);
 }
 
 /* ── Glass ── */

@@ -66,7 +66,7 @@ export function ChatInput({ onSend, isLoading, disabled }: ChatInputProps) {
             onKeyDown={handleKeyDown}
             onFocus={() => setIsFocused(true)}
             onBlur={() => setIsFocused(false)}
-            placeholder="Message Skippy… (Enter to send, Shift+Enter for newline)"
+            placeholder="Message Skippy…"
             disabled={isLoading || disabled}
             rows={1}
             className="flex-1 bg-transparent text-foreground text-sm leading-6 resize-none outline-none placeholder:text-muted/40 disabled:opacity-50 disabled:cursor-not-allowed py-1 max-h-36 overflow-y-auto"

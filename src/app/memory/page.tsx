@@ -8,10 +8,11 @@ import remarkGfm from 'remark-gfm'
 import {
   Brain, Trash2, Star, ArrowLeft, Bot, RefreshCw, Search,
   Bell, Sparkles, CheckCircle2, Circle, Plus, X, Calendar,
-  ChevronDown, ChevronUp,
+  ChevronDown, ChevronUp, Menu,
 } from 'lucide-react'
 import { cn, getCategoryColor, getCategoryIcon, formatRelativeTime } from '@/lib/utils'
 import { Sidebar } from '@/components/layout/Sidebar'
+import { useSidebar } from '@/components/layout/SidebarContext'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -92,6 +93,7 @@ function formatDueDate(dueDate: string): string {
 type Tab = 'memories' | 'reminders' | 'ask'
 
 export default function MemoryPage() {
+  const { toggle } = useSidebar()
   const [data, setData] = useState<MemoryData | null>(null)
   const [reminders, setReminders] = useState<Reminder[]>([])
   const [loading, setLoading] = useState(true)
@@ -173,15 +175,16 @@ export default function MemoryPage() {
   return (
     <div className="h-screen flex bg-background">
       <Sidebar />
-      <main className="flex-1 overflow-y-auto relative">
+      <main className="flex-1 overflow-y-auto relative pb-20 md:pb-0">
         <div className="fixed inset-0 pointer-events-none circuit-grid opacity-20" />
 
         {/* Header */}
-        <div className="sticky top-0 z-10 bg-background/85 backdrop-blur-md border-b border-border px-8 py-4">
+        <div className="sticky top-0 z-10 bg-background/85 backdrop-blur-md border-b border-border px-4 md:px-8 py-4">
           <div className="max-w-5xl mx-auto">
             <div className="flex items-center justify-between mb-4">
-              <div className="flex items-center gap-3">
-                <Link href="/chat" className="p-2 rounded-xl text-muted hover:text-foreground hover:bg-surface transition-colors">
+              <div className="flex items-center gap-2">
+                <button onClick={toggle} className="md:hidden p-2 -ml-1 rounded-xl text-muted active:bg-surface" aria-label="Open menu"><Menu className="w-5 h-5" /></button>
+                <Link href="/chat" className="hidden md:block p-2 rounded-xl text-muted hover:text-foreground hover:bg-surface transition-colors">
                   <ArrowLeft className="w-4 h-4" />
                 </Link>
                 <div>
@@ -230,7 +233,7 @@ export default function MemoryPage() {
           </div>
         </div>
 
-        <div className="max-w-5xl mx-auto px-8 py-8 relative z-10">
+        <div className="max-w-5xl mx-auto px-4 md:px-8 py-8 relative z-10">
           <AnimatePresence mode="wait">
             {activeTab === 'memories' && (
               <motion.div key="memories" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }}>
