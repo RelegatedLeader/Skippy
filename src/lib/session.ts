@@ -10,12 +10,12 @@ function getSecret(): string {
   return process.env.SESSION_SECRET || 'dev-insecure-change-this-in-production'
 }
 
-function base64urlToUint8Array(b64url: string): Uint8Array {
+function base64urlToUint8Array(b64url: string): Uint8Array<ArrayBuffer> {
   // Convert base64url → base64 → binary
   const b64 = b64url.replace(/-/g, '+').replace(/_/g, '/')
   const padded = b64.padEnd(b64.length + ((4 - (b64.length % 4)) % 4), '=')
   const bin = atob(padded)
-  return Uint8Array.from(bin, c => c.charCodeAt(0))
+  return Uint8Array.from(bin, c => c.charCodeAt(0)) as Uint8Array<ArrayBuffer>
 }
 
 export async function verifySessionToken(token: string): Promise<boolean> {
