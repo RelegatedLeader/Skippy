@@ -116,7 +116,7 @@ export async function GET(req: Request) {
     const queue: QueueItem[] = []
 
     // Mode-aware exercise type selection
-    function modeExerciseType(repetitions: number): ReturnType<typeof pickExerciseType> {
+    const modeExerciseType = (repetitions: number): ReturnType<typeof pickExerciseType> => {
       if (mode === 'flashcards') return 'flashcard'
       if (mode === 'listening') return 'listening'
       if (mode === 'typing') return Math.random() < 0.5 ? 'pinyin' : 'translate'
