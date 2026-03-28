@@ -71,6 +71,7 @@ model Debate {
   winner     String?       // "user" | "ai" | "draw"
   conclusion String?       // Final AI-written summary
   noteId     String?       // If saved as a note
+  model      String        @default("grok") // "grok" | "claude"
   rounds     DebateRound[]
   createdAt  DateTime      @default(now())
   updatedAt  DateTime      @updatedAt

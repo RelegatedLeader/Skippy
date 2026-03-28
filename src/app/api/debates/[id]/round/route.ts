@@ -1,11 +1,11 @@
 import { prisma } from '@/lib/db'
 import { grok, GROK_MODEL } from '@/lib/grok'
+import { anthropic, CLAUDE_MODEL, claudeAvailable } from '@/lib/claude'
 import { buildSystemPrompt } from '@/lib/memory'
 import { NextRequest } from 'next/server'
 
 export const runtime = 'nodejs'
 
-// POST /api/debates/[id]/round — submit user argument, returns streaming AI rebuttal + scores
 export async function POST(req: NextRequest, { params }: { params: { id: string } }) {
   const { userArgument } = await req.json()
   if (!userArgument?.trim()) return new Response('Missing userArgument', { status: 400 })
@@ -19,13 +19,12 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
 
   const roundNumber = debate.rounds.length + 1
   const systemPrompt = await buildSystemPrompt()
+  const model = debate.model || 'grok'
 
-  // Build debate history for context
   const historyLines = debate.rounds.map((r) =>
-    `Round ${r.roundNumber}:\nUser argued: ${r.userArgument}\nSkippy rebutted: ${r.aiRebuttal}\n(User confidence: ${r.userScore}%, AI confidence: ${r.aiScore}%)`
+    `Round ${r.roundNumber}:\nUser argued: ${r.userArgument}\nSkippy rebutted: ${r.aiRebuttal}\n(Confidence → User ${r.userScore}%, Skippy ${r.aiScore}%)`
   ).join('\n\n')
 
-  // Create the round immediately so we have an ID to stream against
   const round = await prisma.debateRound.create({
     data: {
       debateId: debate.id,
@@ -37,7 +36,7 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
     },
   })
 
-  const prompt = `You are Skippy — a sharp, confident AI debating the following topic with the user.
+  const prompt = `You are Skippy — a sharp, deeply personal AI debating the following topic with the user.
 
 DEBATE TOPIC: "${debate.topic}"
 YOUR POSITION: ${debate.aiStance}
@@ -47,43 +46,58 @@ ${historyLines ? `DEBATE HISTORY:\n${historyLines}\n\n` : ''}USER'S ARGUMENT IN 
 "${userArgument}"
 
 Your task:
-1. REBUTTAL: Respond directly and confidently to their argument. Acknowledge any valid points (be intellectually honest), then explain why your position still holds or is stronger. Use specific reasoning grounded in what you know about the user. Be direct — 2-4 sentences max.
 
-2. SCORE UPDATE: After reflecting on the full debate so far, assess the confidence scores (0-100). A score of 50 = tied, 80 = strong lead, 100 = complete win. Be fair — if the user made a genuinely strong point, their score should increase.
+1. REBUTTAL: Respond directly and confidently to their argument. Ground your reasoning in WHO this person is — their character, emotional patterns, relationship history, values, and how they've made decisions across their life. Do NOT lean on what projects or tools they've been building lately; look at the deeper patterns of who they are as a person. Acknowledge any valid points honestly, then explain why your position still holds or is stronger. Be specific and personal — 2-4 sentences, no fluff.
 
-Respond in this EXACT format (no other text):
+2. SCORE UPDATE: Assess confidence scores (0-100) based on the full debate so far. 50 = tied, 80 = strong lead. Be fair — genuinely strong arguments must move the scores.
+
+Respond in this EXACT format (no other text, no preamble):
 REBUTTAL: [your rebuttal here]
 USER_SCORE: [0-100]
 AI_SCORE: [0-100]
 ROUND_VERDICT: [one of: "user_stronger" | "ai_stronger" | "tied"]`
 
   let accumulated = ''
+  const encoder = new TextEncoder()
 
   const stream = new ReadableStream({
     async start(controller) {
       try {
-        const response = await grok.chat.completions.create({
-          model: GROK_MODEL,
-          stream: true,
-          messages: [
-            { role: 'system', content: systemPrompt },
-            { role: 'user', content: prompt },
-          ],
-          temperature: 0.7,
-          max_tokens: 400,
-        })
-
-        for await (const chunk of response) {
-          const delta = chunk.choices[0]?.delta?.content || ''
-          if (delta) {
-            accumulated += delta
-            controller.enqueue(new TextEncoder().encode(delta))
+        if (model === 'claude' && claudeAvailable()) {
+          const claudeStream = anthropic.messages.stream({
+            model: CLAUDE_MODEL,
+            max_tokens: 500,
+            system: systemPrompt,
+            messages: [{ role: 'user', content: prompt }],
+          })
+          for await (const event of claudeStream) {
+            if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
+              accumulated += event.delta.text
+              controller.enqueue(encoder.encode(event.delta.text))
+            }
+          }
+        } else {
+          const response = await grok.chat.completions.create({
+            model: GROK_MODEL,
+            stream: true,
+            messages: [
+              { role: 'system', content: systemPrompt },
+              { role: 'user', content: prompt },
+            ],
+            temperature: 0.7,
+            max_tokens: 500,
+          })
+          for await (const chunk of response) {
+            const delta = chunk.choices[0]?.delta?.content || ''
+            if (delta) {
+              accumulated += delta
+              controller.enqueue(encoder.encode(delta))
+            }
           }
         }
       } finally {
         controller.close()
 
-        // Parse structured response and save
         try {
           const rebMatch = accumulated.match(/REBUTTAL:\s*([\s\S]*?)(?=USER_SCORE:|$)/)
           const userScoreMatch = accumulated.match(/USER_SCORE:\s*(\d+)/)
@@ -108,7 +122,6 @@ ROUND_VERDICT: [one of: "user_stronger" | "ai_stronger" | "tied"]`
     },
   })
 
-  // Return round ID in headers so client can reload after stream
   return new Response(stream, {
     headers: {
       'Content-Type': 'text/plain; charset=utf-8',

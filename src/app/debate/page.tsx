@@ -3,9 +3,16 @@
 import { useEffect, useState, useCallback } from 'react'
 import { useRouter } from 'next/navigation'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Swords, Plus, Trophy, Minus, Equal, Trash2, Clock, ChevronRight, Bot, Shield, Zap } from 'lucide-react'
+import { Swords, Plus, Trophy, Equal, Trash2, Clock, ChevronRight, Bot, Shield, Zap, Cpu } from 'lucide-react'
 import { Sidebar } from '@/components/layout/Sidebar'
 import { cn, formatRelativeTime } from '@/lib/utils'
+
+type DebateModel = 'grok' | 'claude'
+
+const MODEL_OPTIONS: { id: DebateModel; label: string; desc: string; color: string }[] = [
+  { id: 'grok',   label: 'Grok',   desc: 'xAI — fast & assertive',     color: '#29c2e6' },
+  { id: 'claude', label: 'Claude', desc: 'Anthropic — deep reasoning', color: '#8b5cf6' },
+]
 
 interface Debate {
   id: string
@@ -15,6 +22,7 @@ interface Debate {
   status: 'active' | 'concluded'
   winner?: 'user' | 'ai' | 'draw'
   conclusion?: string
+  model?: string
   rounds: Array<{ roundNumber: number; userScore: number; aiScore: number }>
   createdAt: string
 }
@@ -36,6 +44,7 @@ export default function DebatePage() {
   const [showForm, setShowForm] = useState(false)
   const [topic, setTopic] = useState('')
   const [userStance, setUserStance] = useState('')
+  const [debateModel, setDebateModel] = useState<DebateModel>('grok')
 
   const fetchDebates = useCallback(async () => {
     setLoading(true)
@@ -61,7 +70,7 @@ export default function DebatePage() {
       const res = await fetch('/api/debates', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ topic: topic.trim(), userStance: userStance.trim() }),
+        body: JSON.stringify({ topic: topic.trim(), userStance: userStance.trim(), model: debateModel }),
       })
       if (res.ok) {
         const debate = await res.json()
@@ -160,6 +169,34 @@ export default function DebatePage() {
                         rows={2}
                         className="w-full px-4 py-3 bg-surface border border-border rounded-xl text-sm text-foreground placeholder:text-muted/40 focus:outline-none focus:border-accent/40 focus:shadow-[0_0_0_3px_rgba(232,184,75,0.07)] transition-all resize-none"
                       />
+                    </div>
+
+                    {/* Model selector */}
+                    <div>
+                      <label className="text-xs font-semibold text-muted/70 uppercase tracking-wider mb-2 block">
+                        Debate powered by
+                      </label>
+                      <div className="flex gap-2">
+                        {MODEL_OPTIONS.map((m) => (
+                          <button
+                            key={m.id}
+                            onClick={() => setDebateModel(m.id)}
+                            className={cn(
+                              'flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-semibold border transition-all',
+                              debateModel === m.id ? '' : 'bg-surface border-border text-muted hover:text-foreground'
+                            )}
+                            style={debateModel === m.id ? {
+                              background: `${m.color}12`,
+                              borderColor: `${m.color}40`,
+                              color: m.color,
+                            } : {}}
+                          >
+                            <span className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: m.color }} />
+                            <span>{m.label}</span>
+                            <span className="text-[10px] opacity-60 hidden sm:block">{m.desc}</span>
+                          </button>
+                        ))}
+                      </div>
                     </div>
 
                     <div className="flex items-center gap-3 pt-1">
@@ -264,7 +301,12 @@ export default function DebatePage() {
                                   {d.winner === 'user' ? '🏆 You won' : d.winner === 'ai' ? '🤖 Skippy won' : '= Draw'}
                                 </span>
                               )}
-                              <span className="text-[10px] text-muted/40 ml-auto">{d.rounds.length} round{d.rounds.length !== 1 ? 's' : ''}</span>
+                              <span className="text-[10px] text-muted/40 ml-auto flex items-center gap-1.5">
+                              <Cpu className="w-2.5 h-2.5" />
+                              {d.model === 'claude' ? 'Claude' : 'Grok'}
+                              <span className="opacity-40">·</span>
+                              {d.rounds.length} round{d.rounds.length !== 1 ? 's' : ''}
+                            </span>
                             </div>
                             <h3 className="font-display font-bold text-foreground text-sm leading-tight">{d.topic}</h3>
                           </div>

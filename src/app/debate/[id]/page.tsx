@@ -5,7 +5,7 @@ import { useParams, useRouter } from 'next/navigation'
 import { motion, AnimatePresence } from 'framer-motion'
 import {
   Swords, Bot, User, Trophy, Flag, Save, ArrowLeft,
-  ChevronRight, Loader2, CheckCircle, AlertTriangle, Equal
+  ChevronRight, Loader2, CheckCircle, AlertTriangle, Equal, Cpu
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Sidebar } from '@/components/layout/Sidebar'
@@ -16,7 +16,7 @@ interface DebateRound {
 interface Debate {
   id: string; topic: string; userStance: string; aiStance: string
   status: 'active' | 'concluded'; winner?: 'user' | 'ai' | 'draw'
-  conclusion?: string; noteId?: string; rounds: DebateRound[]
+  conclusion?: string; noteId?: string; model?: string; rounds: DebateRound[]
 }
 
 const MAX_ROUNDS = 6
@@ -161,7 +161,17 @@ export default function DebateSessionPage() {
                   {debate.status === 'active' ? '● Active' : '✓ Done'}
                 </span>
               </div>
-              <p className="text-[10px] text-muted/50">Round {debate.rounds.length}/{MAX_ROUNDS} · {roundsLeft > 0 ? `${roundsLeft} left` : 'Final round'}</p>
+              <div className="flex items-center gap-2">
+                <p className="text-[10px] text-muted/50">Round {debate.rounds.length}/{MAX_ROUNDS} · {roundsLeft > 0 ? `${roundsLeft} left` : 'Final round'}</p>
+                <span className="flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-full border"
+                  style={debate.model === 'claude'
+                    ? { background: 'rgba(139,92,246,0.1)', borderColor: 'rgba(139,92,246,0.3)', color: '#8b5cf6' }
+                    : { background: 'rgba(41,194,230,0.1)', borderColor: 'rgba(41,194,230,0.3)', color: '#29c2e6' }
+                  }>
+                  <Cpu className="w-2.5 h-2.5" />
+                  {debate.model === 'claude' ? 'Claude' : 'Grok'}
+                </span>
+              </div>
             </div>
 
             {debate.status === 'active' && (
@@ -226,16 +236,8 @@ export default function DebateSessionPage() {
             </div>
           </div>
 
-          {/* Stance labels */}
-          <div className="flex items-start justify-between gap-4 max-w-4xl mx-auto mt-2">
-            <p className="text-[10px] text-navy-bright/70 flex-1 text-right leading-snug line-clamp-2 pr-3">
-              You: &ldquo;{debate.userStance}&rdquo;
-            </p>
-            <div className="w-[1px] flex-shrink-0" />
-            <p className="text-[10px] text-accent/70 flex-1 leading-snug line-clamp-2 pl-3">
-              Skippy: &ldquo;{debate.aiStance}&rdquo;
-            </p>
-          </div>
+          {/* Topic label */}
+          <p className="text-center text-[10px] text-muted/40 mt-2 truncate max-w-4xl mx-auto italic">&ldquo;{debate.topic}&rdquo;</p>
         </div>
 
         {/* ── Arena ── */}
@@ -256,6 +258,43 @@ export default function DebateSessionPage() {
                 <span className="text-[10px] font-bold text-accent/70 uppercase tracking-widest">Skippy&apos;s Rebuttals</span>
               </div>
             </div>
+
+            {/* Opening statements — shown before any rounds */}
+            <motion.div
+              initial={{ opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="grid grid-cols-2 gap-4 mb-5"
+            >
+              {/* User opening */}
+              <div className="rounded-2xl rounded-tl-sm p-4 border border-navy-bright/20 relative overflow-hidden"
+                style={{ background: 'linear-gradient(135deg, #0b1828, #0f2035)', color: '#d8e8f8' }}
+              >
+                <div className="absolute top-0 left-0 right-0 h-[2px] rounded-t-full"
+                  style={{ background: 'linear-gradient(90deg, #1a3050, #2d6ae0)' }} />
+                <div className="text-[10px] font-bold text-navy-bright/50 uppercase tracking-wider mb-2 flex items-center gap-1.5">
+                  <User className="w-3 h-3" />Your Opening Position
+                </div>
+                <p className="text-sm leading-relaxed">{debate.userStance}</p>
+              </div>
+
+              {/* Skippy opening */}
+              <div className="rounded-2xl rounded-tr-sm p-4 bg-surface border border-accent/20 relative overflow-hidden">
+                <div className="absolute top-0 left-0 right-0 h-[2px] rounded-t-full"
+                  style={{ background: 'linear-gradient(90deg, #d4a028, #e8b84b)' }} />
+                <div className="text-[10px] font-bold text-accent/50 uppercase tracking-wider mb-2 flex items-center gap-1.5">
+                  <Bot className="w-3 h-3" strokeWidth={1.5} />Skippy&apos;s Opening Position
+                </div>
+                <p className="text-sm text-foreground/90 leading-relaxed">{debate.aiStance}</p>
+              </div>
+            </motion.div>
+
+            {debate.rounds.length > 0 && (
+              <div className="flex items-center gap-3 mb-4">
+                <div className="flex-1 h-px bg-border" />
+                <span className="text-[10px] text-muted/40 uppercase tracking-widest font-bold">Debate begins</span>
+                <div className="flex-1 h-px bg-border" />
+              </div>
+            )}
 
             {/* Rounds */}
             <AnimatePresence mode="popLayout">

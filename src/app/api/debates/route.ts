@@ -1,6 +1,6 @@
 import { prisma } from '@/lib/db'
-import { grok, GROK_MODEL } from '@/lib/grok'
 import { buildSystemPrompt } from '@/lib/memory'
+import { getAICompletion, type AIModel } from '@/lib/ai'
 
 export async function GET() {
   const debates = await prisma.debate.findMany({
@@ -11,34 +11,25 @@ export async function GET() {
 }
 
 export async function POST(req: Request) {
-  const { topic, userStance } = await req.json()
+  const { topic, userStance, model = 'grok' } = await req.json()
   if (!topic || !userStance) return new Response('Missing topic or userStance', { status: 400 })
 
   const systemPrompt = await buildSystemPrompt()
 
-  // Generate Skippy's initial opposing stance
-  const aiStanceRes = await grok.chat.completions.create({
-    model: GROK_MODEL,
-    messages: [
-      { role: 'system', content: systemPrompt },
-      {
-        role: 'user',
-        content: `We are about to debate the following topic: "${topic}".
+  const aiStance = await getAICompletion(model as AIModel, {
+    systemPrompt,
+    userMessage: `We are about to debate the following topic: "${topic}".
 The user's stance is: "${userStance}".
 
-Generate Skippy's opening position on this topic — the opposing or challenging viewpoint. Be specific, grounded in what you know about the user, and give 2-3 clear reasons for your position. Be direct and confident, not wishy-washy. Keep it to 3-4 sentences max.
+Generate Skippy's opening position — the opposing or challenging viewpoint. Ground your position in what you know about this specific person: their values, emotional patterns, relationship history, and how they've made decisions in the past. Be specific to who they are, not generic. Give 2-3 clear reasons. Be direct and confident, not wishy-washy. Keep it to 3-4 sentences max.
 
 Return ONLY the opening statement, no preamble.`,
-      },
-    ],
     temperature: 0.75,
-    max_tokens: 300,
+    maxTokens: 300,
   })
 
-  const aiStance = aiStanceRes.choices[0].message.content?.trim() || 'I challenge that position.'
-
   const debate = await prisma.debate.create({
-    data: { topic, userStance, aiStance },
+    data: { topic, userStance, aiStance: aiStance || 'I challenge that position.', model },
     include: { rounds: true },
   })
 

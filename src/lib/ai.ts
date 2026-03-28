@@ -79,4 +79,34 @@ export async function streamAIResponse(
   })
 }
 
+/** Non-streaming single-turn completion — use for stance generation, conclusions, etc. */
+export async function getAICompletion(
+  model: AIModel,
+  options: { systemPrompt: string; userMessage: string; temperature?: number; maxTokens?: number }
+): Promise<string> {
+  const { systemPrompt, userMessage, temperature = 0.75, maxTokens = 400 } = options
+
+  if (model === 'claude' && claudeAvailable()) {
+    const res = await anthropic.messages.create({
+      model: CLAUDE_MODEL,
+      max_tokens: maxTokens,
+      system: systemPrompt,
+      messages: [{ role: 'user', content: userMessage }],
+    })
+    const block = res.content[0]
+    return block.type === 'text' ? block.text.trim() : ''
+  }
+
+  const res = await grok.chat.completions.create({
+    model: GROK_MODEL,
+    messages: [
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: userMessage },
+    ],
+    temperature,
+    max_tokens: maxTokens,
+  })
+  return res.choices[0].message.content?.trim() || ''
+}
+
 export { claudeAvailable }

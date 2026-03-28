@@ -1,6 +1,6 @@
 import { prisma } from '@/lib/db'
-import { grok, GROK_MODEL } from '@/lib/grok'
 import { buildSystemPrompt } from '@/lib/memory'
+import { getAICompletion, type AIModel } from '@/lib/ai'
 import { NextRequest } from 'next/server'
 
 // POST /api/debates/[id]/conclude — end the debate, generate summary, optionally save as note
@@ -15,6 +15,7 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
   if (!debate) return new Response('Not found', { status: 404 })
 
   const systemPrompt = await buildSystemPrompt()
+  const model = (debate.model as AIModel) || 'grok'
 
   // Determine winner from final scores
   const lastRound = debate.rounds[debate.rounds.length - 1]
@@ -33,13 +34,9 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
     `Round ${r.roundNumber}:\nUser: "${r.userArgument}"\nSkippy: "${r.aiRebuttal}"\nScores → User ${r.userScore}% / Skippy ${r.aiScore}%`
   ).join('\n\n')
 
-  const summaryRes = await grok.chat.completions.create({
-    model: GROK_MODEL,
-    messages: [
-      { role: 'system', content: systemPrompt },
-      {
-        role: 'user',
-        content: `Write a concise, objective summary of this debate. Be intellectually honest — acknowledge strong points from both sides. End with a clear takeaway or actionable recommendation for the user.
+  const conclusion = await getAICompletion(model, {
+    systemPrompt,
+    userMessage: `Write a concise, objective summary of this debate. Be intellectually honest — acknowledge strong points from both sides. End with a clear takeaway or actionable recommendation for the user.
 
 TOPIC: ${debate.topic}
 USER'S POSITION: ${debate.userStance}
@@ -50,13 +47,9 @@ WINNER: ${winner === 'draw' ? 'Draw' : winner === 'user' ? 'User' : 'Skippy'}
 ${historyLines}
 
 Write the summary in 3-4 sentences. Include: what was debated, the key turning points, who prevailed and why, and a concrete next step for the user.`,
-      },
-    ],
     temperature: 0.6,
-    max_tokens: 350,
-  })
-
-  const conclusion = summaryRes.choices[0].message.content?.trim() || 'Debate concluded.'
+    maxTokens: 400,
+  }) || 'Debate concluded.'
 
   // Update debate
   await prisma.debate.update({
