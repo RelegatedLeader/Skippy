@@ -3,7 +3,7 @@
 import { useEffect, useRef, useCallback, useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import Image from 'next/image'
-import { Zap, Brain, FileText, TrendingUp, Cpu, AlertTriangle, Swords, X, Sparkles, Menu, BookOpen } from 'lucide-react'
+import { Zap, Brain, FileText, TrendingUp, Cpu, AlertTriangle, Swords, X, Sparkles, Menu, BookOpen, GraduationCap } from 'lucide-react'
 import { nanoid } from 'nanoid'
 import { useChatStore, type AIModel } from '@/store/chat'
 import { MessageBubble } from './MessageBubble'
@@ -200,10 +200,11 @@ export function ChatInterface({ conversationId, onConversationCreated, onToggleS
         {/* Center: nav links */}
         <nav className="flex items-center gap-0.5 flex-1 justify-center">
           {[
-            { href: '/notes',     icon: FileText,   label: 'Notes' },
-            { href: '/summaries', icon: Sparkles,   label: 'Summaries' },
-            { href: '/memory',    icon: Brain,      label: 'Memory' },
-            { href: '/debate',    icon: Swords,     label: 'Debate' },
+            { href: '/notes',     icon: FileText,       label: 'Notes' },
+            { href: '/summaries', icon: Sparkles,       label: 'Summaries' },
+            { href: '/memory',    icon: Brain,          label: 'Memory' },
+            { href: '/debate',    icon: Swords,         label: 'Debate' },
+            { href: '/learn',     icon: GraduationCap,  label: '中文' },
           ].map(({ href, icon: Icon, label }) => (
             <Link
               key={href}

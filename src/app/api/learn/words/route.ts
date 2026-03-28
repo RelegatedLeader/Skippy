@@ -61,12 +61,12 @@ export async function GET(req: Request) {
       take: MAX_NEW_PER_SESSION,
     })
 
-    // ── All words for distractor pool ──────────────────────────────────────
+    // ── All words for distractor pools ─────────────────────────────────────
     const allWords = await prisma.langWord.findMany({
       where: { language },
-      select: { id: true, meaning: true },
+      select: { id: true, meaning: true, simplified: true },
     })
-    const meaningPool = allWords.map((w) => ({ id: w.id, meaning: w.meaning }))
+    const meaningPool = allWords.map((w) => ({ id: w.id, meaning: w.meaning, simplified: w.simplified }))
 
     // ── Build session queue ────────────────────────────────────────────────
     type QueueItem = {
@@ -88,17 +88,19 @@ export async function GET(req: Request) {
       } | null
       exerciseType: ReturnType<typeof pickExerciseType>
       distractors: string[]
+      charDistractors: string[]
     }
 
     const queue: QueueItem[] = []
 
     // Add review words
     for (const p of dueProgress) {
-      const distractors = meaningPool
+      const shuffled = meaningPool
         .filter((w) => w.id !== p.wordId)
         .sort(() => Math.random() - 0.5)
-        .slice(0, 3)
-        .map((w) => w.meaning)
+
+      const distractors = shuffled.slice(0, 3).map((w) => w.meaning)
+      const charDistractors = shuffled.slice(3, 6).map((w) => w.simplified)
 
       queue.push({
         id: p.word.id,
@@ -119,16 +121,18 @@ export async function GET(req: Request) {
         },
         exerciseType: pickExerciseType(p.repetitions),
         distractors,
+        charDistractors,
       })
     }
 
     // Add new words
     for (const w of newWords) {
-      const distractors = meaningPool
+      const shuffled = meaningPool
         .filter((m) => m.id !== w.id)
         .sort(() => Math.random() - 0.5)
-        .slice(0, 3)
-        .map((m) => m.meaning)
+
+      const distractors = shuffled.slice(0, 3).map((m) => m.meaning)
+      const charDistractors = shuffled.slice(3, 6).map((m) => m.simplified)
 
       queue.push({
         id: w.id,
@@ -143,6 +147,7 @@ export async function GET(req: Request) {
         progress: null,
         exerciseType: pickExerciseType(0),
         distractors,
+        charDistractors,
       })
     }
 

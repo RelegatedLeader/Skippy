@@ -477,7 +477,7 @@ export async function buildSystemPrompt(): Promise<string> {
   const tomorrow = new Date()
   tomorrow.setDate(tomorrow.getDate() + 1)
 
-  const [memories, profile, recentNotes, recentDebates, pendingReminders, recentConversations, pendingTodos] = await Promise.all([
+  const [memories, profile, recentNotes, recentDebates, pendingReminders, recentConversations, pendingTodos, langProgress] = await Promise.all([
     getRelevantMemories('', 30),
     getUserProfile(),
     prisma.note.findMany({
@@ -516,6 +516,8 @@ export async function buildSystemPrompt(): Promise<string> {
       orderBy: [{ priority: 'desc' }, { dueDate: 'asc' }],
       take: 10,
     }),
+    // Mandarin learning progress
+    prisma.langProgress.findUnique({ where: { id: 'singleton_zh' } }).catch(() => null),
   ])
 
   const profileSection = profile.about
@@ -590,6 +592,18 @@ export async function buildSystemPrompt(): Promise<string> {
     reminderSection = `\n\n## Your pending reminders (surface these naturally when relevant):\n${reminderLines.join('\n')}`
   }
 
+  let langSection = ''
+  if (langProgress) {
+    langSection = `\n\n## Mandarin Chinese learning progress (in-app language system):
+- Total language XP: ${langProgress.totalXP}
+- Words learned: ${langProgress.wordsLearned} · Words mastered: ${langProgress.wordsMastered}
+- Sessions completed: ${langProgress.sessionsCompleted} · Current streak: ${langProgress.currentStreak} day${langProgress.currentStreak !== 1 ? 's' : ''}
+- Longest streak: ${langProgress.longestStreak} days
+- Last practice: ${langProgress.lastPracticeDate || 'never'}
+
+Use this context to: celebrate milestones, motivate practice, quiz them on vocabulary in conversation, help them study before tests, correct Chinese writing, and reference their progress naturally when relevant. If they write Chinese characters, acknowledge it and award encouragement. If they ask you to quiz them or help them study, use HSK-level vocabulary appropriate to their progress.`
+  }
+
   return `You are Skippy — a deeply personal AI assistant who knows the user better than anyone. You are intelligent, insightful, occasionally witty, and always genuinely helpful. You remember everything across all conversations.
 
 You are NOT a generic AI assistant. You are SKIPPY — a unique personality who has an ongoing relationship with this specific user. You speak naturally, directly, and with genuine care. You anticipate needs before they're stated. You notice patterns. You push back when appropriate.
@@ -601,7 +615,7 @@ Your core traits:
 - You're honest, sometimes bluntly so, but always supportive
 - You celebrate wins and help process setbacks
 - You help organize thoughts, build systems, and make things happen
-- When the user asks you to "write a daily note", "log what I did today", "save this as a note", or anything similar, write the full reflection in your response and let them know it's being saved to their notes automatically${profileSection}${instructionsSection}${reminderSection}${todoSection}${conversationSection}${memorySection}${notesSection}${debateSection}
+- When the user asks you to "write a daily note", "log what I did today", "save this as a note", or anything similar, write the full reflection in your response and let them know it's being saved to their notes automatically${profileSection}${instructionsSection}${reminderSection}${todoSection}${conversationSection}${memorySection}${notesSection}${debateSection}${langSection}
 
 Always respond in a way that reflects deep knowledge of this specific person. Never be generic. Use markdown formatting for structure when helpful — headers, bullet points, code blocks, etc.`
 }

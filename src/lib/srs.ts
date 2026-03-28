@@ -11,6 +11,17 @@
  *   5 = perfect response
  */
 
+export type ExerciseType =
+  | 'flashcard'
+  | 'mcq'
+  | 'pinyin'
+  | 'listening'
+  | 'speaking'
+  | 'stroke'
+  | 'fill_blank'
+  | 'translate'
+  | 'tone'
+
 export interface SRSCard {
   easeFactor: number   // starting value: 2.5
   interval: number     // days until next review (0 = new)
@@ -64,21 +75,21 @@ export function updateSM2(card: SRSCard, quality: number): SRSResult {
  * Maps exercise results to SM-2 quality scores.
  */
 export function exerciseQuality(
-  exerciseType: 'flashcard' | 'mcq' | 'pinyin' | 'listening' | 'speaking' | 'stroke',
+  exerciseType: ExerciseType,
   correct: boolean,
   selfRating?: 1 | 2 | 3 | 4 | 5  // used for flashcard and stroke
 ): number {
   if (exerciseType === 'flashcard' || exerciseType === 'stroke') {
-    // Self-rated: map 1–5 directly to SM-2 quality 0–5
     if (selfRating === undefined) return correct ? 4 : 1
-    return selfRating - 1 // rating 1→0, 2→1, 3→2, 4→3, 5→4 (cap at 4 for these)
+    return selfRating - 1 // rating 1→0, 2→1, 3→2, 4→3, 5→4
   }
-
-  // Binary correct/incorrect exercises
-  if (!correct) return 1  // remembered after seeing answer
-  if (exerciseType === 'mcq') return 4       // easy recognition
+  if (!correct) return 1
+  if (exerciseType === 'mcq') return 4
   if (exerciseType === 'listening') return 4
-  if (exerciseType === 'pinyin') return 5    // harder recall → reward more
+  if (exerciseType === 'fill_blank') return 4
+  if (exerciseType === 'tone') return 4
+  if (exerciseType === 'pinyin') return 5
+  if (exerciseType === 'translate') return 5
   if (exerciseType === 'speaking') return 5
   return 4
 }
@@ -86,19 +97,19 @@ export function exerciseQuality(
 /**
  * XP earned per exercise type based on difficulty and correctness.
  */
-export function xpForExercise(
-  exerciseType: 'flashcard' | 'mcq' | 'pinyin' | 'listening' | 'speaking' | 'stroke',
-  quality: number
-): number {
+export function xpForExercise(exerciseType: ExerciseType, quality: number): number {
   if (quality < 3) return 0
 
   const BASE: Record<string, number> = {
-    flashcard: 3,
-    mcq: 5,
-    pinyin: 8,
-    listening: 6,
-    speaking: 12,
-    stroke: 10,
+    flashcard:  3,
+    mcq:        5,
+    tone:       4,
+    listening:  6,
+    fill_blank: 7,
+    pinyin:     8,
+    stroke:     10,
+    translate:  10,
+    speaking:   12,
   }
 
   const base = BASE[exerciseType] ?? 5
@@ -111,9 +122,7 @@ export function xpForExercise(
  * Determines the exercise type to use based on a word's mastery level.
  * Progressive unlocking ensures learners aren't overwhelmed early on.
  */
-export function pickExerciseType(
-  repetitions: number
-): 'flashcard' | 'mcq' | 'pinyin' | 'listening' | 'speaking' | 'stroke' {
+export function pickExerciseType(repetitions: number): ExerciseType {
   const rand = Math.random()
 
   if (repetitions === 0) {
@@ -122,22 +131,29 @@ export function pickExerciseType(
   }
 
   if (repetitions <= 2) {
-    // Early stage: recognition exercises
-    return rand < 0.5 ? 'mcq' : 'flashcard'
+    // Early stage: recognition + basic recall
+    if (rand < 0.35) return 'mcq'
+    if (rand < 0.65) return 'flashcard'
+    return 'tone'
   }
 
   if (repetitions <= 5) {
-    // Mid stage: add recall exercises
-    if (rand < 0.3) return 'mcq'
-    if (rand < 0.6) return 'pinyin'
-    return 'listening'
+    // Mid stage: add recall and listening
+    if (rand < 0.20) return 'mcq'
+    if (rand < 0.38) return 'pinyin'
+    if (rand < 0.55) return 'tone'
+    if (rand < 0.72) return 'listening'
+    return 'fill_blank'
   }
 
-  // Advanced stage: all exercise types, weighted toward harder ones
-  if (rand < 0.15) return 'mcq'
-  if (rand < 0.35) return 'pinyin'
-  if (rand < 0.55) return 'listening'
-  if (rand < 0.75) return 'speaking'
+  // Advanced stage: all types, weighted toward harder ones
+  if (rand < 0.10) return 'mcq'
+  if (rand < 0.22) return 'pinyin'
+  if (rand < 0.34) return 'tone'
+  if (rand < 0.46) return 'listening'
+  if (rand < 0.58) return 'fill_blank'
+  if (rand < 0.70) return 'translate'
+  if (rand < 0.84) return 'speaking'
   return 'stroke'
 }
 
