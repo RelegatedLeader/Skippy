@@ -3,7 +3,7 @@
 import { useEffect, useRef, useCallback, useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import Image from 'next/image'
-import { Zap, Brain, FileText, TrendingUp, Cpu, AlertTriangle, Swords, X, Sparkles, Menu } from 'lucide-react'
+import { Zap, Brain, FileText, TrendingUp, Cpu, AlertTriangle, Swords, X, Sparkles, Menu, BookOpen } from 'lucide-react'
 import { nanoid } from 'nanoid'
 import { useChatStore, type AIModel } from '@/store/chat'
 import { MessageBubble } from './MessageBubble'
@@ -174,11 +174,12 @@ export function ChatInterface({ conversationId, onConversationCreated, onToggleS
     <div className="flex flex-col h-full relative" style={{ background: 'linear-gradient(135deg, #0f2759 0%, #0a1a35 55%, rgba(88,28,135,0.25) 100%)' }}>
       <div className="absolute inset-0 circuit-grid opacity-30 pointer-events-none" />
 
-      {/* Model selector header */}
-      <div className="relative z-20 flex items-center justify-between px-4 pt-3 pb-1">
+      {/* Top bar: hamburger | nav links | model picker */}
+      <div className="relative z-20 flex items-center justify-between gap-2 px-4 pt-3 pb-1 border-b" style={{ borderColor: 'rgba(30,58,110,0.6)' }}>
+        {/* Left: hamburger */}
         <button
           onClick={onToggleSidebar}
-          className="p-2 rounded-xl text-muted hover:text-foreground transition-all"
+          className="p-2 rounded-xl text-muted hover:text-foreground transition-all flex-shrink-0"
           style={{ border: '1px solid transparent' }}
           onMouseEnter={e => {
             const el = e.currentTarget as HTMLButtonElement
@@ -196,7 +197,38 @@ export function ChatInterface({ conversationId, onConversationCreated, onToggleS
           <Menu className="w-4 h-4" />
         </button>
 
-        <div className="relative">
+        {/* Center: nav links */}
+        <nav className="flex items-center gap-0.5 flex-1 justify-center">
+          {[
+            { href: '/notes',     icon: FileText,   label: 'Notes' },
+            { href: '/summaries', icon: Sparkles,   label: 'Summaries' },
+            { href: '/memory',    icon: Brain,      label: 'Memory' },
+            { href: '/debate',    icon: Swords,     label: 'Debate' },
+          ].map(({ href, icon: Icon, label }) => (
+            <Link
+              key={href}
+              href={href}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-medium text-muted hover:text-accent transition-all duration-150"
+              style={{ border: '1px solid transparent' }}
+              onMouseEnter={e => {
+                const el = e.currentTarget as HTMLAnchorElement
+                el.style.background = 'rgba(41,194,230,0.08)'
+                el.style.borderColor = 'rgba(41,194,230,0.2)'
+              }}
+              onMouseLeave={e => {
+                const el = e.currentTarget as HTMLAnchorElement
+                el.style.background = ''
+                el.style.borderColor = 'transparent'
+              }}
+            >
+              <Icon className="w-3.5 h-3.5 flex-shrink-0" />
+              <span className="hidden sm:block">{label}</span>
+            </Link>
+          ))}
+        </nav>
+
+        {/* Right: model picker */}
+        <div className="relative flex-shrink-0">
           <button
             onClick={() => setShowModelPicker((p) => !p)}
             className={cn(

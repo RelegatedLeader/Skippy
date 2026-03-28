@@ -18,6 +18,11 @@ export const metadata: Metadata = {
   title: 'Skippy — Your Personal AI',
   description: 'An AI that truly knows you. Remembers everything. Anticipates everything.',
   keywords: ['AI', 'personal assistant', 'memory', 'notes', 'productivity'],
+  icons: {
+    icon: '/img/skippyENHANCED3D-removebg.png',
+    apple: '/img/skippyENHANCED3D-removebg.png',
+    shortcut: '/img/skippyENHANCED3D-removebg.png',
+  },
 }
 
 export const viewport: Viewport = {

@@ -3,7 +3,7 @@
 import Link from 'next/link'
 import Image from 'next/image'
 import { usePathname } from 'next/navigation'
-import { MessageSquare, FileText, Brain, Settings, Home, Swords, Sparkles } from 'lucide-react'
+import { MessageSquare, FileText, Brain, Settings, Info, Swords, Sparkles } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
 interface SidebarProps {
@@ -56,25 +56,25 @@ export function Sidebar({ children, className }: SidebarProps) {
 
       {/* Navigation */}
       <nav className="p-3 border-b space-y-0.5" style={{ borderColor: 'rgba(30,58,110,0.7)' }}>
-        <Link href="/" className="block">
+        <Link href="/about" className="block">
           <button className={cn(
             'w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-all duration-200',
-            pathname === '/'
+            pathname === '/about'
               ? 'text-accent border'
               : 'text-muted hover:text-foreground border border-transparent'
           )}
-          style={pathname === '/' ? {
+          style={pathname === '/about' ? {
             background: 'rgba(41,194,230,0.1)',
             borderColor: 'rgba(41,194,230,0.25)',
           } : {}}
           onMouseEnter={e => {
-            if (pathname !== '/') (e.currentTarget as HTMLButtonElement).style.background = 'rgba(15,39,89,0.6)'
+            if (pathname !== '/about') (e.currentTarget as HTMLButtonElement).style.background = 'rgba(15,39,89,0.6)'
           }}
           onMouseLeave={e => {
-            if (pathname !== '/') (e.currentTarget as HTMLButtonElement).style.background = ''
+            if (pathname !== '/about') (e.currentTarget as HTMLButtonElement).style.background = ''
           }}
           >
-            <Home className="w-4 h-4" />Home
+            <Info className="w-4 h-4" />About
           </button>
         </Link>
         {navItems.map(({ href, icon: Icon, label }) => {
