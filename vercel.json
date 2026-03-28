@@ -1,9 +1,8 @@
 {
-  "buildCommand": "npx prisma generate --schema=cloud/schema.cloud.prisma && npx prisma db push --schema=cloud/schema.cloud.prisma --accept-data-loss && npm run build",
+  "buildCommand": "npx prisma generate --schema=cloud/schema.cloud.prisma && npm run build",
   "installCommand": "npm install",
   "framework": "nextjs",
   "env": {
-    "BUILD_STANDALONE": "0",
-    "PRISMA_SCHEMA_PATH": "cloud/schema.cloud.prisma"
+    "BUILD_STANDALONE": "0"
   }
 }
