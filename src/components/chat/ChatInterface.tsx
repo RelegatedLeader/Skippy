@@ -460,7 +460,7 @@ export function ChatInterface({ conversationId, onConversationCreated, onToggleS
 
       {/* Input */}
       <div className="border-t relative z-10" style={{ borderColor: 'rgba(30,58,110,0.8)', background: 'rgba(6,13,26,0.6)', backdropFilter: 'blur(12px)' }}>
-        <div className="max-w-3xl mx-auto">
+        <div className="max-w-3xl mx-auto pr-16 sm:pr-16">
           <ChatInput onSend={sendMessage} isLoading={isLoading} />
         </div>
       </div>

@@ -74,7 +74,7 @@ export function NotificationBell() {
     : 0
 
   return (
-    <div ref={panelRef} className="fixed top-4 right-4 z-[200]">
+    <div ref={panelRef} className="fixed bottom-6 right-4 z-[200]">
       {/* Bell button */}
       <button
         onClick={() => setOpen(v => !v)}
@@ -159,11 +159,11 @@ export function NotificationBell() {
       <AnimatePresence>
         {open && (
           <motion.div
-            initial={{ opacity: 0, y: -10, scale: 0.94 }}
+            initial={{ opacity: 0, y: 10, scale: 0.94 }}
             animate={{ opacity: 1, y: 0, scale: 1 }}
-            exit={{ opacity: 0, y: -10, scale: 0.94 }}
+            exit={{ opacity: 0, y: 10, scale: 0.94 }}
             transition={{ duration: 0.15, ease: 'easeOut' }}
-            className="absolute top-[58px] right-0 w-80 rounded-2xl border overflow-hidden shadow-2xl"
+            className="absolute bottom-[58px] right-0 w-[min(320px,calc(100vw-1.5rem))] rounded-2xl border overflow-hidden shadow-2xl"
             style={{
               background: 'rgba(8,20,45,0.99)',
               borderColor: 'rgba(41,194,230,0.2)',
@@ -224,7 +224,7 @@ export function NotificationBell() {
             )}
 
             {/* Reminder list */}
-            <div className="max-h-72 overflow-y-auto">
+            <div className="overflow-y-auto" style={{ maxHeight: 'min(288px, calc(100dvh - 220px))' }}>
               {sorted.length === 0 ? (
                 <div className="py-8 text-center">
                   <div className="text-2xl mb-2">🎉</div>

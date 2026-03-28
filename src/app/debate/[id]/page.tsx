@@ -339,7 +339,7 @@ export default function DebateSessionPage() {
         {/* ── Input ── */}
         {debate.status === 'active' && (
           <div className="flex-shrink-0 border-t border-border bg-background/70 backdrop-blur-sm px-4 py-3">
-            <div className="max-w-5xl mx-auto flex items-end gap-3">
+            <div className="max-w-5xl mx-auto flex items-end gap-3 pr-16">
               <div className="flex-1 relative">
                 <textarea
                   ref={inputRef}

@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
 
-export function getLevel(xp: number): { level: number; name: string; nextXP: number; currentXP: number } {
+function getLevel(xp: number): { level: number; name: string; nextXP: number; currentXP: number } {
   const thresholds = [0, 100, 250, 500, 1000, 2000]
   const names = ['Starter', 'Apprentice', 'Focused', 'Consistent', 'Master', 'Legend']
   let idx = 0
