@@ -65,6 +65,16 @@ interface StatsData {
 
 type PageView = 'dashboard' | 'preview' | 'practice' | 'results'
 
+type PracticeMode = 'adaptive' | 'flashcards' | 'listening' | 'typing' | 'weak'
+
+const PRACTICE_MODES: { mode: PracticeMode; icon: string; label: string; desc: string; color: string }[] = [
+  { mode: 'adaptive',   icon: '🧠', label: 'Adaptive',    desc: 'SRS-driven mixed practice',     color: '#6366f1' },
+  { mode: 'flashcards', icon: '🃏', label: 'Flashcards',  desc: 'Pure card review',              color: '#3b82f6' },
+  { mode: 'listening',  icon: '👂', label: 'Listening',   desc: 'Hear & identify',               color: '#10b981' },
+  { mode: 'typing',     icon: '✍️', label: 'Typing',      desc: 'Type pinyin from memory',       color: '#8b5cf6' },
+  { mode: 'weak',       icon: '🎯', label: 'Review Weak', desc: 'Focus on struggling words',     color: '#ef4444' },
+]
+
 // ── Utilities ─────────────────────────────────────────────────────────────────
 
 function normalizePinyin(p: string): string {
@@ -123,6 +133,8 @@ export default function LearnPage() {
   const [sessionStartTime, setSessionStartTime] = useState(0)
   const [loadingStats, setLoadingStats] = useState(true)
   const [loadingQueue, setLoadingQueue] = useState(false)
+  const [practiceMode, setPracticeMode] = useState<PracticeMode>('adaptive')
+  const practiceModeRef = useRef<PracticeMode>('adaptive')
   const [xpPops, setXpPops] = useState<{ id: number; xp: number }[]>([])
   const xpPopId = useRef(0)
   const { awardXP, refreshStats } = useNotifications()
@@ -139,10 +151,12 @@ export default function LearnPage() {
 
   useEffect(() => { fetchStats() }, [fetchStats])
 
-  const startSession = async () => {
+  const startSession = async (mode?: PracticeMode) => {
+    const activeMode = mode ?? practiceMode
+    practiceModeRef.current = activeMode
     setLoadingQueue(true)
     try {
-      const res = await fetch('/api/learn/words?language=zh')
+      const res = await fetch(`/api/learn/words?language=zh&mode=${activeMode}`)
       if (res.ok) {
         const data = await res.json()
         setQueue(data.words)
@@ -185,7 +199,7 @@ export default function LearnPage() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          language: 'zh', mode: 'mixed',
+          language: 'zh', mode: practiceModeRef.current,
           wordsReviewed: queue.length, correctCount,
           xpEarned: totalXPWithBonus, duration,
         }),
@@ -238,7 +252,7 @@ export default function LearnPage() {
               initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: -12 }} transition={{ duration: 0.25 }}
             >
-              <Dashboard stats={stats} loading={loadingStats} onStart={startSession} startingSession={loadingQueue} />
+              <Dashboard stats={stats} loading={loadingStats} onStart={startSession} startingSession={loadingQueue} practiceMode={practiceMode} setPracticeMode={setPracticeMode} />
             </motion.div>
           )}
 
@@ -279,6 +293,7 @@ export default function LearnPage() {
             >
               <ResultsView
                 answers={answers}
+                queue={queue}
                 totalWords={queue.length}
                 onContinue={() => { fetchStats(); setView('dashboard') }}
                 onRestart={startSession}
@@ -294,12 +309,14 @@ export default function LearnPage() {
 // ── Dashboard ─────────────────────────────────────────────────────────────────
 
 function Dashboard({
-  stats, loading, onStart, startingSession,
+  stats, loading, onStart, startingSession, practiceMode, setPracticeMode,
 }: {
   stats: StatsData | null
   loading: boolean
-  onStart: () => void
+  onStart: (mode?: PracticeMode) => void
   startingSession: boolean
+  practiceMode: PracticeMode
+  setPracticeMode: (m: PracticeMode) => void
 }) {
   const p = stats?.progress
   const accuracy = stats?.recentSessions && stats.recentSessions.length > 0
@@ -433,7 +450,7 @@ function Dashboard({
 
           {/* Start session */}
           <motion.button
-            onClick={onStart}
+            onClick={() => onStart(practiceMode)}
             disabled={startingSession}
             whileHover={{ scale: 1.02 }}
             whileTap={{ scale: 0.98 }}
@@ -454,6 +471,31 @@ function Dashboard({
               )}
             </span>
           </motion.button>
+
+          {/* Practice Mode Selector */}
+          <div className="p-4 rounded-xl border" style={{ background: 'rgba(10,26,53,0.6)', borderColor: 'rgba(30,58,110,0.6)' }}>
+            <h3 className="text-xs font-bold text-muted uppercase tracking-wider mb-3">Practice Mode</h3>
+            <div className="grid grid-cols-5 gap-2">
+              {PRACTICE_MODES.map(pm => (
+                <button
+                  key={pm.mode}
+                  onClick={() => setPracticeMode(pm.mode)}
+                  className="flex flex-col items-center gap-1.5 p-2.5 rounded-xl border text-center transition-all"
+                  style={{
+                    background: practiceMode === pm.mode ? `${pm.color}22` : 'rgba(15,39,89,0.4)',
+                    borderColor: practiceMode === pm.mode ? pm.color : 'rgba(30,58,110,0.5)',
+                    transform: practiceMode === pm.mode ? 'scale(1.04)' : 'scale(1)',
+                  }}
+                >
+                  <span className="text-lg">{pm.icon}</span>
+                  <span className="text-[10px] font-bold leading-tight" style={{ color: practiceMode === pm.mode ? pm.color : 'rgba(255,255,255,0.6)' }}>{pm.label}</span>
+                </button>
+              ))}
+            </div>
+            <p className="text-[10px] text-muted/50 mt-2 text-center">
+              {PRACTICE_MODES.find(m => m.mode === practiceMode)?.desc}
+            </p>
+          </div>
 
           {/* Exercise types grid */}
           <div className="p-4 rounded-xl border"
@@ -700,13 +742,16 @@ function PracticeView({
 // ── Results View ──────────────────────────────────────────────────────────────
 
 function ResultsView({
-  answers, totalWords, onContinue, onRestart,
+  answers, queue, totalWords, onContinue, onRestart,
 }: {
   answers: SessionAnswer[]
+  queue: WordItem[]
   totalWords: number
   onContinue: () => void
   onRestart: () => void
 }) {
+  // Build word lookup from queue
+  const wordMap = new Map(queue.map(w => [w.id, w]))
   const totalXP = answers.reduce((s, a) => s + a.xpEarned, 0)
   const sessionBonus = 20
   const correctCount = answers.filter(a => a.correct).length
@@ -835,10 +880,56 @@ function ResultsView({
         </motion.div>
       )}
 
+      {/* Word-by-word summary */}
+      {answers.length > 0 && (
+        <motion.div
+          initial={{ y: 20, opacity: 0 }}
+          animate={{ y: 0, opacity: 1 }}
+          transition={{ delay: 0.55 }}
+          className="p-4 rounded-xl border mb-5 text-left"
+          style={{ background: 'rgba(15,39,89,0.4)', borderColor: 'rgba(30,58,110,0.6)' }}
+        >
+          <p className="text-[10px] font-bold text-muted uppercase tracking-wider mb-2">Words Practiced This Session</p>
+          <div className="space-y-1">
+            {answers.map((a, i) => {
+              const word = wordMap.get(a.wordId)
+              if (!word) return null
+              const meta = EXERCISE_META[a.exerciseType]
+              return (
+                <div key={i} className="flex items-center gap-2 text-xs py-1">
+                  <span className={a.correct ? 'text-green-400' : 'text-red-400'}>
+                    {a.correct ? '✓' : '✗'}
+                  </span>
+                  <span className="font-serif text-base" style={{ color: a.correct ? '#ef4444' : 'rgba(239,68,68,0.5)' }}>{word.simplified}</span>
+                  <span className="text-accent/60">{word.pinyin}</span>
+                  <span className="text-muted/50 flex-1 truncate">{word.meaning}</span>
+                  <span className="text-muted/30">{meta?.icon}</span>
+                </div>
+              )
+            })}
+          </div>
+        </motion.div>
+      )}
+
       <motion.div
         initial={{ y: 20, opacity: 0 }}
         animate={{ y: 0, opacity: 1 }}
-        transition={{ delay: 0.6 }}
+        transition={{ delay: 0.65 }}
+        className="mb-3"
+      >
+        <Link
+          href="/chat"
+          className="w-full py-3 rounded-xl font-bold text-sm flex items-center justify-center gap-2"
+          style={{ background: 'rgba(41,194,230,0.12)', color: '#29c2e6', border: '1px solid rgba(41,194,230,0.3)' }}
+        >
+          <MessageSquare className="w-4 h-4" /> Review with Skippy
+        </Link>
+      </motion.div>
+
+      <motion.div
+        initial={{ y: 20, opacity: 0 }}
+        animate={{ y: 0, opacity: 1 }}
+        transition={{ delay: 0.7 }}
         className="flex gap-3"
       >
         <button onClick={onRestart}

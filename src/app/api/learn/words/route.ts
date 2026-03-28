@@ -14,6 +14,7 @@ const MAX_REVIEW_PER_SESSION = 10
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url)
   const language = searchParams.get('language') ?? 'zh'
+  const mode = searchParams.get('mode') ?? 'adaptive'
 
   try {
     // ── Seed vocabulary if needed ──────────────────────────────────────────
@@ -38,7 +39,7 @@ export async function GET(req: Request) {
 
     // ── Fetch review queue (due words) ─────────────────────────────────────
     const now = new Date()
-    const dueProgress = await prisma.langWordProgress.findMany({
+    let dueProgress = await prisma.langWordProgress.findMany({
       where: { language, nextReview: { lte: now } },
       orderBy: { nextReview: 'asc' },
       take: MAX_REVIEW_PER_SESSION,
@@ -51,6 +52,27 @@ export async function GET(req: Request) {
       select: { wordId: true },
     })
     const seenSet = new Set(seenWordIds.map((p) => p.wordId))
+
+    // In 'weak' mode, add low-accuracy review words beyond what's naturally due
+    if (mode === 'weak') {
+      const weakWords = await prisma.langWordProgress.findMany({
+        where: {
+          language,
+          totalAttempts: { gte: 3 },
+          repetitions: { gt: 0 },
+        },
+        include: { word: true },
+        take: 15,
+      })
+      // Add weak words that aren't already in dueProgress
+      const dueIds = new Set(dueProgress.map(p => p.wordId))
+      for (const p of weakWords) {
+        if (!dueIds.has(p.wordId) && p.totalAttempts > 0) {
+          const accuracy = p.totalCorrect / p.totalAttempts
+          if (accuracy < 0.65) dueProgress.push(p)
+        }
+      }
+    }
 
     const newWords = await prisma.langWord.findMany({
       where: {
@@ -93,6 +115,14 @@ export async function GET(req: Request) {
 
     const queue: QueueItem[] = []
 
+    // Mode-aware exercise type selection
+    function modeExerciseType(repetitions: number): ReturnType<typeof pickExerciseType> {
+      if (mode === 'flashcards') return 'flashcard'
+      if (mode === 'listening') return 'listening'
+      if (mode === 'typing') return Math.random() < 0.5 ? 'pinyin' : 'translate'
+      return pickExerciseType(repetitions)
+    }
+
     // Add review words
     for (const p of dueProgress) {
       const shuffled = meaningPool
@@ -119,7 +149,7 @@ export async function GET(req: Request) {
           totalCorrect: p.totalCorrect,
           totalAttempts: p.totalAttempts,
         },
-        exerciseType: pickExerciseType(p.repetitions),
+        exerciseType: modeExerciseType(p.repetitions),
         distractors,
         charDistractors,
       })
@@ -145,7 +175,7 @@ export async function GET(req: Request) {
         exPinyin: w.exPinyin,
         exMeaning: w.exMeaning,
         progress: null,
-        exerciseType: pickExerciseType(0),
+        exerciseType: modeExerciseType(0),
         distractors,
         charDistractors,
       })

@@ -8,7 +8,11 @@ export async function GET(req: Request) {
 
     const reminders = await prisma.reminder.findMany({
       where: pending === 'true' ? { isDone: false } : {},
-      orderBy: [{ isDone: 'asc' }, { dueDate: 'asc' }, { createdAt: 'desc' }],
+      orderBy: [
+        { isDone: 'asc' },
+        { dueDate: { sort: 'asc', nulls: 'last' } },
+        { createdAt: 'desc' },
+      ],
     })
 
     return NextResponse.json(reminders)

@@ -250,37 +250,46 @@ export async function extractRemindersFromConversation(
   try {
     // Quick pre-scan to avoid unnecessary API calls
     const userText = messages.filter(m => m.role === 'user').map(m => m.content).join(' ')
-    const hasReminderLanguage = /\bremind\b|remember\s+(this|that|to|me)|don.?t\s+(let\s+me\s+)?forget|need\s+to\s+do|make\s+sure\s+(I|to)|can\s+you\s+remind|will\s+you\s+remind|i\s+want\s+to\s+remember|keep\s+(this\s+)?in\s+mind|note\s+this|save\s+this|add\s+(it|this)\s+to\s+my|by\s+(tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday|next\s+week|end\s+of)/i.test(userText)
+    const hasReminderLanguage = /\bremind\b|\breminder\b|remember\s+(this|that|to|me)|don.?t\s+(let\s+me\s+)?forget|need\s+to\s+do|make\s+sure\s+(I|to)|can\s+you\s+remind|will\s+you\s+remind|set\s+a\s+reminder|i\s+want\s+to\s+remember|keep\s+(this\s+)?in\s+mind|note\s+this|save\s+this|add\s+(it|this)\s+to\s+my|by\s+(tomorrow|tonight|monday|tuesday|wednesday|thursday|friday|saturday|sunday|next\s+week|end\s+of)/i.test(userText)
     if (!hasReminderLanguage) return
 
-    const today = new Date().toISOString().slice(0, 10)
+    const now = new Date()
+    const today = now.toISOString().slice(0, 10)
+    const tomorrowDate = new Date(now)
+    tomorrowDate.setDate(tomorrowDate.getDate() + 1)
+    const tomorrow = tomorrowDate.toISOString().slice(0, 10)
 
     const response = await grok.chat.completions.create({
       model: GROK_MODEL,
       messages: [
         {
           role: 'system',
-          content: `You extract reminder and memory requests from conversations. Today is ${today}.
+          content: `You extract reminder requests from conversations. Today is ${today}.
 
-Look for messages where the user wants something remembered or done later:
+Look for messages where the user wants to be reminded about something later:
 - "remind me to X" / "remind me about X at 3pm"
-- "remember this" / "I want you to remember"
-- "don't forget" / "don't let me forget"
-- "keep this in mind" / "note this" / "save this"
+- "don't let me forget" / "don't forget"
 - "I need to do X by [date/time]"
 - "set a reminder for X"
-- Any explicit request to store or recall information later
+- Any explicit request to be reminded
 
-Parse relative dates AND times relative to today (${today}):
-- "tomorrow at 9am" → next day at 09:00
-- "next Friday at 3pm" → that Friday at 15:00
-- "in 3 days" → 3 days from today at 09:00 (default morning)
-- "tonight" → today at 20:00
-- If no time specified → use null for time, just the date
+IMPORTANT date/time parsing rules (today = ${today}, tomorrow = ${tomorrow}):
+- "tomorrow at 9am" → ${tomorrow}T09:00:00
+- "tomorrow night" / "tomorrow evening" / "tomorrow at night" → ${tomorrow}T20:00:00
+- "tomorrow afternoon" → ${tomorrow}T15:00:00
+- "tomorrow morning" → ${tomorrow}T09:00:00
+- "tonight" / "this evening" → ${today}T20:00:00
+- "this afternoon" → ${today}T15:00:00
+- "tomorrow at 8pm" → ${tomorrow}T20:00:00
+- "next Friday at 3pm" → compute that exact Friday at 15:00
+- "in 3 days" → 3 days from ${today} at 09:00
+- "by [date]" with no time → that date at 09:00
+- If user gives a specific time like "8pm" → use 20:00:00
+- If no time at all specified → return YYYY-MM-DD with no time portion
 
-Return JSON: {"reminders": [{"content": "concise description", "dueDate": "YYYY-MM-DDTHH:mm:ss or YYYY-MM-DD or null", "timeframeLabel": "natural label like 'tomorrow at 9am' or null"}]}
+Return JSON: {"reminders": [{"content": "concise reminder text", "dueDate": "YYYY-MM-DDTHH:mm:ss or YYYY-MM-DD or null", "timeframeLabel": "human-readable like 'tomorrow night at 8pm'"}]}
 
-Extract ALL such requests. Return ONLY valid JSON. If none found, return {"reminders": []}.`,
+Extract ALL reminder requests. Return ONLY valid JSON. If none found, return {"reminders": []}.`,
         },
         ...(messages.filter(m => m.role === 'user') as ChatCompletionMessageParam[]),
         {
@@ -290,7 +299,7 @@ Extract ALL such requests. Return ONLY valid JSON. If none found, return {"remin
       ],
       response_format: { type: 'json_object' },
       temperature: 0.1,
-      max_tokens: 400,
+      max_tokens: 500,
     })
 
     const text = response.choices[0]?.message?.content || '{}'
@@ -310,14 +319,15 @@ Extract ALL such requests. Return ONLY valid JSON. If none found, return {"remin
     for (const r of reminders) {
       if (!r.content?.trim()) continue
       const normalized = r.content.trim().slice(0, 300)
-      // Skip if a sufficiently similar pending reminder already exists
-      const isDupe = existingContents.some(c => wordJaccard(c, normalized) >= 0.55)
+      // Skip only near-identical reminders (lowered threshold to avoid over-blocking)
+      const isDupe = existingContents.some(c => wordJaccard(c, normalized) >= 0.40)
       if (isDupe) continue
 
       let dueDate: Date | null = null
       if (r.dueDate && isValidFutureDate(r.dueDate)) {
         dueDate = new Date(r.dueDate)
       }
+
       await prisma.reminder.create({
         data: {
           content: normalized,
@@ -327,8 +337,32 @@ Extract ALL such requests. Return ONLY valid JSON. If none found, return {"remin
           sourceId: conversationId,
         },
       })
-      // Add to local pool so subsequent items in same batch don't dupe each other
       existingContents.push(normalized)
+
+      // ── Pre-reminder scatter ──────────────────────────────────────────────
+      // If the reminder has a specific time and is >3 hours away, create an
+      // earlier heads-up reminder 2 hours before so reminders scatter in time.
+      if (dueDate) {
+        const hasSpecificTime = dueDate.getHours() !== 0 || dueDate.getMinutes() !== 0
+        const hoursUntilDue = (dueDate.getTime() - Date.now()) / 3_600_000
+        if (hasSpecificTime && hoursUntilDue > 3) {
+          const preRemindDate = new Date(dueDate.getTime() - 2 * 3_600_000)
+          const preContent = `Heads up: "${normalized}" is coming up in 2 hours`
+          const preIsDupe = existingContents.some(c => wordJaccard(c, preContent) >= 0.40)
+          if (!preIsDupe && isValidFutureDate(preRemindDate.toISOString())) {
+            await prisma.reminder.create({
+              data: {
+                content: preContent.slice(0, 300),
+                dueDate: preRemindDate,
+                timeframeLabel: `2 hours before: ${r.timeframeLabel || 'reminder'}`,
+                sourceType: 'chat',
+                sourceId: conversationId,
+              },
+            })
+            existingContents.push(preContent)
+          }
+        }
+      }
     }
   } catch (e) {
     console.error('Failed to extract reminders:', e)
@@ -474,10 +508,12 @@ export async function getUserProfile() {
 // ─── System prompt ────────────────────────────────────────────────────────────
 
 export async function buildSystemPrompt(): Promise<string> {
-  const tomorrow = new Date()
-  tomorrow.setDate(tomorrow.getDate() + 1)
+  // Surface reminders due through end of tomorrow (catches "tomorrow night" cases)
+  const endOfTomorrow = new Date()
+  endOfTomorrow.setDate(endOfTomorrow.getDate() + 1)
+  endOfTomorrow.setHours(23, 59, 59, 999)
 
-  const [memories, profile, recentNotes, recentDebates, pendingReminders, recentConversations, pendingTodos, langProgress] = await Promise.all([
+  const [memories, profile, recentNotes, recentDebates, pendingReminders, recentConversations, pendingTodos, langProgress, learnedWordsList] = await Promise.all([
     getRelevantMemories('', 30),
     getUserProfile(),
     prisma.note.findMany({
@@ -494,14 +530,14 @@ export async function buildSystemPrompt(): Promise<string> {
         rounds: { orderBy: { roundNumber: 'desc' }, take: 1, select: { userScore: true, aiScore: true } },
       },
     }),
-    // Only surface actionable/overdue reminders — due by tomorrow or no date
+    // Surface overdue + today + tomorrow reminders so Skippy is always aware
     prisma.reminder.findMany({
       where: {
         isDone: false,
-        OR: [{ dueDate: { lte: tomorrow } }, { dueDate: null }],
+        OR: [{ dueDate: { lte: endOfTomorrow } }, { dueDate: null }],
       },
       orderBy: [{ dueDate: 'asc' }, { createdAt: 'asc' }],
-      take: 5,
+      take: 8,
     }),
     // Recent conversations with summaries — the core continuity mechanism
     prisma.conversation.findMany({
@@ -518,6 +554,13 @@ export async function buildSystemPrompt(): Promise<string> {
     }),
     // Mandarin learning progress
     prisma.langProgress.findUnique({ where: { id: 'singleton_zh' } }).catch(() => null),
+    // Actual words the user has practiced — so Skippy knows exactly what they know
+    prisma.langWordProgress.findMany({
+      where: { language: 'zh', repetitions: { gt: 0 } },
+      orderBy: [{ updatedAt: 'desc' }],
+      take: 50,
+      include: { word: { select: { simplified: true, pinyin: true, meaning: true, hsk: true } } },
+    }).catch(() => [] as Array<{ repetitions: number; interval: number; totalCorrect: number; totalAttempts: number; word: { simplified: string; pinyin: string; meaning: string; hsk: number } }>),
   ])
 
   const profileSection = profile.about
@@ -594,14 +637,40 @@ export async function buildSystemPrompt(): Promise<string> {
 
   let langSection = ''
   if (langProgress) {
-    langSection = `\n\n## Mandarin Chinese learning progress (in-app language system):
-- Total language XP: ${langProgress.totalXP}
-- Words learned: ${langProgress.wordsLearned} · Words mastered: ${langProgress.wordsMastered}
-- Sessions completed: ${langProgress.sessionsCompleted} · Current streak: ${langProgress.currentStreak} day${langProgress.currentStreak !== 1 ? 's' : ''}
-- Longest streak: ${langProgress.longestStreak} days
-- Last practice: ${langProgress.lastPracticeDate || 'never'}
+    const level = Math.floor(langProgress.totalXP / 500) + 1
+    const levelLabel = level <= 2 ? 'Beginner (HSK 1)' : level <= 5 ? 'Elementary (HSK 1–2)' : level <= 10 ? 'Pre-intermediate (HSK 2–3)' : 'Intermediate+'
 
-Use this context to: celebrate milestones, motivate practice, quiz them on vocabulary in conversation, help them study before tests, correct Chinese writing, and reference their progress naturally when relevant. If they write Chinese characters, acknowledge it and award encouragement. If they ask you to quiz them or help them study, use HSK-level vocabulary appropriate to their progress.`
+    // Build detailed word knowledge section
+    type WP = { repetitions: number; interval: number; totalCorrect: number; totalAttempts: number; word: { simplified: string; pinyin: string; meaning: string; hsk: number } }
+    const wl = learnedWordsList as WP[]
+    let wordKnowledge = ''
+    if (wl.length > 0) {
+      const recent = wl.slice(0, 25)
+      const weak = wl.filter(w => w.totalAttempts >= 3 && w.totalCorrect / Math.max(1, w.totalAttempts) < 0.6)
+      const strong = wl.filter(w => w.repetitions >= 5 && w.interval >= 14)
+
+      wordKnowledge = `\n- Total words in progress: ${wl.length}`
+      wordKnowledge += `\n- Recently studied: ${recent.map(w => `${w.word.simplified}(${w.word.pinyin}="${w.word.meaning}")`).join(', ')}`
+      if (strong.length > 0) {
+        wordKnowledge += `\n- Mastered words: ${strong.map(w => `${w.word.simplified}="${w.word.meaning}"`).join(', ')}`
+      }
+      if (weak.length > 0) {
+        wordKnowledge += `\n- Struggling with (review these!): ${weak.map(w => `${w.word.simplified}(${Math.round(w.totalCorrect / Math.max(1, w.totalAttempts) * 100)}% accuracy)`).join(', ')}`
+      }
+    }
+
+    langSection = `\n\n## Mandarin Chinese learning progress (Skippy Language Engine):
+- Level: ${level} — ${levelLabel} · Total XP: ${langProgress.totalXP}
+- Sessions completed: ${langProgress.sessionsCompleted} · Streak: ${langProgress.currentStreak} day${langProgress.currentStreak !== 1 ? 's' : ''} · Last practice: ${langProgress.lastPracticeDate || 'never'}
+- Words learned: ${langProgress.wordsLearned} · Mastered: ${langProgress.wordsMastered}${wordKnowledge}
+
+IMPORTANT: You know EXACTLY which words they have studied (listed above). When they ask you to "review", "quiz me", or "help me study":
+- Quiz them on the specific words listed, especially the struggling ones
+- Ask: "What does [character] mean?" or "How do you write [meaning] in pinyin?"
+- Give sentences using the words they know
+- Correct Chinese they write using words from their word list
+- Don't invent words they haven't learned yet — stick to their vocabulary
+- Celebrate progress and streaks naturally`
   }
 
   return `You are Skippy — a deeply personal AI assistant who knows the user better than anyone. You are intelligent, insightful, occasionally witty, and always genuinely helpful. You remember everything across all conversations.
