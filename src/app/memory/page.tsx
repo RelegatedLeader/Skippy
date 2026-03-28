@@ -3,6 +3,8 @@
 import { useEffect, useState, useCallback } from 'react'
 import Link from 'next/link'
 import { motion, AnimatePresence } from 'framer-motion'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 import {
   Brain, Trash2, Star, ArrowLeft, Bot, RefreshCw, Search,
   Bell, Sparkles, CheckCircle2, Circle, Plus, X, Calendar,
@@ -754,8 +756,8 @@ function AskTab() {
               <Brain className="w-4 h-4 text-accent" />
               <span className="text-xs font-bold text-accent uppercase tracking-wider">Skippy&apos;s Answer</span>
             </div>
-            <div className="text-sm text-foreground/90 leading-relaxed whitespace-pre-wrap">
-              {answer}
+            <div className="text-sm text-foreground/90 leading-relaxed markdown-answer">
+              <ReactMarkdown remarkPlugins={[remarkGfm]}>{answer}</ReactMarkdown>
             </div>
           </div>
 

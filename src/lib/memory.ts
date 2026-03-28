@@ -250,7 +250,7 @@ export async function extractRemindersFromConversation(
   try {
     // Quick pre-scan to avoid unnecessary API calls
     const userText = messages.filter(m => m.role === 'user').map(m => m.content).join(' ')
-    const hasReminderLanguage = /remind\s+me|remember\s+to|don.?t\s+forget|need\s+to\s+do|make\s+sure\s+(I|to)|by\s+(tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday|next\s+week|end\s+of)/i.test(userText)
+    const hasReminderLanguage = /\bremind\b|remember\s+(this|that|to|me)|don.?t\s+(let\s+me\s+)?forget|need\s+to\s+do|make\s+sure\s+(I|to)|can\s+you\s+remind|will\s+you\s+remind|i\s+want\s+to\s+remember|keep\s+(this\s+)?in\s+mind|note\s+this|save\s+this|add\s+(it|this)\s+to\s+my|by\s+(tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday|next\s+week|end\s+of)/i.test(userText)
     if (!hasReminderLanguage) return
 
     const today = new Date().toISOString().slice(0, 10)
@@ -260,15 +260,22 @@ export async function extractRemindersFromConversation(
       messages: [
         {
           role: 'system',
-          content: `You extract explicit reminder requests from conversations. Today's date is ${today}.
+          content: `You extract reminder and memory requests from conversations. Today's date is ${today}.
 
-Look for messages where the user explicitly asks to be reminded: "remind me to X", "don't let me forget Y", "I need to do Z by [date]", "can you remember to tell me...", etc.
+Look for messages where the user wants something remembered or done later:
+- "remind me to X" / "remind me about X"
+- "remember this" / "remember that" / "I want you to remember"
+- "don't forget" / "don't let me forget"
+- "keep this in mind" / "note this" / "save this"
+- "I need to do X by [date]"
+- "can you remind me" / "will you remind me"
+- Any explicit request to store or recall information later
 
 Parse relative dates ("tomorrow", "next Friday", "in 3 days", "end of month") relative to today (${today}).
 
-Return JSON: {"reminders": [{"content": "...", "dueDate": "YYYY-MM-DD or null", "timeframeLabel": "by Friday or null"}]}
+Return JSON: {"reminders": [{"content": "concise description of what to remember/do", "dueDate": "YYYY-MM-DD or null", "timeframeLabel": "natural label like 'by Friday' or null"}]}
 
-Only include EXPLICIT reminder requests, not passing mentions of tasks. Return ONLY valid JSON. If none found, return {"reminders": []}.`,
+Extract ALL such requests. Return ONLY valid JSON. If none found, return {"reminders": []}.`,
         },
         ...(messages.filter(m => m.role === 'user') as ChatCompletionMessageParam[]),
         {

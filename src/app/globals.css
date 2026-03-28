@@ -303,3 +303,26 @@ body {
 .tiptap-editor ul[data-type="taskList"] li[data-checked="true"] > div {
   text-decoration: line-through; opacity: 0.5;
 }
+
+/* Markdown answer (Ask Skippy tab) */
+.markdown-answer p { margin-bottom: 0.6em; }
+.markdown-answer p:last-child { margin-bottom: 0; }
+.markdown-answer strong { color: #29c2e6; font-weight: 600; }
+.markdown-answer em { opacity: 0.85; }
+.markdown-answer h1, .markdown-answer h2, .markdown-answer h3 {
+  font-weight: 700; color: #e2e8f0; margin: 0.8em 0 0.3em;
+}
+.markdown-answer h1 { font-size: 1.1em; }
+.markdown-answer h2 { font-size: 1em; }
+.markdown-answer h3 { font-size: 0.95em; }
+.markdown-answer ul, .markdown-answer ol { padding-left: 1.4em; margin: 0.4em 0; }
+.markdown-answer li { margin: 0.2em 0; }
+.markdown-answer code:not(pre code) {
+  background: rgba(41,194,230,0.1); color: #7ee8fa;
+  border-radius: 3px; padding: 0 4px; font-size: 0.85em;
+}
+.markdown-answer blockquote {
+  border-left: 2px solid rgba(41,194,230,0.4);
+  padding-left: 0.8em; color: rgba(226,232,240,0.7); margin: 0.5em 0;
+}
+.markdown-answer hr { border: none; border-top: 1px solid rgb(30 58 110); margin: 0.8em 0; }
