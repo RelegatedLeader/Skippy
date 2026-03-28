@@ -11,7 +11,7 @@ import { cn } from '@/lib/utils'
 import { Sidebar } from '@/components/layout/Sidebar'
 
 interface DebateRound {
-  id: string; roundNumber: number; userArgument: string; aiRebuttal: string; userScore: number; aiScore: number
+  id: string; roundNumber: number; userArgument: string; aiRebuttal: string; userScore: number; aiScore: number; usedModel?: string
 }
 interface Debate {
   id: string; topic: string; userStance: string; aiStance: string
@@ -166,10 +166,12 @@ export default function DebateSessionPage() {
                 <span className="flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-full border"
                   style={debate.model === 'claude'
                     ? { background: 'rgba(139,92,246,0.1)', borderColor: 'rgba(139,92,246,0.3)', color: '#8b5cf6' }
+                    : debate.model === 'auto'
+                    ? { background: 'rgba(168,85,247,0.1)', borderColor: 'rgba(168,85,247,0.3)', color: '#a855f7' }
                     : { background: 'rgba(41,194,230,0.1)', borderColor: 'rgba(41,194,230,0.3)', color: '#29c2e6' }
                   }>
                   <Cpu className="w-2.5 h-2.5" />
-                  {debate.model === 'claude' ? 'Claude' : 'Grok'}
+                  {debate.model === 'claude' ? 'Claude' : debate.model === 'auto' ? 'Auto · Best of Both' : 'Grok'}
                 </span>
               </div>
             </div>
@@ -375,6 +377,9 @@ export default function DebateSessionPage() {
 }
 
 function RoundRow({ round }: { round: DebateRound }) {
+  const modelColor = round.usedModel === 'claude' ? '#8b5cf6' : '#29c2e6'
+  const modelLabel = round.usedModel === 'claude' ? 'Claude' : round.usedModel === 'grok' ? 'Grok' : null
+
   return (
     <motion.div
       layout
@@ -396,7 +401,15 @@ function RoundRow({ round }: { round: DebateRound }) {
       <div className="rounded-2xl rounded-tr-sm p-4 bg-surface border border-accent/20 text-sm leading-relaxed relative overflow-hidden">
         <div className="absolute top-0 left-0 right-0 h-[2px] rounded-t-full"
           style={{ background: 'linear-gradient(90deg, #d4a028, #e8b84b)' }} />
-        <div className="text-[10px] font-bold text-accent/50 uppercase tracking-wider mb-2">Skippy · R{round.roundNumber}</div>
+        <div className="flex items-center justify-between mb-2">
+          <span className="text-[10px] font-bold text-accent/50 uppercase tracking-wider">Skippy · R{round.roundNumber}</span>
+          {modelLabel && (
+            <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full"
+              style={{ background: `${modelColor}12`, color: modelColor, border: `1px solid ${modelColor}30` }}>
+              via {modelLabel}
+            </span>
+          )}
+        </div>
         <p className="text-foreground/90">{round.aiRebuttal}</p>
         {/* Score delta */}
         <div className="flex items-center gap-2 mt-3 pt-2 border-t border-border">

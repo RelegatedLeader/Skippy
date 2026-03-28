@@ -57,6 +57,98 @@ USER_SCORE: [0-100]
 AI_SCORE: [0-100]
 ROUND_VERDICT: [one of: "user_stronger" | "ai_stronger" | "tied"]`
 
+  const parseResponse = (raw: string) => {
+    const rebMatch = raw.match(/REBUTTAL:\s*([\s\S]*?)(?=USER_SCORE:|$)/)
+    const userScoreMatch = raw.match(/USER_SCORE:\s*(\d+)/)
+    const aiScoreMatch = raw.match(/AI_SCORE:\s*(\d+)/)
+    return {
+      rebuttal: rebMatch ? rebMatch[1].trim() : raw,
+      userScore: Math.min(100, Math.max(0, parseInt(userScoreMatch?.[1] || '50'))),
+      aiScore: Math.min(100, Math.max(0, parseInt(aiScoreMatch?.[1] || '50'))),
+    }
+  }
+
+  // ── Auto mode: run both models in parallel, judge the winner ──────────────
+  if (model === 'auto') {
+    try {
+      const [grokRaw, claudeRaw] = await Promise.all([
+        grok.chat.completions.create({
+          model: GROK_MODEL,
+          stream: false,
+          messages: [
+            { role: 'system', content: systemPrompt },
+            { role: 'user', content: prompt },
+          ],
+          temperature: 0.7,
+          max_tokens: 500,
+        }).then((r) => r.choices[0]?.message?.content || '').catch(() => ''),
+
+        claudeAvailable()
+          ? anthropic.messages.create({
+              model: CLAUDE_MODEL,
+              max_tokens: 500,
+              system: systemPrompt,
+              messages: [{ role: 'user', content: prompt }],
+            }).then((r) => (r.content[0]?.type === 'text' ? r.content[0].text : '')).catch(() => '')
+          : Promise.resolve(''),
+      ])
+
+      let usedModel: 'grok' | 'claude' = 'claude'
+      let winnerRaw = claudeRaw || grokRaw
+
+      if (grokRaw && claudeRaw) {
+        // Extract just the rebuttals for judging
+        const getRebuttal = (raw: string) => {
+          const m = raw.match(/REBUTTAL:\s*([\s\S]*?)(?=USER_SCORE:|$)/)
+          return m ? m[1].trim() : raw
+        }
+
+        const judgeRes = await grok.chat.completions.create({
+          model: GROK_MODEL,
+          messages: [
+            { role: 'system', content: 'You are an objective debate judge. Reply with ONLY the letter "A" or "B".' },
+            {
+              role: 'user',
+              content: `Which rebuttal is stronger, more specific, and more persuasive?\n\nA:\n${getRebuttal(grokRaw)}\n\nB:\n${getRebuttal(claudeRaw)}\n\nReply ONLY "A" or "B".`,
+            },
+          ],
+          temperature: 0.1,
+          max_tokens: 5,
+        }).catch(() => null)
+
+        const pick = judgeRes?.choices[0]?.message?.content?.trim().toUpperCase() || 'B'
+        if (pick.startsWith('A')) {
+          usedModel = 'grok'
+          winnerRaw = grokRaw
+        }
+      } else if (grokRaw) {
+        usedModel = 'grok'
+        winnerRaw = grokRaw
+      }
+
+      const { rebuttal, userScore, aiScore } = parseResponse(winnerRaw)
+
+      await prisma.debateRound.update({
+        where: { id: round.id },
+        data: { aiRebuttal: rebuttal, userScore, aiScore, usedModel },
+      })
+      await prisma.debate.update({ where: { id: debate.id }, data: { updatedAt: new Date() } })
+
+      return new Response(winnerRaw, {
+        headers: {
+          'Content-Type': 'text/plain; charset=utf-8',
+          'Cache-Control': 'no-cache',
+          'X-Round-Id': round.id,
+          'X-Used-Model': usedModel,
+        },
+      })
+    } catch (e) {
+      console.error('Auto mode debate round failed:', e)
+      return new Response('Auto mode failed', { status: 500 })
+    }
+  }
+
+  // ── Streaming mode: Claude or Grok ───────────────────────────────────────
   let accumulated = ''
   const encoder = new TextEncoder()
 
@@ -99,22 +191,12 @@ ROUND_VERDICT: [one of: "user_stronger" | "ai_stronger" | "tied"]`
         controller.close()
 
         try {
-          const rebMatch = accumulated.match(/REBUTTAL:\s*([\s\S]*?)(?=USER_SCORE:|$)/)
-          const userScoreMatch = accumulated.match(/USER_SCORE:\s*(\d+)/)
-          const aiScoreMatch = accumulated.match(/AI_SCORE:\s*(\d+)/)
-
-          const rebuttal = rebMatch ? rebMatch[1].trim() : accumulated
-          const userScore = Math.min(100, Math.max(0, parseInt(userScoreMatch?.[1] || '50')))
-          const aiScore = Math.min(100, Math.max(0, parseInt(aiScoreMatch?.[1] || '50')))
-
+          const { rebuttal, userScore, aiScore } = parseResponse(accumulated)
           await prisma.debateRound.update({
             where: { id: round.id },
             data: { aiRebuttal: rebuttal, userScore, aiScore },
           })
-          await prisma.debate.update({
-            where: { id: debate.id },
-            data: { updatedAt: new Date() },
-          })
+          await prisma.debate.update({ where: { id: debate.id }, data: { updatedAt: new Date() } })
         } catch (e) {
           console.error('Failed to save debate round:', e)
         }

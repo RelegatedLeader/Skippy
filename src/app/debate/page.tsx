@@ -7,11 +7,12 @@ import { Swords, Plus, Trophy, Equal, Trash2, Clock, ChevronRight, Bot, Shield, 
 import { Sidebar } from '@/components/layout/Sidebar'
 import { cn, formatRelativeTime } from '@/lib/utils'
 
-type DebateModel = 'grok' | 'claude'
+type DebateModel = 'grok' | 'claude' | 'auto'
 
-const MODEL_OPTIONS: { id: DebateModel; label: string; desc: string; color: string }[] = [
-  { id: 'grok',   label: 'Grok',   desc: 'xAI — fast & assertive',     color: '#29c2e6' },
-  { id: 'claude', label: 'Claude', desc: 'Anthropic — deep reasoning', color: '#8b5cf6' },
+const MODEL_OPTIONS: { id: DebateModel; label: string; desc: string; color: string; auto?: boolean }[] = [
+  { id: 'grok',   label: 'Grok',   desc: 'xAI — fast & assertive',       color: '#29c2e6' },
+  { id: 'claude', label: 'Claude', desc: 'Anthropic — deep reasoning',   color: '#8b5cf6' },
+  { id: 'auto',   label: 'Auto',   desc: 'Best of Grok + Claude',        color: '#a855f7', auto: true },
 ]
 
 interface Debate {
@@ -191,7 +192,9 @@ export default function DebatePage() {
                               color: m.color,
                             } : {}}
                           >
-                            <span className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: m.color }} />
+                            {m.auto
+                              ? <span className="flex gap-0.5 items-center"><span className="w-1 h-2 rounded-l-full bg-[#29c2e6]" /><span className="w-1 h-2 rounded-r-full bg-[#8b5cf6]" /></span>
+                              : <span className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: m.color }} />}
                             <span>{m.label}</span>
                             <span className="text-[10px] opacity-60 hidden sm:block">{m.desc}</span>
                           </button>
@@ -303,7 +306,7 @@ export default function DebatePage() {
                               )}
                               <span className="text-[10px] text-muted/40 ml-auto flex items-center gap-1.5">
                               <Cpu className="w-2.5 h-2.5" />
-                              {d.model === 'claude' ? 'Claude' : 'Grok'}
+                              {d.model === 'claude' ? 'Claude' : d.model === 'auto' ? 'Auto' : 'Grok'}
                               <span className="opacity-40">·</span>
                               {d.rounds.length} round{d.rounds.length !== 1 ? 's' : ''}
                             </span>

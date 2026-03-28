@@ -1,17 +1,93 @@
 /**
- * Unified AI streaming factory.
- * Routes to Grok (OpenAI-compat) or Claude (Anthropic) based on model param.
- * Always returns a raw ReadableStream of plain text chunks.
+ * Unified AI factory.
+ * Routes to Grok (OpenAI-compat), Claude (Anthropic), or Auto (best of both).
  */
 import { grok, GROK_MODEL } from './grok'
 import { anthropic, CLAUDE_MODEL, claudeAvailable } from './claude'
 
-export type AIModel = 'grok' | 'claude'
+export type AIModel = 'grok' | 'claude' | 'auto'
 
 export interface StreamOptions {
   systemPrompt: string
   messages: Array<{ role: string; content: string }>
   onChunk?: (chunk: string) => void
+}
+
+/** Internal single-model completion — never 'auto' */
+async function completionFor(
+  model: 'grok' | 'claude',
+  options: { systemPrompt: string; userMessage: string; temperature?: number; maxTokens?: number }
+): Promise<string> {
+  const { systemPrompt, userMessage, temperature = 0.75, maxTokens = 400 } = options
+
+  if (model === 'claude' && claudeAvailable()) {
+    const res = await anthropic.messages.create({
+      model: CLAUDE_MODEL,
+      max_tokens: maxTokens,
+      system: systemPrompt,
+      messages: [{ role: 'user', content: userMessage }],
+    })
+    const block = res.content[0]
+    return block.type === 'text' ? block.text.trim() : ''
+  }
+
+  const res = await grok.chat.completions.create({
+    model: GROK_MODEL,
+    messages: [
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: userMessage },
+    ],
+    temperature,
+    max_tokens: maxTokens,
+  })
+  return res.choices[0].message.content?.trim() || ''
+}
+
+/**
+ * Runs both Grok and Claude in parallel, asks Grok to judge which response is stronger,
+ * and returns the winner with a model label.
+ */
+export async function getBestCompletion(
+  options: { systemPrompt: string; userMessage: string; temperature?: number; maxTokens?: number }
+): Promise<{ text: string; usedModel: 'grok' | 'claude' }> {
+  const [grokResult, claudeResult] = await Promise.all([
+    completionFor('grok', options).catch(() => ''),
+    claudeAvailable() ? completionFor('claude', options).catch(() => '') : Promise.resolve(''),
+  ])
+
+  // Fall back if one model is unavailable
+  if (!claudeResult || !claudeAvailable()) return { text: grokResult, usedModel: 'grok' }
+  if (!grokResult) return { text: claudeResult, usedModel: 'claude' }
+
+  // Grok judges both responses (fast, and won't systematically favor Claude)
+  const judgeRes = await grok.chat.completions.create({
+    model: GROK_MODEL,
+    messages: [
+      { role: 'system', content: 'You are an objective judge. Respond with ONLY the letter "A" or "B".' },
+      {
+        role: 'user',
+        content: `Which response is stronger, more specific, and more insightful?\n\nA:\n${grokResult}\n\nB:\n${claudeResult}\n\nReply ONLY "A" or "B".`,
+      },
+    ],
+    temperature: 0.1,
+    max_tokens: 5,
+  }).catch(() => null)
+
+  const pick = judgeRes?.choices[0]?.message?.content?.trim().toUpperCase() || 'B'
+  const useGrok = pick.startsWith('A')
+  return { text: useGrok ? grokResult : claudeResult, usedModel: useGrok ? 'grok' : 'claude' }
+}
+
+/** Non-streaming single-turn completion — handles 'auto' by running getBestCompletion */
+export async function getAICompletion(
+  model: AIModel,
+  options: { systemPrompt: string; userMessage: string; temperature?: number; maxTokens?: number }
+): Promise<string> {
+  if (model === 'auto') {
+    const { text } = await getBestCompletion(options)
+    return text
+  }
+  return completionFor(model, options)
 }
 
 export async function streamAIResponse(
@@ -21,7 +97,11 @@ export async function streamAIResponse(
   const { systemPrompt, messages } = options
   const encoder = new TextEncoder()
 
-  if (model === 'claude') {
+  // 'auto' streaming: use Claude if available (better for long-form reasoning), else Grok
+  const resolvedModel: 'grok' | 'claude' =
+    model === 'auto' ? (claudeAvailable() ? 'claude' : 'grok') : model
+
+  if (resolvedModel === 'claude') {
     if (!claudeAvailable()) {
       throw new Error('Claude API key not configured. Add ANTHROPIC_API_KEY to .env')
     }
@@ -77,36 +157,6 @@ export async function streamAIResponse(
       }
     },
   })
-}
-
-/** Non-streaming single-turn completion — use for stance generation, conclusions, etc. */
-export async function getAICompletion(
-  model: AIModel,
-  options: { systemPrompt: string; userMessage: string; temperature?: number; maxTokens?: number }
-): Promise<string> {
-  const { systemPrompt, userMessage, temperature = 0.75, maxTokens = 400 } = options
-
-  if (model === 'claude' && claudeAvailable()) {
-    const res = await anthropic.messages.create({
-      model: CLAUDE_MODEL,
-      max_tokens: maxTokens,
-      system: systemPrompt,
-      messages: [{ role: 'user', content: userMessage }],
-    })
-    const block = res.content[0]
-    return block.type === 'text' ? block.text.trim() : ''
-  }
-
-  const res = await grok.chat.completions.create({
-    model: GROK_MODEL,
-    messages: [
-      { role: 'system', content: systemPrompt },
-      { role: 'user', content: userMessage },
-    ],
-    temperature,
-    max_tokens: maxTokens,
-  })
-  return res.choices[0].message.content?.trim() || ''
 }
 
 export { claudeAvailable }

@@ -86,6 +86,7 @@ model DebateRound {
   aiRebuttal   String   @default("")
   userScore    Int      @default(50) // user confidence 0–100
   aiScore      Int      @default(50) // ai confidence 0–100
+  usedModel    String?  // "grok" | "claude" — which model won this round (auto mode only)
   createdAt    DateTime @default(now())
 }
 
