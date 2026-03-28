@@ -4,6 +4,10 @@ const nextConfig = {
   // that includes all dependencies in a single directory
   output: process.env.BUILD_STANDALONE === '1' ? 'standalone' : undefined,
 
+  // Allow tunnel hosts (localtunnel, ngrok) so phone can reach dev server
+  // Safe: still protected by auth middleware
+  allowedDevOrigins: ['*.loca.lt', '*.ngrok-free.app', '*.ngrok.io'],
+
   // Reduce bundle size in production
   compress: true,
 

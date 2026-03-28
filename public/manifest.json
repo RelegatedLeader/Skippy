@@ -1,27 +1,45 @@
 {
-  "name": "Skippy",
+  "name": "Skippy — Your Personal AI",
   "short_name": "Skippy",
   "description": "Your personal AI that remembers everything and grows with you.",
   "start_url": "/",
+  "id": "/",
   "display": "standalone",
+  "display_override": ["window-controls-overlay", "standalone"],
   "background_color": "#060d1a",
-  "theme_color": "#060d1a",
+  "theme_color": "#7c3aed",
   "orientation": "portrait-primary",
   "scope": "/",
+  "lang": "en",
+  "categories": ["productivity", "utilities"],
   "icons": [
     {
       "src": "/img/skippyENHANCED3D-removebg.png",
       "sizes": "192x192",
       "type": "image/png",
-      "purpose": "any maskable"
+      "purpose": "any"
     },
     {
       "src": "/img/skippyENHANCED3D-removebg.png",
       "sizes": "512x512",
       "type": "image/png",
-      "purpose": "any maskable"
+      "purpose": "maskable"
     }
   ],
-  "categories": ["productivity", "utilities"],
-  "lang": "en"
+  "shortcuts": [
+    {
+      "name": "Chat",
+      "short_name": "Chat",
+      "description": "Open a new chat with Skippy",
+      "url": "/chat",
+      "icons": [{ "src": "/img/skippyENHANCED3D-removebg.png", "sizes": "96x96" }]
+    },
+    {
+      "name": "Todos",
+      "short_name": "Todos",
+      "description": "View your todos",
+      "url": "/todos",
+      "icons": [{ "src": "/img/skippyENHANCED3D-removebg.png", "sizes": "96x96" }]
+    }
+  ]
 }

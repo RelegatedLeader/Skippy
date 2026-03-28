@@ -1,0 +1,213 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Conversation {
+  id        String    @id @default(cuid())
+  title     String    @default("New Chat")
+  model     String    @default("grok")
+  summary   String?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  messages  Message[]
+}
+
+model Message {
+  id             String       @id @default(cuid())
+  role           String
+  content        String
+  createdAt      DateTime     @default(now())
+  conversationId String
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+}
+
+model Memory {
+  id          String   @id @default(cuid())
+  category    String
+  content     String
+  importance  Int      @default(5)
+  sourceType  String?
+  sourceId    String?
+  sourceLabel String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  tags        String   @default("[]")
+}
+
+model Reminder {
+  id             String    @id @default(cuid())
+  content        String
+  dueDate        DateTime?
+  timeframeLabel String?
+  isDone         Boolean   @default(false)
+  completedAt    DateTime?
+  isNotified     Boolean   @default(false)
+  xpReward       Int       @default(10)
+  sourceType     String?
+  sourceId       String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+}
+
+model Todo {
+  id          String    @id @default(cuid())
+  content     String
+  isDone      Boolean   @default(false)
+  priority    String    @default("normal")
+  dueDate     DateTime?
+  completedAt DateTime?
+  noteId      String?
+  tags        String    @default("[]")
+  xpReward    Int       @default(10)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+}
+
+model UserStats {
+  id                 String   @id @default("singleton")
+  totalXP            Int      @default(0)
+  currentStreak      Int      @default(0)
+  longestStreak      Int      @default(0)
+  lastActivityDate   String   @default("")
+  remindersCompleted Int      @default(0)
+  todosCompleted     Int      @default(0)
+  updatedAt          DateTime @updatedAt
+}
+
+model Note {
+  id             String   @id @default(cuid())
+  title          String   @default("Untitled")
+  content        String   @default("")
+  tags           String   @default("[]")
+  color          String   @default("#7c3aed")
+  pinned         Boolean  @default(false)
+  linkedNoteIds  String   @default("[]")
+  linkedDebateId String?
+  encrypted      Boolean  @default(false)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+}
+
+model Summary {
+  id          String   @id @default(cuid())
+  period      String
+  title       String
+  content     String
+  noteCount   Int      @default(0)
+  debateCount Int      @default(0)
+  todoCount   Int      @default(0)
+  categories  String   @default("[]")
+  startDate   DateTime
+  endDate     DateTime
+  encrypted   Boolean  @default(false)
+  createdAt   DateTime @default(now())
+}
+
+model Debate {
+  id         String        @id @default(cuid())
+  topic      String
+  userStance String
+  aiStance   String
+  status     String        @default("active")
+  winner     String?
+  conclusion String?
+  noteId     String?
+  model      String        @default("grok")
+  rounds     DebateRound[]
+  createdAt  DateTime      @default(now())
+  updatedAt  DateTime      @updatedAt
+}
+
+model DebateRound {
+  id           String   @id @default(cuid())
+  debateId     String
+  debate       Debate   @relation(fields: [debateId], references: [id], onDelete: Cascade)
+  roundNumber  Int
+  userArgument String
+  aiRebuttal   String   @default("")
+  userScore    Int      @default(50)
+  aiScore      Int      @default(50)
+  usedModel    String?
+  createdAt    DateTime @default(now())
+}
+
+model UserProfile {
+  id                 String   @id @default("singleton")
+  name               String   @default("User")
+  about              String   @default("")
+  personality        String   @default("")
+  goals              String   @default("[]")
+  skills             String   @default("[]")
+  preferences        String   @default("{}")
+  customInstructions String   @default("")
+  updatedAt          DateTime @updatedAt
+}
+
+model LangWord {
+  id        String   @id
+  language  String   @default("zh")
+  simplified String
+  pinyin    String
+  meaning   String
+  hsk       Int      @default(1)
+  pos       String   @default("")
+  example   String   @default("")
+  exPinyin  String   @default("")
+  exMeaning String   @default("")
+  tags      String   @default("[]")
+  createdAt DateTime @default(now())
+  progress  LangWordProgress[]
+}
+
+model LangWordProgress {
+  id            String   @id @default(cuid())
+  wordId        String
+  language      String   @default("zh")
+  easeFactor    Float    @default(2.5)
+  interval      Int      @default(0)
+  repetitions   Int      @default(0)
+  nextReview    DateTime @default(now())
+  totalCorrect  Int      @default(0)
+  totalAttempts Int      @default(0)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  word          LangWord @relation(fields: [wordId], references: [id])
+  @@unique([wordId, language])
+}
+
+model LangSession {
+  id            String   @id @default(cuid())
+  language      String   @default("zh")
+  mode          String   @default("mixed")
+  wordsReviewed Int      @default(0)
+  correctCount  Int      @default(0)
+  xpEarned      Int      @default(0)
+  duration      Int      @default(0)
+  createdAt     DateTime @default(now())
+}
+
+model Auth {
+  id             String   @id @default("singleton")
+  username       String   @unique
+  passwordHash   String
+  accessCodeHash String
+  createdAt      DateTime @default(now())
+}
+
+model LangProgress {
+  id                String   @id
+  language          String
+  totalXP           Int      @default(0)
+  wordsLearned      Int      @default(0)
+  wordsMastered     Int      @default(0)
+  sessionsCompleted Int      @default(0)
+  currentStreak     Int      @default(0)
+  longestStreak     Int      @default(0)
+  lastPracticeDate  String   @default("")
+  updatedAt         DateTime @updatedAt
+}

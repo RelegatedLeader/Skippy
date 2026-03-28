@@ -7,11 +7,14 @@ RUN npm ci
 
 COPY . .
 
+# Swap in the PostgreSQL schema for cloud builds
+RUN cp cloud/schema.cloud.prisma prisma/schema.prisma
+
 # Generate Prisma client for the production provider
 RUN npx prisma generate
 
-# Build Next.js
-RUN npm run build
+# Build Next.js with standalone output for Docker
+RUN BUILD_STANDALONE=1 npm run build
 
 # ── Production stage ──────────────────────────────────────────────────────────
 FROM node:20-alpine AS runner
