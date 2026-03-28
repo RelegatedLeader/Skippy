@@ -1,7 +1,7 @@
 import type { ChatCompletionMessageParam } from 'openai/resources'
 import { prisma } from './db'
 import { grok, GROK_MODEL } from './grok'
-import { decrypt } from './encryption'
+import { decrypt, encrypt } from './encryption'
 
 // ─── Deduplication ───────────────────────────────────────────────────────────
 
@@ -296,25 +296,149 @@ Extract ALL such requests. Return ONLY valid JSON. If none found, return {"remin
     const text = response.choices[0]?.message?.content || '{}'
     const parsed = JSON.parse(text)
     const reminders: Array<{ content?: string; dueDate?: string; timeframeLabel?: string }> = parsed.reminders || []
+    if (reminders.length === 0) return
+
+    // Fetch recent pending reminders (any source) to deduplicate against
+    const allPending = await prisma.reminder.findMany({
+      where: { isDone: false },
+      select: { content: true },
+      orderBy: { createdAt: 'desc' },
+      take: 100,
+    })
+    const existingContents = allPending.map(r => r.content)
 
     for (const r of reminders) {
       if (!r.content?.trim()) continue
+      const normalized = r.content.trim().slice(0, 300)
+      // Skip if a sufficiently similar pending reminder already exists
+      const isDupe = existingContents.some(c => wordJaccard(c, normalized) >= 0.55)
+      if (isDupe) continue
+
       let dueDate: Date | null = null
       if (r.dueDate && isValidFutureDate(r.dueDate)) {
         dueDate = new Date(r.dueDate)
       }
       await prisma.reminder.create({
         data: {
-          content: r.content.trim().slice(0, 300),
+          content: normalized,
           dueDate: dueDate ?? undefined,
           timeframeLabel: r.timeframeLabel?.slice(0, 100) || null,
           sourceType: 'chat',
           sourceId: conversationId,
         },
       })
+      // Add to local pool so subsequent items in same batch don't dupe each other
+      existingContents.push(normalized)
     }
   } catch (e) {
     console.error('Failed to extract reminders:', e)
+  }
+}
+
+// ─── Note extraction from chat ────────────────────────────────────────────────
+
+/**
+ * When the user asks Skippy to write a daily note/reflection/summary, generate
+ * one from today's completed todos + reminders + conversation context, then
+ * save it directly to the notes DB.
+ */
+export async function extractNoteFromConversation(
+  messages: Array<{ role: string; content: string }>,
+  conversationId?: string
+): Promise<void> {
+  try {
+    const userText = messages.filter(m => m.role === 'user').map(m => m.content).join(' ')
+    const hasNoteIntent = /save\s+(this|it)\s+(as|to|as\s+a|to\s+my)\s+note|add\s+(this|it)\s+to\s+(my\s+)?notes|write\s+(me\s+)?(a\s+)?(daily\s+)?(note|reflection|journal|summary|log|recap)|create\s+(a\s+)?(daily\s+)?note|daily\s+(reflection|summary|log|recap|note|journal)|what\s+i\s+(did|learned|worked\s+on)\s+today|note\s+(down|this)|log\s+(today|my\s+day|what\s+i)/i.test(userText)
+    if (!hasNoteIntent) return
+
+    const today = new Date()
+    today.setHours(0, 0, 0, 0)
+    const todayStr = new Date().toISOString().slice(0, 10)
+
+    // Avoid creating duplicate daily notes for the same day
+    const existingTodayNote = await prisma.note.findFirst({
+      where: {
+        createdAt: { gte: today },
+        tags: { contains: 'daily' },
+      },
+      select: { id: true },
+    })
+    if (existingTodayNote) return
+
+    // Fetch today's completed todos and reminders in parallel
+    const [completedTodos, completedReminders] = await Promise.all([
+      prisma.todo.findMany({
+        where: { isDone: true, completedAt: { gte: today } },
+        orderBy: { completedAt: 'asc' },
+      }),
+      prisma.reminder.findMany({
+        where: { isDone: true, completedAt: { gte: today } },
+        orderBy: { completedAt: 'asc' },
+      }),
+    ])
+
+    const PRIO: Record<string, string> = { urgent: '🔴', high: '🟠', normal: '🔵', low: '⚪' }
+    const todosText = completedTodos.length > 0
+      ? completedTodos.map(t => `- ${PRIO[t.priority] || '🔵'} ${t.content}`).join('\n')
+      : 'None'
+
+    const remindersText = completedReminders.length > 0
+      ? completedReminders.map(r => `- ${r.content}`).join('\n')
+      : 'None'
+
+    // Use only the most recent messages for conversation context
+    const conversationText = messages
+      .filter(m => m.role === 'user' || m.role === 'assistant')
+      .slice(-12)
+      .map(m => `${m.role === 'user' ? 'User' : 'Skippy'}: ${m.content.slice(0, 400)}`)
+      .join('\n')
+
+    const response = await grok.chat.completions.create({
+      model: GROK_MODEL,
+      messages: [
+        {
+          role: 'system',
+          content: `You write personal daily reflection notes. Today is ${todayStr}.
+
+Write a well-structured personal note that captures:
+1. What was accomplished today (reference specific completed todos and reminders)
+2. Key insights, things learned, or thoughts that came up in the conversation
+3. Open thoughts or next steps worth remembering
+
+Keep it honest, personal, and specific. Use markdown. Aim for 150-250 words.
+The title should be natural — e.g., "Daily Note — ${new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}" or something more specific if the conversation had a clear theme.
+
+Return ONLY valid JSON: {"title": "...", "content": "markdown note content", "tags": ["daily"]}`,
+        },
+        {
+          role: 'user',
+          content: `Completed todos today:\n${todosText}\n\nCompleted reminders today:\n${remindersText}\n\nConversation context:\n${conversationText}\n\nWrite a daily reflection note. Return ONLY valid JSON.`,
+        },
+      ],
+      response_format: { type: 'json_object' },
+      temperature: 0.4,
+      max_tokens: 600,
+    })
+
+    const text = response.choices[0]?.message?.content || '{}'
+    const parsed = JSON.parse(text)
+    if (!parsed.title?.trim() || !parsed.content?.trim()) return
+
+    const tags = Array.isArray(parsed.tags) ? parsed.tags : ['daily']
+    if (!tags.includes('daily')) tags.push('daily')
+
+    await prisma.note.create({
+      data: {
+        title: parsed.title.trim().slice(0, 200),
+        content: encrypt(parsed.content.trim()),
+        encrypted: true,
+        tags: JSON.stringify(tags),
+        color: '#10b981',
+        updatedAt: new Date(),
+      },
+    })
+  } catch (e) {
+    console.error('Failed to extract note from conversation:', e)
   }
 }
 
@@ -476,7 +600,8 @@ Your core traits:
 - You suggest next steps proactively when relevant
 - You're honest, sometimes bluntly so, but always supportive
 - You celebrate wins and help process setbacks
-- You help organize thoughts, build systems, and make things happen${profileSection}${instructionsSection}${reminderSection}${todoSection}${conversationSection}${memorySection}${notesSection}${debateSection}
+- You help organize thoughts, build systems, and make things happen
+- When the user asks you to "write a daily note", "log what I did today", "save this as a note", or anything similar, write the full reflection in your response and let them know it's being saved to their notes automatically${profileSection}${instructionsSection}${reminderSection}${todoSection}${conversationSection}${memorySection}${notesSection}${debateSection}
 
 Always respond in a way that reflects deep knowledge of this specific person. Never be generic. Use markdown formatting for structure when helpful — headers, bullet points, code blocks, etc.`
 }

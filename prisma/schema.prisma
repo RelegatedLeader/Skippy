@@ -100,6 +100,7 @@ model Summary {
   content    String   // AI-generated summary text
   noteCount   Int      @default(0)
   debateCount Int      @default(0)
+  todoCount   Int      @default(0)
   categories  String   @default("[]") // JSON array of categories included
   startDate   DateTime
   endDate     DateTime
@@ -145,4 +146,62 @@ model UserProfile {
   preferences        String   @default("{}") // JSON
   customInstructions String   @default("") // User-defined AI behavior rules
   updatedAt          DateTime @updatedAt
+}
+
+// ─── Language Learning ────────────────────────────────────────────────────────
+
+model LangWord {
+  id       String   @id // e.g. "zh_0001"
+  language String   @default("zh")
+  simplified String
+  pinyin   String
+  meaning  String
+  hsk      Int      @default(1)
+  pos      String   @default("") // part of speech
+  example  String   @default("") // example sentence in Chinese
+  exPinyin String   @default("")
+  exMeaning String  @default("")
+  tags     String   @default("[]")
+  createdAt DateTime @default(now())
+  progress LangWordProgress[]
+}
+
+model LangWordProgress {
+  id           String   @id @default(cuid())
+  wordId       String
+  language     String   @default("zh")
+  easeFactor   Float    @default(2.5)
+  interval     Int      @default(0)   // days until next review
+  repetitions  Int      @default(0)
+  nextReview   DateTime @default(now())
+  totalCorrect Int      @default(0)
+  totalAttempts Int     @default(0)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  word         LangWord @relation(fields: [wordId], references: [id])
+  @@unique([wordId, language])
+}
+
+model LangSession {
+  id            String   @id @default(cuid())
+  language      String   @default("zh")
+  mode          String   @default("mixed")
+  wordsReviewed Int      @default(0)
+  correctCount  Int      @default(0)
+  xpEarned      Int      @default(0)
+  duration      Int      @default(0) // seconds
+  createdAt     DateTime @default(now())
+}
+
+model LangProgress {
+  id                String   @id // "singleton_zh"
+  language          String
+  totalXP           Int      @default(0)
+  wordsLearned      Int      @default(0)
+  wordsMastered     Int      @default(0)
+  sessionsCompleted Int      @default(0)
+  currentStreak     Int      @default(0)
+  longestStreak     Int      @default(0)
+  lastPracticeDate  String   @default("")
+  updatedAt         DateTime @updatedAt
 }

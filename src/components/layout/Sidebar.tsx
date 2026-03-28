@@ -3,7 +3,7 @@
 import Link from 'next/link'
 import Image from 'next/image'
 import { usePathname } from 'next/navigation'
-import { MessageSquare, FileText, Brain, Settings, Info, Swords, Sparkles, CheckSquare, Flame, Trophy } from 'lucide-react'
+import { MessageSquare, FileText, Brain, Settings, Info, Swords, Sparkles, CheckSquare, Flame, Trophy, GraduationCap } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useNotifications } from '@/components/notifications/NotificationProvider'
 
@@ -13,12 +13,13 @@ interface SidebarProps {
 }
 
 const navItems = [
-  { href: '/chat',       icon: MessageSquare, label: 'Chat' },
-  { href: '/notes',      icon: FileText,      label: 'Notes' },
-  { href: '/todos',      icon: CheckSquare,   label: 'Todos' },
-  { href: '/summaries',  icon: Sparkles,      label: 'Summaries' },
-  { href: '/memory',     icon: Brain,         label: 'Memory' },
-  { href: '/debate',     icon: Swords,        label: 'Debate' },
+  { href: '/chat',       icon: MessageSquare,  label: 'Chat' },
+  { href: '/notes',      icon: FileText,       label: 'Notes' },
+  { href: '/todos',      icon: CheckSquare,    label: 'Todos' },
+  { href: '/summaries',  icon: Sparkles,       label: 'Summaries' },
+  { href: '/memory',     icon: Brain,          label: 'Memory' },
+  { href: '/debate',     icon: Swords,         label: 'Debate' },
+  { href: '/learn',      icon: GraduationCap,  label: 'Learn' },
 ]
 
 export function Sidebar({ children, className }: SidebarProps) {
@@ -121,6 +122,11 @@ export function Sidebar({ children, className }: SidebarProps) {
                 {label === 'Debate' && (
                   <span className="ml-auto text-[9px] font-bold px-1.5 py-0.5 rounded uppercase tracking-wider"
                     style={{ background: 'rgba(41,194,230,0.15)', color: '#29c2e6' }}>New</span>
+                )}
+                {/* Learn badge */}
+                {label === 'Learn' && (
+                  <span className="ml-auto text-[9px] font-bold px-1.5 py-0.5 rounded"
+                    style={{ background: 'rgba(239,68,68,0.15)', color: '#ef4444' }}>中</span>
                 )}
                 {/* Memory urgent badge */}
                 {label === 'Memory' && urgentCount > 0 && (

@@ -78,6 +78,7 @@ interface Summary {
   content: string
   noteCount: number
   debateCount?: number
+  todoCount?: number
   categories: string[]
   startDate: string
   endDate: string
@@ -235,7 +236,7 @@ export default function SummariesPage() {
               <span className="text-sm font-bold text-foreground">Generate New Summary</span>
             </div>
             <p className="text-xs text-muted leading-relaxed -mt-2">
-              Skippy reads your notes for the chosen period and extracts key themes, insights, and action items.
+              Skippy reads your notes, completed todos, and debates for the chosen period and extracts key themes, accomplishments, and insights.
             </p>
 
             <div className="flex flex-wrap gap-2">
@@ -369,6 +370,12 @@ function SummaryCard({
           <h3 className="font-display font-bold text-sm text-foreground leading-tight">{summary.title}</h3>
           <p className="text-[11px] text-muted mt-1 flex items-center gap-2 flex-wrap">
             <FileText className="w-3 h-3" />{summary.noteCount} note{summary.noteCount !== 1 ? 's' : ''}
+            {(summary.todoCount ?? 0) > 0 && (
+              <span className="flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[9px] font-bold"
+                style={{ background: 'rgba(16,185,129,0.12)', color: '#10b981', border: '1px solid rgba(16,185,129,0.25)' }}>
+                ✓ {summary.todoCount} todo{summary.todoCount !== 1 ? 's' : ''}
+              </span>
+            )}
             {(summary.debateCount ?? 0) > 0 && (
               <span className="flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[9px] font-bold"
                 style={{ background: 'rgba(232,184,75,0.12)', color: '#e8b84b', border: '1px solid rgba(232,184,75,0.25)' }}>

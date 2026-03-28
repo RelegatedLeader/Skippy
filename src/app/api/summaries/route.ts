@@ -52,8 +52,8 @@ export async function POST(req: Request) {
       }
     }
 
-    // Fetch notes AND concluded debates in the time window in parallel
-    const [notes, debates] = await Promise.all([
+    // Fetch notes, concluded debates, completed todos, AND language sessions in parallel
+    const [notes, debates, todos, langSessions] = await Promise.all([
       prisma.note.findMany({
         where: { updatedAt: { gte: start, lte: end } },
         orderBy: { updatedAt: 'desc' },
@@ -67,11 +67,24 @@ export async function POST(req: Request) {
           rounds: { orderBy: { roundNumber: 'asc' } },
         },
       }),
+      prisma.todo.findMany({
+        where: {
+          isDone: true,
+          completedAt: { gte: start, lte: end },
+        },
+        orderBy: { completedAt: 'asc' },
+        take: 50,
+      }),
+      prisma.langSession.findMany({
+        where: { createdAt: { gte: start, lte: end } },
+        orderBy: { createdAt: 'desc' },
+        take: 50,
+      }),
     ])
 
-    if (notes.length === 0 && debates.length === 0) {
+    if (notes.length === 0 && debates.length === 0 && todos.length === 0 && langSessions.length === 0) {
       return NextResponse.json(
-        { error: 'No notes or debates found in this period.' },
+        { error: 'No notes, todos, debates, or language sessions found in this period.' },
         { status: 400 }
       )
     }
@@ -116,16 +129,47 @@ export async function POST(req: Request) {
 
     const hasDebates = debates.length > 0
     const hasNotes = notes.length > 0
+    const hasTodos = todos.length > 0
+    const hasLang = langSessions.length > 0
 
-    const prompt = `You are Skippy, a deeply personal AI assistant. The user has ${hasNotes ? `${notes.length} notes` : ''}${hasNotes && hasDebates ? ' and ' : ''}${hasDebates ? `${debates.length} completed debate${debates.length !== 1 ? 's' : ''}` : ''} from ${periodLabel}.
+    // Build todo content block
+    const PRIO_LABEL: Record<string, string> = { urgent: '🔴 Urgent', high: '🟠 High', normal: '🔵 Normal', low: '⚪ Low' }
+    const todoTexts = hasTodos
+      ? todos.map(t => {
+          const prio = PRIO_LABEL[t.priority] || 'Normal'
+          const doneAt = t.completedAt ? new Date(t.completedAt).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }) : ''
+          return `- [${prio}] ${t.content}${doneAt ? ` (completed ${doneAt})` : ''}`
+        }).join('\n')
+      : ''
 
-Analyze ${hasNotes ? 'these notes' : ''}${hasNotes && hasDebates ? ' and debates' : hasDebates ? 'these debates' : ''} and produce a concise, insightful summary with:
+    // Build language learning block
+    const langText = hasLang
+      ? (() => {
+          const totalWords = langSessions.reduce((s, r) => s + r.wordsReviewed, 0)
+          const totalCorrect = langSessions.reduce((s, r) => s + r.correctCount, 0)
+          const totalXP = langSessions.reduce((s, r) => s + r.xpEarned, 0)
+          const accuracy = totalWords > 0 ? Math.round(totalCorrect / totalWords * 100) : 0
+          return `Chinese (Mandarin): ${langSessions.length} session${langSessions.length !== 1 ? 's' : ''}, ${totalWords} words reviewed, ${accuracy}% accuracy, ${totalXP} XP earned`
+        })()
+      : ''
+
+    const sourceList = [
+      hasNotes && `${notes.length} note${notes.length !== 1 ? 's' : ''}`,
+      hasTodos && `${todos.length} completed todo${todos.length !== 1 ? 's' : ''}`,
+      hasDebates && `${debates.length} debate${debates.length !== 1 ? 's' : ''}`,
+      hasLang && `${langSessions.length} language session${langSessions.length !== 1 ? 's' : ''}`,
+    ].filter(Boolean).join(', ')
+
+    const prompt = `You are Skippy, a deeply personal AI assistant. The user has ${sourceList} from ${periodLabel}.
+
+Analyze this activity and produce a concise, insightful summary with:
 1. **Key Themes** — 3-5 bullet points of the dominant topics, decisions, or patterns
-2. **Notable Insights** — 2-3 interesting observations or connections across ${hasNotes && hasDebates ? 'notes and debates' : hasDebates ? 'the debates' : 'notes'}
-3. **Action Items** — Up to 3 concrete next steps or open loops worth addressing
-4. **Mood / Energy** — A one-sentence read on the user's overall state during this period${hasDebates ? '\n5. **Debate Insights** — What these debates reveal about how this person thinks, decides, and argues under pressure' : ''}
+2. **What Got Done** — Highlight the most meaningful completed tasks and accomplishments${hasTodos ? ' (reference specific todos where relevant)' : ''}
+3. **Notable Insights** — 2-3 interesting observations or connections across the content
+4. **Action Items** — Up to 3 concrete next steps or open loops worth addressing
+5. **Mood / Energy** — A one-sentence read on the user's overall state during this period${hasDebates ? '\n6. **Debate Insights** — What these debates reveal about how this person thinks, decides, and argues under pressure' : ''}${hasLang ? '\n7. **Language Progress** — Comment on the Chinese study sessions: consistency, accuracy, and momentum' : ''}
 
-Keep the tone warm, direct, and personal. Reference specific note titles or debate topics when relevant.${hasNotes ? `\n\nNOTES:\n${noteTexts}` : ''}${hasDebates ? `\n\nDEBATES:\n${debateTexts}` : ''}`
+Keep the tone warm, direct, and personal. Reference specific note titles, todo items, or debate topics when relevant.${hasTodos ? `\n\nCOMPLETED TODOS:\n${todoTexts}` : ''}${hasNotes ? `\n\nNOTES:\n${noteTexts}` : ''}${hasDebates ? `\n\nDEBATES:\n${debateTexts}` : ''}${hasLang ? `\n\nLANGUAGE LEARNING:\n${langText}` : ''}`
 
     const response = await grok.chat.completions.create({
       model: GROK_MODEL,
@@ -153,6 +197,7 @@ Keep the tone warm, direct, and personal. Reference specific note titles or deba
         content: summaryContent,
         noteCount: notes.length,
         debateCount: debates.length,
+        todoCount: todos.length,
         categories: JSON.stringify(categories),
         startDate: start,
         endDate: end,
