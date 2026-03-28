@@ -11,6 +11,7 @@ model Conversation {
   id        String    @id @default(cuid())
   title     String    @default("New Chat")
   model     String    @default("grok") // "grok" | "claude"
+  summary   String?   // rolling AI-generated summary of what was discussed
   createdAt DateTime  @default(now())
   updatedAt DateTime  @updatedAt
   messages  Message[]

@@ -348,7 +348,7 @@ export async function buildSystemPrompt(): Promise<string> {
   const tomorrow = new Date()
   tomorrow.setDate(tomorrow.getDate() + 1)
 
-  const [memories, profile, recentNotes, recentDebates, pendingReminders] = await Promise.all([
+  const [memories, profile, recentNotes, recentDebates, pendingReminders, recentConversations] = await Promise.all([
     getRelevantMemories('', 30),
     getUserProfile(),
     prisma.note.findMany({
@@ -373,6 +373,13 @@ export async function buildSystemPrompt(): Promise<string> {
       },
       orderBy: [{ dueDate: 'asc' }, { createdAt: 'asc' }],
       take: 5,
+    }),
+    // Recent conversations with summaries — the core continuity mechanism
+    prisma.conversation.findMany({
+      where: { summary: { not: null } },
+      orderBy: { updatedAt: 'desc' },
+      take: 8,
+      select: { id: true, title: true, summary: true, updatedAt: true },
     }),
   ])
 
@@ -415,6 +422,15 @@ export async function buildSystemPrompt(): Promise<string> {
     debateSection = `\n\n## Debates you've had (use these to understand how this person thinks, decides, and argues):\n${debateLines.join('\n')}`
   }
 
+  let conversationSection = ''
+  if (recentConversations.length > 0) {
+    const convLines = recentConversations.map(c => {
+      const date = c.updatedAt.toISOString().slice(0, 10)
+      return `- [${date}] "${c.title}": ${c.summary}`
+    })
+    conversationSection = `\n\n## Recent conversations (what you actually discussed — use this to continue naturally):\n${convLines.join('\n')}`
+  }
+
   let reminderSection = ''
   if (pendingReminders.length > 0) {
     const reminderLines = pendingReminders.map(r => {
@@ -438,9 +454,64 @@ Your core traits:
 - You suggest next steps proactively when relevant
 - You're honest, sometimes bluntly so, but always supportive
 - You celebrate wins and help process setbacks
-- You help organize thoughts, build systems, and make things happen${profileSection}${instructionsSection}${reminderSection}${memorySection}${notesSection}${debateSection}
+- You help organize thoughts, build systems, and make things happen${profileSection}${instructionsSection}${reminderSection}${conversationSection}${memorySection}${notesSection}${debateSection}
 
 Always respond in a way that reflects deep knowledge of this specific person. Never be generic. Use markdown formatting for structure when helpful — headers, bullet points, code blocks, etc.`
+}
+
+// ─── Conversation summary ─────────────────────────────────────────────────────
+
+/**
+ * Generate (or refresh) a rolling summary of a conversation and store it.
+ * Called after every AI response so the summary always reflects current state.
+ * Summary is dense and specific: names, topics, decisions, open questions.
+ */
+export async function updateConversationSummary(
+  conversationId: string,
+  messages: Array<{ role: string; content: string }>
+): Promise<void> {
+  try {
+    // Only summarise once there are at least 2 exchanges (4 messages)
+    if (messages.length < 4) return
+
+    const transcript = messages
+      .filter(m => m.role === 'user' || m.role === 'assistant')
+      .map(m => `${m.role === 'user' ? 'User' : 'Skippy'}: ${m.content.slice(0, 600)}`)
+      .join('\n')
+
+    const response = await grok.chat.completions.create({
+      model: GROK_MODEL,
+      messages: [
+        {
+          role: 'system',
+          content: `You produce dense, specific conversation summaries for a personal AI memory system. Your job is to write a 4-6 sentence summary that captures:
+- Every person mentioned by name (and their relationship to the user)
+- The core topic(s) discussed
+- Any decisions, agreements, or conclusions reached
+- Anything left unresolved or ongoing
+- Key specific details that would be important to recall later (dates, plans, emotions expressed)
+
+Be specific. Include names. Preserve nuance. This will be used by the AI in future conversations to recall exactly what happened here.`,
+        },
+        {
+          role: 'user',
+          content: `Summarise this conversation:\n\n${transcript}`,
+        },
+      ],
+      temperature: 0.2,
+      max_tokens: 300,
+    })
+
+    const summary = response.choices[0]?.message?.content?.trim()
+    if (summary) {
+      await prisma.conversation.update({
+        where: { id: conversationId },
+        data: { summary },
+      })
+    }
+  } catch (e) {
+    console.error('Failed to update conversation summary:', e)
+  }
 }
 
 // ─── Conversation title ───────────────────────────────────────────────────────
