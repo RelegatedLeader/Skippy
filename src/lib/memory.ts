@@ -64,7 +64,10 @@ export async function getRelevantMemories(query: string, limit = 20): Promise<st
   if (memories.length === 0) return ''
 
   const formatted = memories
-    .map((m) => `[${m.category.toUpperCase()}] ${m.content}`)
+    .map((m) => {
+      const date = m.createdAt.toISOString().slice(0, 10)
+      return `[${m.category.toUpperCase()}] (${date}) ${m.content}`
+    })
     .join('\n')
 
   return formatted

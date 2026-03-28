@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server'
+import { createHmac } from 'crypto'
 import { prisma } from '@/lib/db'
 import { decrypt } from '@/lib/encryption'
 
@@ -11,7 +12,7 @@ export async function GET(req: Request) {
   try {
     const { searchParams } = new URL(req.url)
     const format = (searchParams.get('format') || 'txt') as 'txt' | 'md' | 'json'
-    const type = (searchParams.get('type') || 'notes') as 'notes' | 'summaries' | 'note'
+    const type = (searchParams.get('type') || 'notes') as 'notes' | 'summaries' | 'note' | 'full'
     const id = searchParams.get('id')
 
     let content = ''
@@ -50,6 +51,81 @@ export async function GET(req: Request) {
           `${s.title}\n${'='.repeat(s.title.length)}\n\n${s.content}\n\nNotes: ${s.noteCount} | Date: ${new Date(s.createdAt).toLocaleDateString()}`
         ).join('\n\n' + '─'.repeat(60) + '\n\n')
       }
+
+    } else if (type === 'full') {
+      // Full USB export — everything, signed
+      const [notes, memories, summaries, debates, profile] = await Promise.all([
+        prisma.note.findMany({ orderBy: [{ pinned: 'desc' }, { updatedAt: 'desc' }] }),
+        prisma.memory.findMany({ orderBy: [{ importance: 'desc' }, { updatedAt: 'desc' }] }),
+        prisma.summary.findMany({ orderBy: { createdAt: 'desc' } }),
+        prisma.debate.findMany({ include: { rounds: true }, orderBy: { createdAt: 'desc' } }),
+        prisma.userProfile.findUnique({ where: { id: 'singleton' } }),
+      ])
+
+      const exportData = {
+        meta: {
+          exportedAt: new Date().toISOString(),
+          version: '1.0',
+          app: 'Skippy Personal AI',
+        },
+        profile: profile
+          ? {
+              name: profile.name,
+              about: profile.about,
+              customInstructions: profile.customInstructions,
+              goals: (() => { try { return JSON.parse(profile.goals) } catch { return [] } })(),
+              skills: (() => { try { return JSON.parse(profile.skills) } catch { return [] } })(),
+            }
+          : null,
+        notes: notes.map((n) => ({
+          id: n.id,
+          title: n.title,
+          content: decrypt(n.content).replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim(),
+          tags: (() => { try { return JSON.parse(n.tags) } catch { return [] } })(),
+          pinned: n.pinned,
+          color: n.color,
+          linkedNoteIds: (() => { try { return JSON.parse(n.linkedNoteIds) } catch { return [] } })(),
+          createdAt: n.createdAt,
+          updatedAt: n.updatedAt,
+        })),
+        memories: memories.map((m) => ({
+          category: m.category,
+          content: m.content,
+          importance: m.importance,
+          tags: (() => { try { return JSON.parse(m.tags) } catch { return [] } })(),
+          createdAt: m.createdAt,
+          updatedAt: m.updatedAt,
+        })),
+        summaries: summaries.map((s) => ({
+          period: s.period,
+          title: s.title,
+          content: s.content,
+          noteCount: s.noteCount,
+          startDate: s.startDate,
+          endDate: s.endDate,
+          createdAt: s.createdAt,
+        })),
+        debates: debates.map((d) => ({
+          topic: d.topic,
+          userStance: d.userStance,
+          aiStance: d.aiStance,
+          status: d.status,
+          winner: d.winner,
+          conclusion: d.conclusion,
+          roundCount: d.rounds.length,
+          createdAt: d.createdAt,
+          updatedAt: d.updatedAt,
+        })),
+      }
+
+      const payload = JSON.stringify(exportData, null, 2)
+      const keyHex = process.env.ENCRYPTION_KEY || '0'.repeat(64)
+      const signature = createHmac('sha256', Buffer.from(keyHex, 'hex'))
+        .update(payload)
+        .digest('hex')
+
+      content = JSON.stringify({ data: exportData, integrity: { algorithm: 'HMAC-SHA256', signature } }, null, 2)
+      filename = `skippy_full_export_${new Date().toISOString().slice(0, 10)}.json`
 
     } else {
       // All notes

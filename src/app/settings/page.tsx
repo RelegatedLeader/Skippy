@@ -61,6 +61,7 @@ export default function SettingsPage() {
 
   const handleExportNotes = () => window.open(`/api/export?type=notes&format=${exportFormat}`, '_blank')
   const handleExportSummaries = () => window.open(`/api/export?type=summaries&format=${exportFormat}`, '_blank')
+  const handleExportFull = () => window.open('/api/export?type=full', '_blank')
 
   const handleClearMemories = async () => {
     setClearing(true)
@@ -217,6 +218,27 @@ export default function SettingsPage() {
                   subtitle={`Download as .${exportFormat}`}
                   onClick={handleExportSummaries}
                 />
+              </div>
+
+              <div
+                className="p-4 rounded-xl border cursor-pointer group transition-all text-left w-full flex items-start gap-3"
+                style={{ background: 'rgba(41,194,230,0.04)', borderColor: 'rgba(41,194,230,0.2)' }}
+                onClick={handleExportFull}
+                role="button"
+              >
+                <div className="mt-0.5 w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0"
+                  style={{ background: 'rgba(41,194,230,0.12)', border: '1px solid rgba(41,194,230,0.25)' }}>
+                  <Download className="w-4 h-4 text-accent" />
+                </div>
+                <div>
+                  <p className="text-sm font-bold text-foreground group-hover:text-accent transition-colors">
+                    Full Data Export (USB / Backup)
+                  </p>
+                  <p className="text-xs text-muted mt-0.5 leading-relaxed">
+                    Exports everything — notes, memories, summaries, debates, and your profile — as a single signed JSON file. Includes an HMAC-SHA256 integrity signature. Perfect for USB backup or migrating to a new machine.
+                  </p>
+                  <p className="text-[10px] text-accent/60 mt-1.5 font-mono">skippy_full_export_YYYY-MM-DD.json</p>
+                </div>
               </div>
             </div>
           </motion.section>
