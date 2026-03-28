@@ -1,0 +1,101 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = "file:./skippy.db"
+}
+
+model Conversation {
+  id        String    @id @default(cuid())
+  title     String    @default("New Chat")
+  model     String    @default("grok") // "grok" | "claude"
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  messages  Message[]
+}
+
+model Message {
+  id             String       @id @default(cuid())
+  role           String       // "user" | "assistant" | "system"
+  content        String
+  createdAt      DateTime     @default(now())
+  conversationId String
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+}
+
+model Memory {
+  id         String   @id @default(cuid())
+  category   String   // "fact", "preference", "goal", "mood", "skill", "context"
+  content    String
+  importance Int      @default(5) // 1-10
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+  tags       String   @default("[]") // JSON array stored as string
+}
+
+model Note {
+  id             String   @id @default(cuid())
+  title          String   @default("Untitled")
+  content        String   @default("")
+  tags           String   @default("[]") // JSON array as string
+  color          String   @default("#7c3aed")
+  pinned         Boolean  @default(false)
+  linkedNoteIds  String   @default("[]") // JSON array of note IDs
+  linkedDebateId String?                 // Optional debate this note was created from
+  encrypted      Boolean  @default(false) // Whether content is AES-256-GCM encrypted
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+}
+
+model Summary {
+  id         String   @id @default(cuid())
+  period     String   // "daily" | "weekly" | "monthly" | "yearly" | "custom"
+  title      String
+  content    String   // AI-generated summary text
+  noteCount  Int      @default(0)
+  categories String   @default("[]") // JSON array of categories included
+  startDate  DateTime
+  endDate    DateTime
+  encrypted  Boolean  @default(false)
+  createdAt  DateTime @default(now())
+}
+
+model Debate {
+  id         String        @id @default(cuid())
+  topic      String        // The proposition being debated
+  userStance String        // What the user believes / is defending
+  aiStance   String        // What Skippy recommends / argues
+  status     String        @default("active") // "active" | "concluded"
+  winner     String?       // "user" | "ai" | "draw"
+  conclusion String?       // Final AI-written summary
+  noteId     String?       // If saved as a note
+  rounds     DebateRound[]
+  createdAt  DateTime      @default(now())
+  updatedAt  DateTime      @updatedAt
+}
+
+model DebateRound {
+  id           String   @id @default(cuid())
+  debateId     String
+  debate       Debate   @relation(fields: [debateId], references: [id], onDelete: Cascade)
+  roundNumber  Int
+  userArgument String
+  aiRebuttal   String   @default("")
+  userScore    Int      @default(50) // user confidence 0–100
+  aiScore      Int      @default(50) // ai confidence 0–100
+  createdAt    DateTime @default(now())
+}
+
+model UserProfile {
+  id                 String   @id @default("singleton")
+  name               String   @default("User")
+  about              String   @default("")
+  personality        String   @default("") // AI-inferred personality traits
+  goals              String   @default("[]") // JSON
+  skills             String   @default("[]") // JSON
+  preferences        String   @default("{}") // JSON
+  customInstructions String   @default("") // User-defined AI behavior rules
+  updatedAt          DateTime @updatedAt
+}

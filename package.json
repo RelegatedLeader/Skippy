@@ -1,0 +1,122 @@
+{
+  "name": "skippy",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "db:push": "prisma db push",
+    "db:studio": "prisma studio",
+    "build:portable": "next build && node scripts/build-portable.js",
+    "build:exe": "npm run build && pkg server-standalone.js --targets node18-win-x64,node18-macos-x64,node18-linux-x64 --output dist/skippy",
+    "electron:dev": "concurrently \"npm run dev\" \"wait-on http://localhost:3000 && electron electron/main.js\"",
+    "electron:build": "npm run build && electron-builder --win --mac --linux",
+    "portable:win": "npm run build && node scripts/package-usb.js --platform win",
+    "portable:mac": "npm run build && node scripts/package-usb.js --platform mac",
+    "portable:linux": "npm run build && node scripts/package-usb.js --platform linux"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.80.0",
+    "@prisma/client": "^5.14.0",
+    "@tiptap/extension-highlight": "^2.4.0",
+    "@tiptap/extension-link": "^2.4.0",
+    "@tiptap/extension-placeholder": "^2.4.0",
+    "@tiptap/extension-task-item": "^2.4.0",
+    "@tiptap/extension-task-list": "^2.4.0",
+    "@tiptap/react": "^2.4.0",
+    "@tiptap/starter-kit": "^2.4.0",
+    "@types/node": "^20",
+    "@types/react": "^18",
+    "@types/react-dom": "^18",
+    "@types/react-syntax-highlighter": "^15.5.13",
+    "ai": "^3.2.22",
+    "autoprefixer": "^10.0.1",
+    "clsx": "^2.1.1",
+    "date-fns": "^3.6.0",
+    "framer-motion": "^11.3.2",
+    "lucide-react": "^0.400.0",
+    "nanoid": "^5.0.7",
+    "next": "14.2.5",
+    "openai": "^4.52.7",
+    "postcss": "^8",
+    "prisma": "^5.14.0",
+    "react": "^18",
+    "react-dom": "^18",
+    "react-markdown": "^9.0.1",
+    "react-syntax-highlighter": "^15.5.0",
+    "remark-gfm": "^4.0.0",
+    "tailwind-merge": "^2.4.0",
+    "tailwindcss": "^3.4.1",
+    "typescript": "^5",
+    "zustand": "^4.5.4"
+  },
+  "devDependencies": {
+    "archiver": "^7.0.1",
+    "concurrently": "^8.2.2",
+    "electron": "^31.0.0",
+    "electron-builder": "^24.13.3",
+    "pkg": "^5.8.1",
+    "wait-on": "^7.2.0"
+  },
+  "pkg": {
+    "scripts": [
+      "server-standalone.js",
+      ".next/**/*",
+      "prisma/**/*",
+      "node_modules/@prisma/client/**/*",
+      "node_modules/.prisma/**/*"
+    ],
+    "assets": [
+      ".next/**/*",
+      "public/**/*",
+      "prisma/schema.prisma",
+      "node_modules/@prisma/client/engines/**/*"
+    ],
+    "targets": [
+      "node18-win-x64",
+      "node18-macos-x64",
+      "node18-linux-x64"
+    ],
+    "outputPath": "dist"
+  },
+  "build": {
+    "appId": "com.skippy.app",
+    "productName": "Skippy",
+    "directories": {
+      "output": "dist/electron"
+    },
+    "files": [
+      ".next/**/*",
+      "public/**/*",
+      "prisma/**/*",
+      "electron/**/*",
+      "node_modules/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "prisma",
+        "to": "prisma",
+        "filter": [
+          "schema.prisma"
+        ]
+      }
+    ],
+    "win": {
+      "target": "portable",
+      "icon": "public/icon.ico"
+    },
+    "mac": {
+      "target": "dmg",
+      "icon": "public/icon.icns"
+    },
+    "linux": {
+      "target": "AppImage",
+      "icon": "public/icon.png"
+    },
+    "portable": {
+      "artifactName": "Skippy-Portable-${version}.exe"
+    }
+  }
+}
