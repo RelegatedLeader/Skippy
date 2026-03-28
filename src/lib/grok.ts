@@ -5,4 +5,4 @@ export const grok = new OpenAI({
   baseURL: 'https://api.x.ai/v1',
 })
 
-export const GROK_MODEL = 'grok-3-beta'
+export const GROK_MODEL = 'grok-3'
