@@ -4,7 +4,7 @@ generator client {
 
 datasource db {
   provider = "sqlite"
-  url      = "file:./skippy.db"
+  url      = env("DATABASE_URL")
 }
 
 model Conversation {
@@ -191,6 +191,16 @@ model LangSession {
   xpEarned      Int      @default(0)
   duration      Int      @default(0) // seconds
   createdAt     DateTime @default(now())
+}
+
+// ─── Authentication ───────────────────────────────────────────────────────────
+
+model Auth {
+  id             String   @id @default("singleton")
+  username       String   @unique
+  passwordHash   String
+  accessCodeHash String
+  createdAt      DateTime @default(now())
 }
 
 model LangProgress {
