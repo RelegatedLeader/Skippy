@@ -3,6 +3,17 @@ import { createHmac } from 'crypto'
 import { prisma } from '@/lib/db'
 import { decrypt } from '@/lib/encryption'
 
+function stripMarkdown(text: string): string {
+  return text
+    .replace(/^#{1,6}\s+/gm, '')
+    .replace(/\*\*([^*]+)\*\*/g, '$1')
+    .replace(/\*([^*]+)\*/g, '$1')
+    .replace(/^[-*]\s+/gm, '• ')
+    .replace(/\[x\]|\[ \]/gi, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+}
+
 /**
  * GET /api/export?format=txt|md|json&type=notes|summaries|note&id=<noteId>
  *
@@ -48,7 +59,7 @@ export async function GET(req: Request) {
         ).join('\n\n---\n\n')
       } else {
         content = summaries.map((s) =>
-          `${s.title}\n${'='.repeat(s.title.length)}\n\n${s.content}\n\nNotes: ${s.noteCount} | Date: ${new Date(s.createdAt).toLocaleDateString()}`
+          `${s.title}\n${'='.repeat(s.title.length)}\n\n${stripMarkdown(s.content)}\n\nNotes: ${s.noteCount} | Date: ${new Date(s.createdAt).toLocaleDateString()}`
         ).join('\n\n' + '─'.repeat(60) + '\n\n')
       }
 

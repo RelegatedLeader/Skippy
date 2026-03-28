@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState, useCallback } from 'react'
+import React, { useEffect, useState, useCallback } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import {
   Sparkles, Loader2, Trash2, Download, Calendar, FileText,
@@ -8,6 +8,68 @@ import {
 } from 'lucide-react'
 import { cn, formatRelativeTime } from '@/lib/utils'
 import { Sidebar } from '@/components/layout/Sidebar'
+
+function stripMarkdown(text: string): string {
+  return text
+    .replace(/^#{1,6}\s+/gm, '')
+    .replace(/\*\*([^*]+)\*\*/g, '$1')
+    .replace(/\*([^*]+)\*/g, '$1')
+    .replace(/^[-*]\s+/gm, '• ')
+    .replace(/\[x\]|\[ \]/gi, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+}
+
+function renderMarkdown(content: string): React.ReactNode {
+  const lines = content.split('\n')
+  const result: React.ReactNode[] = []
+  let listItems: React.ReactNode[] = []
+  let listKey = 0
+
+  function flushList() {
+    if (listItems.length > 0) {
+      result.push(
+        <ul key={`ul-${listKey++}`} className="space-y-1 my-1 ml-3 list-none">
+          {listItems}
+        </ul>
+      )
+      listItems = []
+    }
+  }
+
+  function renderInline(text: string): React.ReactNode {
+    const parts = text.split(/(\*\*[^*]+\*\*|\*[^*]+\*)/)
+    return parts.map((part, i) => {
+      if (part.startsWith('**') && part.endsWith('**')) return <strong key={i} className="font-semibold text-foreground">{part.slice(2, -2)}</strong>
+      if (part.startsWith('*') && part.endsWith('*')) return <em key={i}>{part.slice(1, -1)}</em>
+      return part
+    })
+  }
+
+  lines.forEach((line, i) => {
+    if (line.startsWith('### ')) {
+      flushList()
+      result.push(<h3 key={i} className="font-bold text-accent text-sm mt-3 mb-0.5">{renderInline(line.slice(4))}</h3>)
+    } else if (line.startsWith('## ')) {
+      flushList()
+      result.push(<h2 key={i} className="font-bold text-foreground mt-3 mb-0.5">{renderInline(line.slice(3))}</h2>)
+    } else if (line.startsWith('# ')) {
+      flushList()
+      result.push(<h1 key={i} className="font-bold text-foreground text-base mt-3 mb-1">{renderInline(line.slice(2))}</h1>)
+    } else if (/^[-*]\s/.test(line)) {
+      listItems.push(<li key={i} className="text-sm text-foreground/90 leading-relaxed flex gap-1.5"><span className="text-accent/60 flex-shrink-0">•</span><span>{renderInline(line.replace(/^[-*]\s+/, ''))}</span></li>)
+    } else if (line.trim() === '') {
+      flushList()
+      result.push(<div key={i} className="h-1.5" />)
+    } else {
+      flushList()
+      result.push(<p key={i} className="text-sm text-foreground/90 leading-relaxed">{renderInline(line)}</p>)
+    }
+  })
+  flushList()
+
+  return <div className="space-y-0.5">{result}</div>
+}
 
 interface Summary {
   id: string
@@ -94,20 +156,24 @@ export default function SummariesPage() {
   }
 
   const handleExportSummaryText = (summary: Summary) => {
-    const blob = new Blob([summary.content], { type: 'text/plain' })
-    const url = URL.createObjectURL(blob)
+    const safeTitle = summary.title.replace(/[^a-z0-9]/gi, '_').toLowerCase()
     const a = document.createElement('a')
-    a.href = url
-    a.download = `${summary.title.replace(/[^a-z0-9]/gi, '_').toLowerCase()}.${exportFormat === 'json' ? 'json' : exportFormat === 'md' ? 'md' : 'txt'}`
+
     if (exportFormat === 'json') {
-      const blob2 = new Blob([JSON.stringify(summary, null, 2)], { type: 'application/json' })
-      a.href = URL.createObjectURL(blob2)
+      a.href = URL.createObjectURL(new Blob([JSON.stringify(summary, null, 2)], { type: 'application/json' }))
+      a.download = `${safeTitle}.json`
     } else if (exportFormat === 'md') {
       const md = `# ${summary.title}\n\n${summary.content}\n\n---\n*${summary.noteCount} notes · ${new Date(summary.createdAt).toLocaleDateString()}*`
       a.href = URL.createObjectURL(new Blob([md], { type: 'text/plain' }))
+      a.download = `${safeTitle}.md`
+    } else {
+      const plain = `${summary.title}\n${'='.repeat(summary.title.length)}\n\n${stripMarkdown(summary.content)}\n\nNotes: ${summary.noteCount} | Date: ${new Date(summary.createdAt).toLocaleDateString()}`
+      a.href = URL.createObjectURL(new Blob([plain], { type: 'text/plain' }))
+      a.download = `${safeTitle}.txt`
     }
+
     a.click()
-    URL.revokeObjectURL(url)
+    URL.revokeObjectURL(a.href)
   }
 
   return (
@@ -319,8 +385,8 @@ function SummaryCard({
             className="overflow-hidden"
           >
             <div className="px-5 pb-5 border-t border-border pt-4 space-y-4">
-              <div className="prose-dark text-sm whitespace-pre-wrap font-sans leading-relaxed">
-                {summary.content}
+              <div className="text-sm font-sans leading-relaxed">
+                {renderMarkdown(summary.content)}
               </div>
               <div className="flex items-center gap-2 pt-2">
                 <button
