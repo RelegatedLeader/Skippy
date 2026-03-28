@@ -3,21 +3,98 @@
 import { useEffect, useState, useCallback } from 'react'
 import Link from 'next/link'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Brain, Trash2, Star, ArrowLeft, Bot, RefreshCw, Search } from 'lucide-react'
-import { cn, getCategoryColor, getCategoryIcon } from '@/lib/utils'
+import {
+  Brain, Trash2, Star, ArrowLeft, Bot, RefreshCw, Search,
+  Bell, Sparkles, CheckCircle2, Circle, Plus, X, Calendar,
+  ChevronDown, ChevronUp,
+} from 'lucide-react'
+import { cn, getCategoryColor, getCategoryIcon, formatRelativeTime } from '@/lib/utils'
 import { Sidebar } from '@/components/layout/Sidebar'
 
-interface Memory { id: string; category: string; content: string; importance: number; tags: string[]; createdAt: string; updatedAt: string }
-interface MemoryData { memories: Memory[]; grouped: Record<string, Memory[]>; total: number }
+// ─── Types ────────────────────────────────────────────────────────────────────
+
+interface Memory {
+  id: string
+  category: string
+  content: string
+  importance: number
+  tags: string[]
+  sourceType: string | null
+  sourceId: string | null
+  sourceLabel: string | null
+  createdAt: string
+  updatedAt: string
+}
+
+interface Reminder {
+  id: string
+  content: string
+  dueDate: string | null
+  timeframeLabel: string | null
+  isDone: boolean
+  completedAt: string | null
+  sourceType: string | null
+  sourceId: string | null
+  createdAt: string
+}
+
+interface MemoryData {
+  memories: Memory[]
+  grouped: Record<string, Memory[]>
+  total: number
+}
 
 const CATEGORIES = ['all', 'fact', 'preference', 'goal', 'mood', 'skill', 'context']
 
+const SUGGEST_QUESTIONS = [
+  'What did I ask you to remember?',
+  'What are my main goals?',
+  'How do I tend to argue in debates?',
+  'What are my key interests and preferences?',
+  'What emotional patterns have you noticed in me?',
+]
+
+// ─── Reminder grouping ────────────────────────────────────────────────────────
+
+function getReminderGroup(reminder: Reminder): 'overdue' | 'today' | 'week' | 'later' | 'anytime' {
+  if (!reminder.dueDate) return 'anytime'
+  const now = new Date()
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+  const tomorrow = new Date(today.getTime() + 86_400_000)
+  const nextWeek = new Date(today.getTime() + 7 * 86_400_000)
+  const due = new Date(reminder.dueDate)
+  const dueDay = new Date(due.getFullYear(), due.getMonth(), due.getDate())
+  if (dueDay < today) return 'overdue'
+  if (dueDay.getTime() === today.getTime()) return 'today'
+  if (dueDay <= nextWeek) return 'week'
+  if (dueDay > nextWeek && dueDay <= tomorrow) return 'later' // shouldn't happen
+  return 'later'
+}
+
+function formatDueDate(dueDate: string): string {
+  const due = new Date(dueDate)
+  const now = new Date()
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+  const dueDay = new Date(due.getFullYear(), due.getMonth(), due.getDate())
+  const diffDays = Math.round((dueDay.getTime() - today.getTime()) / 86_400_000)
+  if (diffDays < -1) return `overdue · ${due.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}`
+  if (diffDays === -1) return 'overdue · yesterday'
+  if (diffDays === 0) return 'today'
+  if (diffDays === 1) return 'tomorrow'
+  if (diffDays <= 7) return `in ${diffDays} days`
+  return due.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+}
+
+// ─── Main page ────────────────────────────────────────────────────────────────
+
+type Tab = 'memories' | 'reminders' | 'ask'
+
 export default function MemoryPage() {
   const [data, setData] = useState<MemoryData | null>(null)
+  const [reminders, setReminders] = useState<Reminder[]>([])
   const [loading, setLoading] = useState(true)
-  const [selectedCategory, setSelectedCategory] = useState('all')
-  const [searchQuery, setSearchQuery] = useState('')
-  const [deleting, setDeleting] = useState<string | null>(null)
+  const [remindersLoading, setRemindersLoading] = useState(true)
+  const [activeTab, setActiveTab] = useState<Tab>('memories')
 
   const fetchMemories = useCallback(async () => {
     setLoading(true)
@@ -27,28 +104,69 @@ export default function MemoryPage() {
     } finally { setLoading(false) }
   }, [])
 
-  useEffect(() => { fetchMemories() }, [fetchMemories])
-
-  const handleDelete = async (id: string) => {
-    setDeleting(id)
+  const fetchReminders = useCallback(async () => {
+    setRemindersLoading(true)
     try {
-      await fetch(`/api/memories?id=${id}`, { method: 'DELETE' })
-      setData((prev) => {
-        if (!prev) return prev
-        const memories = prev.memories.filter((m) => m.id !== id)
-        const grouped = memories.reduce((acc, m) => { if (!acc[m.category]) acc[m.category] = []; acc[m.category].push(m); return acc }, {} as Record<string, Memory[]>)
-        return { memories, grouped, total: memories.length }
-      })
-    } finally { setDeleting(null) }
+      const res = await fetch('/api/reminders')
+      if (res.ok) setReminders(await res.json())
+    } finally { setRemindersLoading(false) }
+  }, [])
+
+  useEffect(() => {
+    fetchMemories()
+    fetchReminders()
+  }, [fetchMemories, fetchReminders])
+
+  const handleDeleteMemory = async (id: string) => {
+    await fetch(`/api/memories?id=${id}`, { method: 'DELETE' })
+    setData(prev => {
+      if (!prev) return prev
+      const memories = prev.memories.filter(m => m.id !== id)
+      const grouped = memories.reduce((acc, m) => {
+        if (!acc[m.category]) acc[m.category] = []
+        acc[m.category].push(m)
+        return acc
+      }, {} as Record<string, Memory[]>)
+      return { memories, grouped, total: memories.length }
+    })
   }
 
-  const filtered = (data?.memories || []).filter((m) => {
-    const matchCat = selectedCategory === 'all' || m.category === selectedCategory
-    const matchSearch = !searchQuery || m.content.toLowerCase().includes(searchQuery.toLowerCase())
-    return matchCat && matchSearch
-  })
+  const handleToggleReminder = async (id: string, isDone: boolean) => {
+    const res = await fetch(`/api/reminders/${id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ isDone }),
+    })
+    if (res.ok) {
+      const updated: Reminder = await res.json()
+      setReminders(prev => prev.map(r => r.id === id ? updated : r))
+    }
+  }
 
-  const catCounts = (data?.memories || []).reduce((acc, m) => { acc[m.category] = (acc[m.category] || 0) + 1; return acc }, {} as Record<string, number>)
+  const handleDeleteReminder = async (id: string) => {
+    await fetch(`/api/reminders/${id}`, { method: 'DELETE' })
+    setReminders(prev => prev.filter(r => r.id !== id))
+  }
+
+  const handleAddReminder = async (content: string, dueDate: string) => {
+    const res = await fetch('/api/reminders', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content, dueDate: dueDate || undefined }),
+    })
+    if (res.ok) {
+      const created: Reminder = await res.json()
+      setReminders(prev => [created, ...prev])
+    }
+  }
+
+  const pendingCount = reminders.filter(r => !r.isDone).length
+
+  const TAB_CONFIG: { key: Tab; label: string; icon: React.ReactNode; badge?: number }[] = [
+    { key: 'memories', label: 'Memories', icon: <Brain className="w-3.5 h-3.5" />, badge: data?.total },
+    { key: 'reminders', label: 'Reminders', icon: <Bell className="w-3.5 h-3.5" />, badge: pendingCount || undefined },
+    { key: 'ask', label: 'Ask Skippy', icon: <Sparkles className="w-3.5 h-3.5" /> },
+  ]
 
   return (
     <div className="h-screen flex bg-background">
@@ -58,114 +176,213 @@ export default function MemoryPage() {
 
         {/* Header */}
         <div className="sticky top-0 z-10 bg-background/85 backdrop-blur-md border-b border-border px-8 py-4">
-          <div className="max-w-5xl mx-auto flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              <Link href="/chat" className="p-2 rounded-xl text-muted hover:text-foreground hover:bg-surface transition-colors">
-                <ArrowLeft className="w-4 h-4" />
-              </Link>
-              <div>
-                <h1 className="font-display text-xl font-black text-foreground flex items-center gap-2.5 tracking-tight">
-                  <Brain className="w-5 h-5 text-accent" />
-                  Skippy&apos;s Memory
-                </h1>
-                <p className="text-xs text-muted mt-0.5">{data?.total || 0} memories stored</p>
+          <div className="max-w-5xl mx-auto">
+            <div className="flex items-center justify-between mb-4">
+              <div className="flex items-center gap-3">
+                <Link href="/chat" className="p-2 rounded-xl text-muted hover:text-foreground hover:bg-surface transition-colors">
+                  <ArrowLeft className="w-4 h-4" />
+                </Link>
+                <div>
+                  <h1 className="font-display text-xl font-black text-foreground flex items-center gap-2.5 tracking-tight">
+                    <Brain className="w-5 h-5 text-accent" />
+                    Skippy&apos;s Memory
+                  </h1>
+                  <p className="text-xs text-muted mt-0.5">
+                    {data?.total || 0} memories
+                    {pendingCount > 0 && <span className="text-accent"> · {pendingCount} reminder{pendingCount !== 1 ? 's' : ''} pending</span>}
+                  </p>
+                </div>
               </div>
+              <button
+                onClick={() => { fetchMemories(); fetchReminders() }}
+                disabled={loading && remindersLoading}
+                className="p-2 rounded-xl text-muted hover:text-accent hover:bg-accent/10 transition-colors"
+              >
+                <RefreshCw className={cn('w-4 h-4', (loading || remindersLoading) && 'animate-spin')} />
+              </button>
             </div>
-            <button onClick={fetchMemories} disabled={loading}
-              className="p-2 rounded-xl text-muted hover:text-accent hover:bg-accent/10 transition-colors">
-              <RefreshCw className={cn('w-4 h-4', loading && 'animate-spin')} />
-            </button>
-          </div>
-        </div>
 
-        <div className="max-w-5xl mx-auto px-8 py-8 relative z-10">
-          {/* Stats grid */}
-          {data && data.total > 0 && (
-            <motion.div initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }}
-              className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 mb-8">
-              {Object.entries(catCounts).map(([cat, count]) => {
-                const color = getCategoryColor(cat)
-                return (
-                  <motion.div key={cat} whileHover={{ y: -2 }}
-                    onClick={() => setSelectedCategory(cat)}
-                    className={cn('p-3 rounded-xl cursor-pointer transition-all text-center border',
-                      selectedCategory === cat ? 'border-accent/40 bg-accent/8' : 'bg-surface border-border hover:border-accent/25'
-                    )}>
-                    <div className="text-xl mb-1">{getCategoryIcon(cat)}</div>
-                    <div className="text-lg font-black" style={{ color }}>{count}</div>
-                    <div className="text-[10px] text-muted capitalize">{cat}</div>
-                  </motion.div>
-                )
-              })}
-            </motion.div>
-          )}
-
-          {/* Filters */}
-          <div className="flex flex-col sm:flex-row gap-3 mb-6">
-            <div className="relative flex-1">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted/50" />
-              <input type="text" value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="Search memories…"
-                className="w-full pl-10 pr-4 py-2.5 bg-surface border border-border rounded-xl text-sm text-foreground placeholder:text-muted/40 focus:outline-none focus:border-accent/40 focus:shadow-[0_0_0_3px_rgba(232,184,75,0.07)] transition-all"
-              />
-            </div>
-            <div className="flex items-center gap-1 overflow-x-auto">
-              {CATEGORIES.map((cat) => (
-                <button key={cat} onClick={() => setSelectedCategory(cat)}
-                  className={cn('px-3 py-1.5 rounded-lg text-xs font-medium whitespace-nowrap transition-all',
-                    selectedCategory === cat ? 'bg-accent text-background font-bold' : 'bg-surface border border-border text-muted hover:text-foreground hover:border-accent/30'
+            {/* Tabs */}
+            <div className="flex items-center gap-1">
+              {TAB_CONFIG.map(tab => (
+                <button key={tab.key} onClick={() => setActiveTab(tab.key)}
+                  className={cn(
+                    'flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-xs font-medium transition-all',
+                    activeTab === tab.key
+                      ? 'bg-accent text-background font-bold'
+                      : 'text-muted hover:text-foreground hover:bg-surface'
                   )}>
-                  {cat === 'all' ? 'All' : cat.charAt(0).toUpperCase() + cat.slice(1)}
-                  {cat !== 'all' && catCounts[cat] ? <span className="ml-1.5 opacity-60">{catCounts[cat]}</span> : null}
+                  {tab.icon}
+                  {tab.label}
+                  {tab.badge !== undefined && tab.badge > 0 && (
+                    <span className={cn(
+                      'text-[10px] font-bold px-1.5 py-0.5 rounded-full',
+                      activeTab === tab.key ? 'bg-background/20' : 'bg-accent/15 text-accent'
+                    )}>
+                      {tab.badge}
+                    </span>
+                  )}
                 </button>
               ))}
             </div>
           </div>
+        </div>
 
-          {/* Cards */}
-          {loading ? (
-            <div className="flex items-center justify-center py-24 gap-3 text-muted">
-              <Bot className="w-5 h-5 text-accent animate-pulse" strokeWidth={1.5} />
-              <span className="text-sm">Loading memories…</span>
-            </div>
-          ) : filtered.length === 0 ? (
-            <div className="text-center py-24">
-              <div className="w-14 h-14 rounded-2xl bg-surface border border-accent/20 flex items-center justify-center mx-auto mb-4 shadow-glow-gold-sm animate-pulse-gold">
-                <Brain className="w-7 h-7 text-accent/60" />
-              </div>
-              <h3 className="font-display text-xl font-bold text-foreground mb-2">
-                {data?.total === 0 ? 'No memories yet' : 'No match'}
-              </h3>
-              <p className="text-muted text-sm max-w-sm mx-auto leading-relaxed">
-                {data?.total === 0
-                  ? 'Start chatting with Skippy. After each conversation, key facts, preferences, and insights are automatically stored here.'
-                  : 'Try adjusting your search or filter.'}
-              </p>
-              {data?.total === 0 && (
-                <Link href="/chat" className="btn-gold inline-flex items-center gap-2 mt-6 px-5 py-2.5 rounded-xl text-sm relative">
-                  <Bot className="w-4 h-4 relative z-10" strokeWidth={1.5} />
-                  <span className="relative z-10">Start a conversation</span>
-                </Link>
-              )}
-            </div>
-          ) : (
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <AnimatePresence mode="popLayout">
-                {filtered.map((mem) => (
-                  <MemoryCard key={mem.id} memory={mem} onDelete={handleDelete} isDeleting={deleting === mem.id} />
-                ))}
-              </AnimatePresence>
-            </div>
-          )}
+        <div className="max-w-5xl mx-auto px-8 py-8 relative z-10">
+          <AnimatePresence mode="wait">
+            {activeTab === 'memories' && (
+              <motion.div key="memories" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }}>
+                <MemoriesTab data={data} loading={loading} onDelete={handleDeleteMemory} />
+              </motion.div>
+            )}
+            {activeTab === 'reminders' && (
+              <motion.div key="reminders" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }}>
+                <RemindersTab
+                  reminders={reminders}
+                  loading={remindersLoading}
+                  onToggle={handleToggleReminder}
+                  onDelete={handleDeleteReminder}
+                  onAdd={handleAddReminder}
+                />
+              </motion.div>
+            )}
+            {activeTab === 'ask' && (
+              <motion.div key="ask" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }}>
+                <AskTab />
+              </motion.div>
+            )}
+          </AnimatePresence>
         </div>
       </main>
     </div>
   )
 }
 
+// ─── Memories tab ─────────────────────────────────────────────────────────────
+
+function MemoriesTab({
+  data, loading, onDelete,
+}: {
+  data: MemoryData | null
+  loading: boolean
+  onDelete: (id: string) => Promise<void>
+}) {
+  const [selectedCategory, setSelectedCategory] = useState('all')
+  const [searchQuery, setSearchQuery] = useState('')
+  const [deleting, setDeleting] = useState<string | null>(null)
+
+  const handleDelete = async (id: string) => {
+    setDeleting(id)
+    await onDelete(id)
+    setDeleting(null)
+  }
+
+  const filtered = (data?.memories || []).filter(m => {
+    const matchCat = selectedCategory === 'all' || m.category === selectedCategory
+    const q = searchQuery.toLowerCase()
+    const matchSearch = !q ||
+      m.content.toLowerCase().includes(q) ||
+      m.category.toLowerCase().includes(q) ||
+      (m.sourceLabel?.toLowerCase().includes(q) ?? false) ||
+      m.tags.some(t => t.toLowerCase().includes(q))
+    return matchCat && matchSearch
+  })
+
+  const catCounts = (data?.memories || []).reduce((acc, m) => {
+    acc[m.category] = (acc[m.category] || 0) + 1
+    return acc
+  }, {} as Record<string, number>)
+
+  return (
+    <>
+      {/* Stats grid */}
+      {data && data.total > 0 && (
+        <motion.div initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }}
+          className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 mb-8">
+          {Object.entries(catCounts).map(([cat, count]) => {
+            const color = getCategoryColor(cat)
+            return (
+              <motion.div key={cat} whileHover={{ y: -2 }}
+                onClick={() => setSelectedCategory(cat)}
+                className={cn('p-3 rounded-xl cursor-pointer transition-all text-center border',
+                  selectedCategory === cat ? 'border-accent/40 bg-accent/8' : 'bg-surface border-border hover:border-accent/25'
+                )}>
+                <div className="text-xl mb-1">{getCategoryIcon(cat)}</div>
+                <div className="text-lg font-black" style={{ color }}>{count}</div>
+                <div className="text-[10px] text-muted capitalize">{cat}</div>
+              </motion.div>
+            )
+          })}
+        </motion.div>
+      )}
+
+      {/* Filters */}
+      <div className="flex flex-col sm:flex-row gap-3 mb-6">
+        <div className="relative flex-1">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted/50" />
+          <input type="text" value={searchQuery} onChange={e => setSearchQuery(e.target.value)}
+            placeholder="Search memories, sources, tags…"
+            className="w-full pl-10 pr-4 py-2.5 bg-surface border border-border rounded-xl text-sm text-foreground placeholder:text-muted/40 focus:outline-none focus:border-accent/40 focus:shadow-[0_0_0_3px_rgba(232,184,75,0.07)] transition-all"
+          />
+        </div>
+        <div className="flex items-center gap-1 overflow-x-auto">
+          {CATEGORIES.map(cat => (
+            <button key={cat} onClick={() => setSelectedCategory(cat)}
+              className={cn('px-3 py-1.5 rounded-lg text-xs font-medium whitespace-nowrap transition-all',
+                selectedCategory === cat ? 'bg-accent text-background font-bold' : 'bg-surface border border-border text-muted hover:text-foreground hover:border-accent/30'
+              )}>
+              {cat === 'all' ? 'All' : cat.charAt(0).toUpperCase() + cat.slice(1)}
+              {cat !== 'all' && catCounts[cat] ? <span className="ml-1.5 opacity-60">{catCounts[cat]}</span> : null}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Cards */}
+      {loading ? (
+        <div className="flex items-center justify-center py-24 gap-3 text-muted">
+          <Bot className="w-5 h-5 text-accent animate-pulse" strokeWidth={1.5} />
+          <span className="text-sm">Loading memories…</span>
+        </div>
+      ) : filtered.length === 0 ? (
+        <div className="text-center py-24">
+          <div className="w-14 h-14 rounded-2xl bg-surface border border-accent/20 flex items-center justify-center mx-auto mb-4 shadow-glow-gold-sm animate-pulse-gold">
+            <Brain className="w-7 h-7 text-accent/60" />
+          </div>
+          <h3 className="font-display text-xl font-bold text-foreground mb-2">
+            {data?.total === 0 ? 'No memories yet' : 'No match'}
+          </h3>
+          <p className="text-muted text-sm max-w-sm mx-auto leading-relaxed">
+            {data?.total === 0
+              ? 'Start chatting with Skippy. Key facts, preferences, and goals are automatically stored after each conversation.'
+              : 'Try adjusting your search or filter.'}
+          </p>
+          {data?.total === 0 && (
+            <Link href="/chat" className="btn-gold inline-flex items-center gap-2 mt-6 px-5 py-2.5 rounded-xl text-sm relative">
+              <Bot className="w-4 h-4 relative z-10" strokeWidth={1.5} />
+              <span className="relative z-10">Start a conversation</span>
+            </Link>
+          )}
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <AnimatePresence mode="popLayout">
+            {filtered.map(mem => (
+              <MemoryCard key={mem.id} memory={mem} onDelete={handleDelete} isDeleting={deleting === mem.id} />
+            ))}
+          </AnimatePresence>
+        </div>
+      )}
+    </>
+  )
+}
+
 function MemoryCard({ memory, onDelete, isDeleting }: { memory: Memory; onDelete: (id: string) => void; isDeleting: boolean }) {
   const color = getCategoryColor(memory.category)
   const icon = getCategoryIcon(memory.category)
+
+  const sourceIcon = memory.sourceType === 'debate' ? '⚔' : memory.sourceType === 'manual' ? '✏️' : '💬'
+
   return (
     <motion.div layout
       initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.95 }}
@@ -173,9 +390,7 @@ function MemoryCard({ memory, onDelete, isDeleting }: { memory: Memory; onDelete
       className="group relative p-4 rounded-xl bg-surface border transition-all duration-200 overflow-hidden"
       style={{ borderColor: `${color}20` }}
     >
-      {/* Left accent bar */}
       <div className="absolute left-0 top-3 bottom-3 w-[2px] rounded-r-full" style={{ backgroundColor: color }} />
-      {/* Subtle bg tint */}
       <div className="absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity duration-300"
         style={{ background: `radial-gradient(circle at 0% 50%, ${color}06, transparent 60%)` }} />
 
@@ -189,7 +404,6 @@ function MemoryCard({ memory, onDelete, isDeleting }: { memory: Memory; onDelete
             </span>
           </div>
           <div className="flex items-center gap-2">
-            {/* Importance */}
             <div className="flex items-center gap-0.5">
               {Array.from({ length: 5 }).map((_, i) => (
                 <Star key={i} className={cn('w-3 h-3', i < Math.round(memory.importance / 2) ? 'fill-accent text-accent' : 'text-muted/20')} />
@@ -204,16 +418,390 @@ function MemoryCard({ memory, onDelete, isDeleting }: { memory: Memory; onDelete
 
         <p className="text-sm text-foreground/90 leading-relaxed mb-2.5">{memory.content}</p>
 
-        {memory.tags.length > 0 && (
-          <div className="flex flex-wrap gap-1.5">
-            {memory.tags.map((tag) => (
-              <span key={tag} className="text-[10px] px-2 py-0.5 rounded-full bg-surface-2 text-muted/60 border border-border">
-                #{tag}
-              </span>
-            ))}
-          </div>
-        )}
+        <div className="flex items-center justify-between gap-2 flex-wrap">
+          {memory.tags.length > 0 && (
+            <div className="flex flex-wrap gap-1.5">
+              {memory.tags.map(tag => (
+                <span key={tag} className="text-[10px] px-2 py-0.5 rounded-full bg-surface-2 text-muted/60 border border-border">
+                  #{tag}
+                </span>
+              ))}
+            </div>
+          )}
+          {memory.sourceLabel && (
+            <span className="text-[10px] text-muted/50 italic flex items-center gap-1 ml-auto shrink-0">
+              <span>{sourceIcon}</span>
+              <span className="truncate max-w-[150px]">{memory.sourceLabel}</span>
+            </span>
+          )}
+        </div>
       </div>
     </motion.div>
+  )
+}
+
+// ─── Reminders tab ────────────────────────────────────────────────────────────
+
+const REMINDER_GROUPS: { key: string; label: string; color: string }[] = [
+  { key: 'overdue', label: 'Overdue', color: '#ef4444' },
+  { key: 'today', label: 'Today', color: '#f59e0b' },
+  { key: 'week', label: 'This Week', color: '#10b981' },
+  { key: 'later', label: 'Later', color: '#3b82f6' },
+  { key: 'anytime', label: 'Anytime', color: '#8b5cf6' },
+]
+
+function RemindersTab({
+  reminders, loading, onToggle, onDelete, onAdd,
+}: {
+  reminders: Reminder[]
+  loading: boolean
+  onToggle: (id: string, isDone: boolean) => Promise<void>
+  onDelete: (id: string) => Promise<void>
+  onAdd: (content: string, dueDate: string) => Promise<void>
+}) {
+  const [showDone, setShowDone] = useState(false)
+  const [showAddForm, setShowAddForm] = useState(false)
+
+  const pending = reminders.filter(r => !r.isDone)
+  const done = reminders.filter(r => r.isDone)
+
+  const grouped = pending.reduce((acc, r) => {
+    const key = getReminderGroup(r)
+    if (!acc[key]) acc[key] = []
+    acc[key].push(r)
+    return acc
+  }, {} as Record<string, Reminder[]>)
+
+  const activeGroups = REMINDER_GROUPS.filter(g => (grouped[g.key] || []).length > 0)
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center py-24 gap-3 text-muted">
+        <Bell className="w-5 h-5 text-accent animate-pulse" strokeWidth={1.5} />
+        <span className="text-sm">Loading reminders…</span>
+      </div>
+    )
+  }
+
+  return (
+    <div className="space-y-6">
+      {/* Add reminder button / form */}
+      <div>
+        {!showAddForm ? (
+          <button onClick={() => setShowAddForm(true)}
+            className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-surface border border-border text-sm text-muted hover:text-accent hover:border-accent/40 transition-all">
+            <Plus className="w-4 h-4" />
+            Add reminder
+          </button>
+        ) : (
+          <AddReminderForm onAdd={onAdd} onClose={() => setShowAddForm(false)} />
+        )}
+      </div>
+
+      {/* Empty state */}
+      {pending.length === 0 && !showAddForm && (
+        <div className="text-center py-20">
+          <div className="w-14 h-14 rounded-2xl bg-surface border border-accent/20 flex items-center justify-center mx-auto mb-4">
+            <Bell className="w-7 h-7 text-accent/40" />
+          </div>
+          <h3 className="font-display text-xl font-bold text-foreground mb-2">No pending reminders</h3>
+          <p className="text-muted text-sm max-w-sm mx-auto leading-relaxed">
+            Tell Skippy &quot;remind me to X by Y&quot; in any chat and it&apos;ll appear here automatically. Or add one manually above.
+          </p>
+        </div>
+      )}
+
+      {/* Grouped reminders */}
+      {activeGroups.map(({ key, label, color }) => (
+        <div key={key}>
+          <div className="flex items-center gap-2 mb-3">
+            <div className="w-2 h-2 rounded-full" style={{ backgroundColor: color }} />
+            <span className="text-xs font-bold uppercase tracking-wider" style={{ color }}>{label}</span>
+            <span className="text-xs text-muted/50">({(grouped[key] || []).length})</span>
+          </div>
+          <div className="space-y-2">
+            {(grouped[key] || []).map(r => (
+              <ReminderCard key={r.id} reminder={r} groupColor={color} onToggle={onToggle} onDelete={onDelete} />
+            ))}
+          </div>
+        </div>
+      ))}
+
+      {/* Completed */}
+      {done.length > 0 && (
+        <div>
+          <button onClick={() => setShowDone(v => !v)}
+            className="flex items-center gap-2 text-xs text-muted/50 hover:text-muted transition-colors mb-2">
+            {showDone ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+            {done.length} completed
+          </button>
+          {showDone && (
+            <div className="space-y-2">
+              {done.map(r => (
+                <ReminderCard key={r.id} reminder={r} groupColor="#64748b" onToggle={onToggle} onDelete={onDelete} />
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function ReminderCard({
+  reminder, groupColor, onToggle, onDelete,
+}: {
+  reminder: Reminder
+  groupColor: string
+  onToggle: (id: string, isDone: boolean) => Promise<void>
+  onDelete: (id: string) => Promise<void>
+}) {
+  const [toggling, setToggling] = useState(false)
+  const [deleting, setDeleting] = useState(false)
+
+  const duePart = reminder.dueDate
+    ? formatDueDate(reminder.dueDate)
+    : reminder.timeframeLabel || null
+
+  const isOverdue = reminder.dueDate && getReminderGroup(reminder) === 'overdue'
+
+  return (
+    <motion.div layout
+      initial={{ opacity: 0, x: -10 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: 10 }}
+      className={cn(
+        'group flex items-start gap-3 p-3.5 rounded-xl border transition-all',
+        reminder.isDone ? 'bg-surface/50 border-border/50 opacity-50' : 'bg-surface border-border hover:border-accent/25'
+      )}
+    >
+      {/* Checkbox */}
+      <button
+        onClick={async () => { setToggling(true); await onToggle(reminder.id, !reminder.isDone); setToggling(false) }}
+        disabled={toggling}
+        className="mt-0.5 shrink-0 text-muted hover:text-accent transition-colors"
+      >
+        {toggling
+          ? <RefreshCw className="w-4 h-4 animate-spin text-accent" />
+          : reminder.isDone
+          ? <CheckCircle2 className="w-4 h-4 text-accent" />
+          : <Circle className="w-4 h-4" style={{ color: groupColor }} />
+        }
+      </button>
+
+      {/* Content */}
+      <div className="flex-1 min-w-0">
+        <p className={cn('text-sm text-foreground leading-relaxed', reminder.isDone && 'line-through text-muted')}>
+          {reminder.content}
+        </p>
+        <div className="flex items-center gap-2 mt-1 flex-wrap">
+          {duePart && (
+            <span className={cn(
+              'text-[10px] font-medium px-2 py-0.5 rounded-full',
+              isOverdue
+                ? 'bg-red-500/10 text-red-400 border border-red-500/20'
+                : 'border border-border text-muted/60'
+            )}>
+              <Calendar className="w-2.5 h-2.5 inline mr-1" />
+              {duePart}
+            </span>
+          )}
+          {reminder.sourceType === 'chat' && (
+            <span className="text-[10px] text-muted/40">💬 from chat</span>
+          )}
+        </div>
+      </div>
+
+      {/* Delete */}
+      <button
+        onClick={async () => { setDeleting(true); await onDelete(reminder.id) }}
+        disabled={deleting}
+        className="opacity-0 group-hover:opacity-100 p-1.5 rounded-lg text-muted hover:text-red-400 hover:bg-red-400/10 transition-all shrink-0"
+      >
+        {deleting ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
+      </button>
+    </motion.div>
+  )
+}
+
+function AddReminderForm({ onAdd, onClose }: { onAdd: (content: string, dueDate: string) => Promise<void>; onClose: () => void }) {
+  const [content, setContent] = useState('')
+  const [dueDate, setDueDate] = useState('')
+  const [loading, setLoading] = useState(false)
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!content.trim()) return
+    setLoading(true)
+    await onAdd(content.trim(), dueDate)
+    setLoading(false)
+    onClose()
+  }
+
+  return (
+    <motion.form
+      initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }}
+      onSubmit={handleSubmit}
+      className="p-4 bg-surface border border-accent/25 rounded-xl space-y-3"
+    >
+      <input
+        type="text" value={content} onChange={e => setContent(e.target.value)}
+        placeholder="What do you need to remember?"
+        autoFocus
+        className="w-full px-3 py-2 bg-background border border-border rounded-lg text-sm text-foreground placeholder:text-muted/40 focus:outline-none focus:border-accent/40 transition-all"
+      />
+      <div className="flex items-center gap-2">
+        <input
+          type="date" value={dueDate} onChange={e => setDueDate(e.target.value)}
+          className="flex-1 px-3 py-2 bg-background border border-border rounded-lg text-sm text-foreground focus:outline-none focus:border-accent/40 transition-all"
+        />
+        <button type="submit" disabled={loading || !content.trim()}
+          className="btn-gold px-4 py-2 rounded-lg text-sm relative disabled:opacity-40">
+          <span className="relative z-10">{loading ? 'Adding…' : 'Add'}</span>
+        </button>
+        <button type="button" onClick={onClose}
+          className="p-2 rounded-lg text-muted hover:text-foreground hover:bg-surface-2 transition-colors">
+          <X className="w-4 h-4" />
+        </button>
+      </div>
+    </motion.form>
+  )
+}
+
+// ─── Ask tab ──────────────────────────────────────────────────────────────────
+
+function AskTab() {
+  const [query, setQuery] = useState('')
+  const [answer, setAnswer] = useState('')
+  const [sources, setSources] = useState<Memory[]>([])
+  const [asking, setAsking] = useState(false)
+  const [showSources, setShowSources] = useState(false)
+
+  const handleAsk = async (q?: string) => {
+    const question = (q || query).trim()
+    if (!question || asking) return
+    if (q) setQuery(q)
+    setAsking(true)
+    setAnswer('')
+    setSources([])
+    setShowSources(false)
+    try {
+      const res = await fetch('/api/memories/ask', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ question }),
+      })
+      if (res.ok) {
+        const data = await res.json()
+        setAnswer(data.answer)
+        setSources(data.sources || [])
+      }
+    } finally {
+      setAsking(false)
+    }
+  }
+
+  return (
+    <div className="max-w-2xl mx-auto space-y-6">
+      {/* Input */}
+      <div className="relative">
+        <div className="flex gap-2">
+          <div className="relative flex-1">
+            <Sparkles className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-accent/60" />
+            <input
+              type="text" value={query} onChange={e => setQuery(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter') handleAsk() }}
+              placeholder="Ask Skippy about your memories…"
+              className="w-full pl-10 pr-4 py-3 bg-surface border border-border rounded-xl text-sm text-foreground placeholder:text-muted/40 focus:outline-none focus:border-accent/40 focus:shadow-[0_0_0_3px_rgba(232,184,75,0.07)] transition-all"
+            />
+          </div>
+          <button
+            onClick={() => handleAsk()}
+            disabled={!query.trim() || asking}
+            className="btn-gold px-5 py-3 rounded-xl text-sm relative disabled:opacity-40"
+          >
+            <span className="relative z-10">{asking ? 'Thinking…' : 'Ask'}</span>
+          </button>
+        </div>
+      </div>
+
+      {/* Suggested questions */}
+      {!answer && !asking && (
+        <div>
+          <p className="text-xs text-muted/50 mb-2 uppercase tracking-wider">Suggested</p>
+          <div className="flex flex-wrap gap-2">
+            {SUGGEST_QUESTIONS.map(q => (
+              <button key={q} onClick={() => handleAsk(q)}
+                className="px-3 py-1.5 rounded-lg bg-surface border border-border text-xs text-muted hover:text-foreground hover:border-accent/30 transition-all text-left">
+                {q}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Loading */}
+      {asking && (
+        <div className="flex items-center gap-3 text-muted py-8">
+          <Bot className="w-5 h-5 text-accent animate-pulse" strokeWidth={1.5} />
+          <span className="text-sm">Skippy is searching your memories…</span>
+        </div>
+      )}
+
+      {/* Answer */}
+      {answer && !asking && (
+        <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} className="space-y-4">
+          <div className="p-5 bg-surface border border-accent/20 rounded-xl">
+            <div className="flex items-center gap-2 mb-3">
+              <Brain className="w-4 h-4 text-accent" />
+              <span className="text-xs font-bold text-accent uppercase tracking-wider">Skippy&apos;s Answer</span>
+            </div>
+            <div className="text-sm text-foreground/90 leading-relaxed whitespace-pre-wrap">
+              {answer}
+            </div>
+          </div>
+
+          {/* Sources */}
+          {sources.length > 0 && (
+            <div>
+              <button onClick={() => setShowSources(v => !v)}
+                className="flex items-center gap-2 text-xs text-muted/60 hover:text-muted transition-colors mb-2">
+                {showSources ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+                {sources.length} related memor{sources.length !== 1 ? 'ies' : 'y'}
+              </button>
+              {showSources && (
+                <div className="space-y-2">
+                  {sources.map(m => {
+                    const color = getCategoryColor(m.category)
+                    return (
+                      <div key={m.id} className="flex items-start gap-2.5 p-3 rounded-lg bg-surface border border-border">
+                        <span className="text-sm mt-0.5">{getCategoryIcon(m.category)}</span>
+                        <div className="flex-1 min-w-0">
+                          <p className="text-xs text-foreground/80 leading-relaxed">{m.content}</p>
+                          {m.sourceLabel && (
+                            <p className="text-[10px] text-muted/50 mt-1 italic">
+                              {m.sourceType === 'debate' ? '⚔' : '💬'} {m.sourceLabel}
+                            </p>
+                          )}
+                        </div>
+                        <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full shrink-0"
+                          style={{ backgroundColor: `${color}15`, color }}>
+                          {m.category}
+                        </span>
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Ask again */}
+          <button onClick={() => { setAnswer(''); setSources([]); setQuery('') }}
+            className="text-xs text-muted/50 hover:text-muted transition-colors flex items-center gap-1">
+            <RefreshCw className="w-3 h-3" />
+            Ask something else
+          </button>
+        </motion.div>
+      )}
+    </div>
   )
 }

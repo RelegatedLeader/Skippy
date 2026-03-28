@@ -26,13 +26,29 @@ model Message {
 }
 
 model Memory {
-  id         String   @id @default(cuid())
-  category   String   // "fact", "preference", "goal", "mood", "skill", "context"
-  content    String
-  importance Int      @default(5) // 1-10
-  createdAt  DateTime @default(now())
-  updatedAt  DateTime @updatedAt
-  tags       String   @default("[]") // JSON array stored as string
+  id          String   @id @default(cuid())
+  category    String   // "fact", "preference", "goal", "mood", "skill", "context"
+  content     String
+  importance  Int      @default(5) // 1-10
+  sourceType  String?  // "chat" | "debate" | "manual"
+  sourceId    String?  // conversationId, debateId, etc.
+  sourceLabel String?  // human-readable: conversation title, debate topic, etc.
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  tags        String   @default("[]") // JSON array stored as string
+}
+
+model Reminder {
+  id             String    @id @default(cuid())
+  content        String
+  dueDate        DateTime?
+  timeframeLabel String?   // raw text: "by Friday", "next week", etc.
+  isDone         Boolean   @default(false)
+  completedAt    DateTime?
+  sourceType     String?   // "chat" | "manual"
+  sourceId       String?   // conversationId if from chat
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
 }
 
 model Note {

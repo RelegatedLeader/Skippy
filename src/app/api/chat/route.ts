@@ -1,5 +1,5 @@
 import { prisma } from '@/lib/db'
-import { buildSystemPrompt, extractMemoriesFromConversation, generateConversationTitle } from '@/lib/memory'
+import { buildSystemPrompt, extractMemoriesFromConversation, extractRemindersFromConversation, generateConversationTitle } from '@/lib/memory'
 import { streamAIResponse, type AIModel } from '@/lib/ai'
 import { claudeAvailable } from '@/lib/claude'
 import { checkRateLimit } from '@/lib/rate-limit'
@@ -134,9 +134,9 @@ async function saveConversation(
       await prisma.conversation.update({ where: { id: conversationId }, data: { title } })
     }
 
-    extractMemoriesFromConversation(
-      messages.concat([{ role: 'assistant', content: completion }])
-    ).catch(console.error)
+    const allMessages = messages.concat([{ role: 'assistant', content: completion }])
+    extractMemoriesFromConversation(allMessages, { conversationId }).catch(console.error)
+    extractRemindersFromConversation(allMessages, conversationId).catch(console.error)
   } catch (err) {
     console.error('Failed to save conversation:', err)
   }

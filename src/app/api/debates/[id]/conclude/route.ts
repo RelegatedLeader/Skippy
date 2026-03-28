@@ -94,7 +94,7 @@ ${debate.rounds.map((r) => `<h3>Round ${r.roundNumber}</h3><p><strong>Your argum
       userArgument: r.userArgument,
       aiRebuttal: r.aiRebuttal,
     })),
-  }).catch(() => {})
+  }, debate.id).catch(() => {})
 
   return Response.json({ winner, conclusion, noteId })
 }
