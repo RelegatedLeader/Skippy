@@ -126,6 +126,9 @@ export async function streamAIResponse(
               controller.enqueue(encoder.encode(event.delta.text))
             }
           }
+        } catch (err) {
+          console.error('[Claude stream error]', err)
+          controller.error(err)
         } finally {
           controller.close()
         }

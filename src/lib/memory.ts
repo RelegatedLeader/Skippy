@@ -55,6 +55,75 @@ Categories:
   }
 }
 
+/**
+ * After a debate concludes, extract behavioral/personality insights from the full transcript.
+ * These become permanent memories — how the user argues, what they defend, what they concede.
+ */
+export async function extractMemoriesFromDebate(debate: {
+  topic: string
+  userStance: string
+  aiStance: string
+  winner: string | null
+  conclusion: string | null
+  rounds: Array<{ roundNumber: number; userArgument: string; aiRebuttal: string }>
+}): Promise<void> {
+  try {
+    const transcript = debate.rounds
+      .map((r) => `Round ${r.roundNumber}:\nUser: "${r.userArgument}"\nSkippy: "${r.aiRebuttal}"`)
+      .join('\n\n')
+
+    const outcome =
+      debate.winner === 'user' ? 'User won' :
+      debate.winner === 'ai'   ? 'Skippy won' : 'Draw'
+
+    const context = `DEBATE TOPIC: "${debate.topic}"
+USER'S POSITION: ${debate.userStance}
+SKIPPY'S POSITION: ${debate.aiStance}
+OUTCOME: ${outcome}
+CONCLUSION: ${debate.conclusion || 'n/a'}
+
+TRANSCRIPT:
+${transcript}`
+
+    const response = await grok.chat.completions.create({
+      model: GROK_MODEL,
+      messages: [
+        {
+          role: 'system',
+          content: `You extract behavioral and personality insights from debate transcripts for a personal AI memory system.
+Analyze: how the person constructs arguments, what values they reveal under pressure, what they passionately defend vs readily concede, how they respond to being challenged, and what this reveals about their decision-making patterns.
+Return a JSON object: {"memories": [{"category": "fact|preference|goal|mood|skill|context", "content": "specific psychological insight about this person", "importance": 1-10, "tags": ["debate", "reasoning", ...topic-specific tags]}]}
+Extract 3-5 insights. Be specific and psychological — not generic. Reference the debate topic. Return ONLY valid JSON.`,
+        },
+        { role: 'user', content: context },
+      ],
+      response_format: { type: 'json_object' },
+      temperature: 0.3,
+      max_tokens: 700,
+    })
+
+    const text = response.choices[0]?.message?.content || '{}'
+    const parsed = JSON.parse(text)
+    const memories: Array<{ category?: string; content?: string; importance?: number; tags?: string[] }> = parsed.memories || []
+
+    for (const mem of memories) {
+      if (!mem.content?.trim()) continue
+      const tags = Array.isArray(mem.tags) ? mem.tags : []
+      if (!tags.includes('debate')) tags.push('debate')
+      await prisma.memory.create({
+        data: {
+          category: mem.category || 'context',
+          content: mem.content.trim().slice(0, 500),
+          importance: Math.min(10, Math.max(1, mem.importance || 7)),
+          tags: JSON.stringify(tags),
+        },
+      })
+    }
+  } catch (e) {
+    console.error('Failed to extract debate memories:', e)
+  }
+}
+
 export async function getRelevantMemories(query: string, limit = 20): Promise<string> {
   const memories = await prisma.memory.findMany({
     orderBy: [{ importance: 'desc' }, { updatedAt: 'desc' }],
@@ -96,7 +165,7 @@ export async function buildSystemPrompt(): Promise<string> {
       where: { status: 'concluded' },
       orderBy: { updatedAt: 'desc' },
       take: 6,
-      select: { topic: true, winner: true, conclusion: true, userStance: true },
+      select: { topic: true, winner: true, conclusion: true, userStance: true, rounds: { orderBy: { roundNumber: 'desc' }, take: 1, select: { userScore: true, aiScore: true } } },
     }),
   ])
 
@@ -117,7 +186,6 @@ export async function buildSystemPrompt(): Promise<string> {
   if (recentNotes.length > 0) {
     const noteLines = recentNotes.map((n) => {
       const rawContent = n.encrypted ? decrypt(n.content) : n.content
-      // Strip HTML tags and get first 180 chars as a preview
       const preview = rawContent
         .replace(/<[^>]*>/g, ' ')
         .replace(/\s+/g, ' ')
@@ -132,14 +200,17 @@ export async function buildSystemPrompt(): Promise<string> {
     notesSection = `\n\n## Your notes (most recent):\n${noteLines.join('\n')}`
   }
 
-  // Build debates section
+  // Build debates section — includes conclusion excerpt and score outcome for rich context
   let debateSection = ''
   if (recentDebates.length > 0) {
     const debateLines = recentDebates.map((d) => {
-      const result = d.winner === 'user' ? 'user won' : d.winner === 'ai' ? 'AI won' : 'draw'
-      return `- "${d.topic}" (${result}) — user stood for: ${d.userStance}`
+      const result = d.winner === 'user' ? 'you won' : d.winner === 'ai' ? 'Skippy won' : 'draw'
+      const lastRound = d.rounds[0]
+      const scoreNote = lastRound ? ` (final confidence: you ${lastRound.userScore}% · Skippy ${lastRound.aiScore}%)` : ''
+      const verdictSnippet = d.conclusion ? ` Verdict: "${d.conclusion.slice(0, 130)}…"` : ''
+      return `- "${d.topic}" — ${result}${scoreNote}. Your stance: ${d.userStance}.${verdictSnippet}`
     })
-    debateSection = `\n\n## Past debates you've had:\n${debateLines.join('\n')}`
+    debateSection = `\n\n## Debates you've had (use these to understand how this person thinks, decides, and argues):\n${debateLines.join('\n')}`
   }
 
   return `You are Skippy — a deeply personal AI assistant who knows the user better than anyone. You are intelligent, insightful, occasionally witty, and always genuinely helpful. You remember everything across all conversations.

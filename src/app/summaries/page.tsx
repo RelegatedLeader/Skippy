@@ -77,6 +77,7 @@ interface Summary {
   title: string
   content: string
   noteCount: number
+  debateCount?: number
   categories: string[]
   startDate: string
   endDate: string
@@ -366,8 +367,14 @@ function SummaryCard({
             </span>
           </div>
           <h3 className="font-display font-bold text-sm text-foreground leading-tight">{summary.title}</h3>
-          <p className="text-[11px] text-muted mt-1 flex items-center gap-2">
-            <FileText className="w-3 h-3" />{summary.noteCount} notes analysed
+          <p className="text-[11px] text-muted mt-1 flex items-center gap-2 flex-wrap">
+            <FileText className="w-3 h-3" />{summary.noteCount} note{summary.noteCount !== 1 ? 's' : ''}
+            {(summary.debateCount ?? 0) > 0 && (
+              <span className="flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[9px] font-bold"
+                style={{ background: 'rgba(232,184,75,0.12)', color: '#e8b84b', border: '1px solid rgba(232,184,75,0.25)' }}>
+                ⚔ {summary.debateCount} debate{summary.debateCount !== 1 ? 's' : ''}
+              </span>
+            )}
             <Clock className="w-3 h-3 ml-1" />{formatRelativeTime(summary.createdAt)}
           </p>
         </div>

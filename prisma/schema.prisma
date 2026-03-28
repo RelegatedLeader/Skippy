@@ -54,11 +54,12 @@ model Summary {
   period     String   // "daily" | "weekly" | "monthly" | "yearly" | "custom"
   title      String
   content    String   // AI-generated summary text
-  noteCount  Int      @default(0)
-  categories String   @default("[]") // JSON array of categories included
-  startDate  DateTime
-  endDate    DateTime
-  encrypted  Boolean  @default(false)
+  noteCount   Int      @default(0)
+  debateCount Int      @default(0)
+  categories  String   @default("[]") // JSON array of categories included
+  startDate   DateTime
+  endDate     DateTime
+  encrypted   Boolean  @default(false)
   createdAt  DateTime @default(now())
 }
 

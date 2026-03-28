@@ -1,5 +1,5 @@
 import { prisma } from '@/lib/db'
-import { buildSystemPrompt } from '@/lib/memory'
+import { buildSystemPrompt, extractMemoriesFromDebate } from '@/lib/memory'
 import { getAICompletion, type AIModel } from '@/lib/ai'
 import { NextRequest } from 'next/server'
 
@@ -81,6 +81,20 @@ ${debate.rounds.map((r) => `<h3>Round ${r.roundNumber}</h3><p><strong>Your argum
     noteId = note.id
     await prisma.debate.update({ where: { id: debate.id }, data: { noteId } })
   }
+
+  // Extract behavioral insights from the debate into long-term memory (non-blocking)
+  extractMemoriesFromDebate({
+    topic: debate.topic,
+    userStance: debate.userStance,
+    aiStance: debate.aiStance,
+    winner,
+    conclusion,
+    rounds: debate.rounds.map((r) => ({
+      roundNumber: r.roundNumber,
+      userArgument: r.userArgument,
+      aiRebuttal: r.aiRebuttal,
+    })),
+  }).catch(() => {})
 
   return Response.json({ winner, conclusion, noteId })
 }
