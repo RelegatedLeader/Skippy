@@ -1,5 +1,6 @@
 import type { Metadata, Viewport } from 'next'
 import { Inter, Space_Grotesk } from 'next/font/google'
+import { ClientProviders } from '@/components/providers/ClientProviders'
 import './globals.css'
 
 const inter = Inter({
@@ -36,7 +37,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       <body
         className={`${inter.variable} ${spaceGrotesk.variable} font-sans bg-background text-foreground antialiased min-h-screen`}
       >
-        {children}
+        <ClientProviders>{children}</ClientProviders>
       </body>
     </html>
   )

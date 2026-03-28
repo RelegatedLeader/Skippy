@@ -42,14 +42,41 @@ model Memory {
 model Reminder {
   id             String    @id @default(cuid())
   content        String
-  dueDate        DateTime?
+  dueDate        DateTime? // stores full timestamp (date + time) when time is specified
   timeframeLabel String?   // raw text: "by Friday", "next week", etc.
   isDone         Boolean   @default(false)
   completedAt    DateTime?
+  isNotified     Boolean   @default(false) // true once browser notification has fired
+  xpReward       Int       @default(10)
   sourceType     String?   // "chat" | "manual"
   sourceId       String?   // conversationId if from chat
   createdAt      DateTime  @default(now())
   updatedAt      DateTime  @updatedAt
+}
+
+model Todo {
+  id          String    @id @default(cuid())
+  content     String
+  isDone      Boolean   @default(false)
+  priority    String    @default("normal") // "low" | "normal" | "high" | "urgent"
+  dueDate     DateTime?
+  completedAt DateTime?
+  noteId      String?
+  tags        String    @default("[]")
+  xpReward    Int       @default(10)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+}
+
+model UserStats {
+  id                 String   @id @default("singleton")
+  totalXP            Int      @default(0)
+  currentStreak      Int      @default(0)
+  longestStreak      Int      @default(0)
+  lastActivityDate   String   @default("") // "YYYY-MM-DD"
+  remindersCompleted Int      @default(0)
+  todosCompleted     Int      @default(0)
+  updatedAt          DateTime @updatedAt
 }
 
 model Note {

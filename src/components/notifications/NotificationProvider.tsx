@@ -1,0 +1,178 @@
+'use client'
+
+import { createContext, useContext, useEffect, useState, useCallback, useRef } from 'react'
+
+export interface ReminderItem {
+  id: string
+  content: string
+  dueDate: string | null
+  timeframeLabel: string | null
+  isDone: boolean
+  isNotified: boolean
+  xpReward: number
+  sourceType: string | null
+  createdAt: string
+}
+
+export interface UserStatsData {
+  totalXP: number
+  currentStreak: number
+  longestStreak: number
+  level: number
+  name: string
+  nextXP: number
+  currentXP: number
+  remindersCompleted: number
+  todosCompleted: number
+}
+
+interface NotificationContextType {
+  urgentCount: number
+  pendingReminders: ReminderItem[]
+  userStats: UserStatsData | null
+  refreshReminders: () => void
+  refreshStats: () => void
+  awardXP: (xp: number, type?: 'reminder' | 'todo') => Promise<number>
+}
+
+const NotificationContext = createContext<NotificationContextType>({
+  urgentCount: 0,
+  pendingReminders: [],
+  userStats: null,
+  refreshReminders: () => {},
+  refreshStats: () => {},
+  awardXP: async () => 0,
+})
+
+export function useNotifications() {
+  return useContext(NotificationContext)
+}
+
+function isUrgent(reminder: ReminderItem): boolean {
+  if (!reminder.dueDate) return false
+  const due = new Date(reminder.dueDate)
+  const tomorrow = new Date()
+  tomorrow.setDate(tomorrow.getDate() + 1)
+  tomorrow.setHours(23, 59, 59, 999)
+  return due <= tomorrow
+}
+
+export function NotificationProvider({ children }: { children: React.ReactNode }) {
+  const [pendingReminders, setPendingReminders] = useState<ReminderItem[]>([])
+  const [userStats, setUserStats] = useState<UserStatsData | null>(null)
+  const notifiedIds = useRef<Set<string>>(new Set())
+  const permissionRequested = useRef(false)
+
+  const fetchReminders = useCallback(async () => {
+    try {
+      const res = await fetch('/api/reminders?pending=true')
+      if (res.ok) {
+        const data: ReminderItem[] = await res.json()
+        setPendingReminders(data)
+        return data
+      }
+    } catch { /* ignore */ }
+    return []
+  }, [])
+
+  const fetchStats = useCallback(async () => {
+    try {
+      const res = await fetch('/api/user-stats')
+      if (res.ok) setUserStats(await res.json())
+    } catch { /* ignore */ }
+  }, [])
+
+  const requestPermission = useCallback(async () => {
+    if (typeof window === 'undefined' || !('Notification' in window)) return
+    if (permissionRequested.current) return
+    permissionRequested.current = true
+    if (Notification.permission === 'default') {
+      await Notification.requestPermission()
+    }
+  }, [])
+
+  const fireNotification = useCallback((reminder: ReminderItem) => {
+    if (typeof window === 'undefined' || !('Notification' in window)) return
+    if (Notification.permission !== 'granted') return
+    if (notifiedIds.current.has(reminder.id)) return
+
+    notifiedIds.current.add(reminder.id)
+
+    const due = reminder.dueDate ? new Date(reminder.dueDate) : null
+    const body = due
+      ? `Due: ${due.toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}`
+      : reminder.timeframeLabel || 'No due date'
+
+    new Notification(`⏰ ${reminder.content}`, {
+      body,
+      icon: '/img/skippyENHANCED3D-removebg.png',
+      tag: `skippy-reminder-${reminder.id}`,
+      requireInteraction: true,
+    })
+
+    // Mark as notified in DB
+    fetch(`/api/reminders/${reminder.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ isNotified: true }),
+    }).catch(() => {})
+  }, [])
+
+  const checkAndNotify = useCallback(async () => {
+    if (document.hidden) return // skip when tab not visible
+    const reminders = await fetchReminders()
+    const now = new Date()
+    reminders.forEach(r => {
+      if (!r.dueDate || r.isNotified || r.isDone) return
+      if (new Date(r.dueDate) <= now) {
+        fireNotification(r)
+      }
+    })
+  }, [fetchReminders, fireNotification])
+
+  const awardXP = useCallback(async (xp: number, type?: 'reminder' | 'todo'): Promise<number> => {
+    try {
+      const res = await fetch('/api/user-stats', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ xp, type }),
+      })
+      if (res.ok) {
+        const data = await res.json()
+        setUserStats(data)
+        return data.xpEarned ?? xp
+      }
+    } catch { /* ignore */ }
+    return xp
+  }, [])
+
+  useEffect(() => {
+    requestPermission()
+    fetchReminders()
+    fetchStats()
+
+    const interval = setInterval(checkAndNotify, 30_000)
+    const visibilityHandler = () => { if (!document.hidden) checkAndNotify() }
+    document.addEventListener('visibilitychange', visibilityHandler)
+
+    return () => {
+      clearInterval(interval)
+      document.removeEventListener('visibilitychange', visibilityHandler)
+    }
+  }, [requestPermission, fetchReminders, fetchStats, checkAndNotify])
+
+  const urgentCount = pendingReminders.filter(isUrgent).length
+
+  return (
+    <NotificationContext.Provider value={{
+      urgentCount,
+      pendingReminders,
+      userStats,
+      refreshReminders: fetchReminders,
+      refreshStats: fetchStats,
+      awardXP,
+    }}>
+      {children}
+    </NotificationContext.Provider>
+  )
+}

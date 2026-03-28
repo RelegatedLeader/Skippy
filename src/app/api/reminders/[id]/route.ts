@@ -1,5 +1,4 @@
-import { NextResponse } from 'next/server'
-import { NextRequest } from 'next/server'
+import { NextResponse, NextRequest } from 'next/server'
 import { prisma } from '@/lib/db'
 
 export async function PATCH(req: NextRequest, { params }: { params: { id: string } }) {
@@ -9,7 +8,11 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
       content?: string
       dueDate?: string | null
       timeframeLabel?: string | null
+      isNotified?: boolean
     }
+
+    const existing = await prisma.reminder.findUnique({ where: { id: params.id } })
+    if (!existing) return NextResponse.json({ error: 'Not found' }, { status: 404 })
 
     const data: Record<string, unknown> = {}
 
@@ -23,19 +26,33 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
     if ('dueDate' in body) {
       if (body.dueDate === null) {
         data.dueDate = null
+        data.isNotified = false // reset so notification fires if rescheduled
       } else if (body.dueDate) {
         const d = new Date(body.dueDate)
-        if (!isNaN(d.getTime())) data.dueDate = d
+        if (!isNaN(d.getTime())) {
+          data.dueDate = d
+          data.isNotified = false // new due date = notify again
+        }
       }
     }
     if ('timeframeLabel' in body) {
       data.timeframeLabel = body.timeframeLabel ? body.timeframeLabel.slice(0, 100) : null
     }
+    if (typeof body.isNotified === 'boolean') {
+      data.isNotified = body.isNotified
+    }
 
-    const updated = await prisma.reminder.update({
-      where: { id: params.id },
-      data,
-    })
+    const updated = await prisma.reminder.update({ where: { id: params.id }, data })
+
+    // Award XP if just completed
+    if (body.isDone === true && !existing.isDone) {
+      const xp = existing.xpReward || 10
+      fetch('/api/user-stats', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ xp, type: 'reminder' }),
+      }).catch(() => {})
+    }
 
     return NextResponse.json(updated)
   } catch (err) {

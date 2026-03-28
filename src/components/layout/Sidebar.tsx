@@ -3,8 +3,9 @@
 import Link from 'next/link'
 import Image from 'next/image'
 import { usePathname } from 'next/navigation'
-import { MessageSquare, FileText, Brain, Settings, Info, Swords, Sparkles } from 'lucide-react'
+import { MessageSquare, FileText, Brain, Settings, Info, Swords, Sparkles, CheckSquare, Flame, Trophy } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { useNotifications } from '@/components/notifications/NotificationProvider'
 
 interface SidebarProps {
   children?: React.ReactNode
@@ -14,6 +15,7 @@ interface SidebarProps {
 const navItems = [
   { href: '/chat',       icon: MessageSquare, label: 'Chat' },
   { href: '/notes',      icon: FileText,      label: 'Notes' },
+  { href: '/todos',      icon: CheckSquare,   label: 'Todos' },
   { href: '/summaries',  icon: Sparkles,      label: 'Summaries' },
   { href: '/memory',     icon: Brain,         label: 'Memory' },
   { href: '/debate',     icon: Swords,        label: 'Debate' },
@@ -21,6 +23,7 @@ const navItems = [
 
 export function Sidebar({ children, className }: SidebarProps) {
   const pathname = usePathname()
+  const { urgentCount, userStats } = useNotifications()
 
   return (
     <aside
@@ -30,7 +33,6 @@ export function Sidebar({ children, className }: SidebarProps) {
       {/* Logo */}
       <div className="flex items-center gap-3 px-4 py-5 border-b" style={{ borderColor: 'rgba(30,58,110,0.7)' }}>
         <div className="relative flex-shrink-0">
-          {/* Glow ring */}
           <div
             className="absolute inset-[-4px] rounded-full animate-pulse-cyan pointer-events-none"
             style={{ background: 'radial-gradient(circle, rgba(41,194,230,0.2) 0%, transparent 70%)' }}
@@ -45,11 +47,26 @@ export function Sidebar({ children, className }: SidebarProps) {
           </div>
           <div className="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-accent border-2 border-background animate-blink" />
         </div>
-        <div>
+        <div className="flex-1 min-w-0">
           <span className="font-display font-black text-lg text-foreground tracking-tight">Skippy</span>
-          <div className="flex items-center gap-1 mt-0.5">
-            <div className="w-1.5 h-1.5 rounded-full bg-accent/70 animate-blink" />
-            <span className="text-[10px] text-muted/60 uppercase tracking-wider">Online</span>
+          <div className="flex items-center gap-2 mt-0.5">
+            <div className="flex items-center gap-1">
+              <div className="w-1.5 h-1.5 rounded-full bg-accent/70 animate-blink" />
+              <span className="text-[10px] text-muted/60 uppercase tracking-wider">Online</span>
+            </div>
+            {/* XP level badge */}
+            {userStats && (
+              <span className="flex items-center gap-0.5 text-[10px] font-bold text-yellow-400/70">
+                <Trophy className="w-2.5 h-2.5" />
+                Lv.{userStats.level}
+              </span>
+            )}
+            {userStats && userStats.currentStreak > 1 && (
+              <span className="flex items-center gap-0.5 text-[10px] text-orange-400/70">
+                <Flame className="w-2.5 h-2.5" />
+                {userStats.currentStreak}
+              </span>
+            )}
           </div>
         </div>
       </div>
@@ -100,9 +117,16 @@ export function Sidebar({ children, className }: SidebarProps) {
               >
                 <Icon className="w-4 h-4" />
                 {label}
+                {/* Debate badge */}
                 {label === 'Debate' && (
                   <span className="ml-auto text-[9px] font-bold px-1.5 py-0.5 rounded uppercase tracking-wider"
                     style={{ background: 'rgba(41,194,230,0.15)', color: '#29c2e6' }}>New</span>
+                )}
+                {/* Memory urgent badge */}
+                {label === 'Memory' && urgentCount > 0 && (
+                  <span className="ml-auto min-w-[18px] h-[18px] px-1 rounded-full bg-red-500 text-white text-[9px] font-black flex items-center justify-center badge-pulse">
+                    {urgentCount > 9 ? '9+' : urgentCount}
+                  </span>
                 )}
               </button>
             </Link>

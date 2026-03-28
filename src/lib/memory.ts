@@ -260,20 +260,25 @@ export async function extractRemindersFromConversation(
       messages: [
         {
           role: 'system',
-          content: `You extract reminder and memory requests from conversations. Today's date is ${today}.
+          content: `You extract reminder and memory requests from conversations. Today is ${today}.
 
 Look for messages where the user wants something remembered or done later:
-- "remind me to X" / "remind me about X"
-- "remember this" / "remember that" / "I want you to remember"
+- "remind me to X" / "remind me about X at 3pm"
+- "remember this" / "I want you to remember"
 - "don't forget" / "don't let me forget"
 - "keep this in mind" / "note this" / "save this"
-- "I need to do X by [date]"
-- "can you remind me" / "will you remind me"
+- "I need to do X by [date/time]"
+- "set a reminder for X"
 - Any explicit request to store or recall information later
 
-Parse relative dates ("tomorrow", "next Friday", "in 3 days", "end of month") relative to today (${today}).
+Parse relative dates AND times relative to today (${today}):
+- "tomorrow at 9am" → next day at 09:00
+- "next Friday at 3pm" → that Friday at 15:00
+- "in 3 days" → 3 days from today at 09:00 (default morning)
+- "tonight" → today at 20:00
+- If no time specified → use null for time, just the date
 
-Return JSON: {"reminders": [{"content": "concise description of what to remember/do", "dueDate": "YYYY-MM-DD or null", "timeframeLabel": "natural label like 'by Friday' or null"}]}
+Return JSON: {"reminders": [{"content": "concise description", "dueDate": "YYYY-MM-DDTHH:mm:ss or YYYY-MM-DD or null", "timeframeLabel": "natural label like 'tomorrow at 9am' or null"}]}
 
 Extract ALL such requests. Return ONLY valid JSON. If none found, return {"reminders": []}.`,
         },
@@ -348,7 +353,7 @@ export async function buildSystemPrompt(): Promise<string> {
   const tomorrow = new Date()
   tomorrow.setDate(tomorrow.getDate() + 1)
 
-  const [memories, profile, recentNotes, recentDebates, pendingReminders, recentConversations] = await Promise.all([
+  const [memories, profile, recentNotes, recentDebates, pendingReminders, recentConversations, pendingTodos] = await Promise.all([
     getRelevantMemories('', 30),
     getUserProfile(),
     prisma.note.findMany({
@@ -380,6 +385,12 @@ export async function buildSystemPrompt(): Promise<string> {
       orderBy: { updatedAt: 'desc' },
       take: 8,
       select: { id: true, title: true, summary: true, updatedAt: true },
+    }),
+    // Pending todos — for time management context
+    prisma.todo.findMany({
+      where: { isDone: false },
+      orderBy: [{ priority: 'desc' }, { dueDate: 'asc' }],
+      take: 10,
     }),
   ])
 
@@ -422,6 +433,17 @@ export async function buildSystemPrompt(): Promise<string> {
     debateSection = `\n\n## Debates you've had (use these to understand how this person thinks, decides, and argues):\n${debateLines.join('\n')}`
   }
 
+  let todoSection = ''
+  if (pendingTodos.length > 0) {
+    const PRIO = { urgent: '🔴', high: '🟠', normal: '🔵', low: '⚪' } as Record<string, string>
+    const todoLines = pendingTodos.map(t => {
+      const icon = PRIO[t.priority] || '🔵'
+      const due = t.dueDate ? ` [due ${new Date(t.dueDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}]` : ''
+      return `- ${icon} ${t.content}${due}`
+    })
+    todoSection = `\n\n## Your current todo list (use this to understand what they're working on and help prioritise):\n${todoLines.join('\n')}`
+  }
+
   let conversationSection = ''
   if (recentConversations.length > 0) {
     const convLines = recentConversations.map(c => {
@@ -454,7 +476,7 @@ Your core traits:
 - You suggest next steps proactively when relevant
 - You're honest, sometimes bluntly so, but always supportive
 - You celebrate wins and help process setbacks
-- You help organize thoughts, build systems, and make things happen${profileSection}${instructionsSection}${reminderSection}${conversationSection}${memorySection}${notesSection}${debateSection}
+- You help organize thoughts, build systems, and make things happen${profileSection}${instructionsSection}${reminderSection}${todoSection}${conversationSection}${memorySection}${notesSection}${debateSection}
 
 Always respond in a way that reflects deep knowledge of this specific person. Never be generic. Use markdown formatting for structure when helpful — headers, bullet points, code blocks, etc.`
 }
