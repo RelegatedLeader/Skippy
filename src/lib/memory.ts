@@ -462,7 +462,10 @@ export async function extractTodosFromConversation(
 ): Promise<void> {
   try {
     const userText = messages.filter(m => m.role === 'user').map(m => m.content).join(' ')
-    const hasTodoLanguage = /\badd\s+(to\s+my\s+(to[\s-]?do|todo|task|list)|(it|this|that)\s+to\s+my\s+(to[\s-]?do|todo|task|list))|to[\s-]?do\s*:|todo\s*:|create\s+(a\s+)?(task|todo)|put\s+(it|this|that)\s+on\s+my\s+(list|todos?|to[\s-]?do)|add\s+(a\s+)?(task|todo)/i.test(userText)
+    // Broad pre-scan: catches "add X to my to-do", "create a task", "put X on my list",
+    // "to-do: X", etc. The old regex required "add" immediately before "to my" which
+    // didn't match the natural phrasing "add TASK to my list".
+    const hasTodoLanguage = /\badd\b.{0,120}\bto\s+my\s+(to[\s-]?do|todo|tasks?|list)|to[\s-]?do\s*:|\btodo\s*:|create\s+(a\s+)?(new\s+)?(task|todo)\b|put\b.{0,80}\b(to[\s-]?do|todo|my\s*(task|list|todo))|\badd\s+(a\s+)?(task|todo)\b|\bnew\s+task\b|\badd\s+to\s+my\s+(to[\s-]?do|todo|tasks?|list)/i.test(userText)
     if (!hasTodoLanguage) return
 
     const text = await callAI([
@@ -474,9 +477,13 @@ Only extract items the user specifically wants added to their to-do list — not
 Return JSON: {"todos": [{"content": "concise task description", "priority": "low|normal|high|urgent", "dueDate": "YYYY-MM-DD or null"}]}
 
 Examples:
-- "add to my to-do list: call the dentist" → {"content": "Call the dentist", "priority": "normal", "dueDate": null}
+- "add call the dentist to my to-do list" → {"content": "Call the dentist", "priority": "normal", "dueDate": null}
+- "add buy groceries to my todos" → {"content": "Buy groceries", "priority": "normal", "dueDate": null}
+- "add finish the report to my list" → {"content": "Finish the report", "priority": "normal", "dueDate": null}
 - "put this on my todos: finish the report by Friday" → {"content": "Finish the report", "priority": "normal", "dueDate": "[next Friday ISO date]"}
 - "create a task for updating my resume" → {"content": "Update my resume", "priority": "normal", "dueDate": null}
+- "new task: clean the garage" → {"content": "Clean the garage", "priority": "normal", "dueDate": null}
+- "to-do: book the flight" → {"content": "Book the flight", "priority": "normal", "dueDate": null}
 
 If no explicit todo-creation request exists, return {"todos": []}.`,
       },

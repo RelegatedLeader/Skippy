@@ -71,6 +71,13 @@ export default function TodosPage() {
 
   useEffect(() => { fetchTodos() }, [fetchTodos])
 
+  // Auto-refresh when user returns to this tab (e.g. after chat added a todo)
+  useEffect(() => {
+    const onVisible = () => { if (!document.hidden) fetchTodos() }
+    document.addEventListener('visibilitychange', onVisible)
+    return () => document.removeEventListener('visibilitychange', onVisible)
+  }, [fetchTodos])
+
   const handleComplete = async (todo: Todo) => {
     setCompleting(todo.id)
     await fetch(`/api/todos/${todo.id}`, {

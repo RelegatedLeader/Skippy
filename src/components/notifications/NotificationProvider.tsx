@@ -14,6 +14,16 @@ export interface ReminderItem {
   createdAt: string
 }
 
+export interface TodoItem {
+  id: string
+  content: string
+  isDone: boolean
+  priority: string
+  dueDate: string | null
+  xpReward: number
+  createdAt: string
+}
+
 export interface UserStatsData {
   totalXP: number
   currentStreak: number
@@ -29,8 +39,10 @@ export interface UserStatsData {
 interface NotificationContextType {
   urgentCount: number
   pendingReminders: ReminderItem[]
+  pendingTodos: TodoItem[]
   userStats: UserStatsData | null
   refreshReminders: () => void
+  refreshTodos: () => void
   refreshStats: () => void
   awardXP: (xp: number, type?: 'reminder' | 'todo') => Promise<number>
 }
@@ -38,8 +50,10 @@ interface NotificationContextType {
 const NotificationContext = createContext<NotificationContextType>({
   urgentCount: 0,
   pendingReminders: [],
+  pendingTodos: [],
   userStats: null,
   refreshReminders: () => {},
+  refreshTodos: () => {},
   refreshStats: () => {},
   awardXP: async () => 0,
 })
@@ -59,6 +73,7 @@ function isUrgent(reminder: ReminderItem): boolean {
 
 export function NotificationProvider({ children }: { children: React.ReactNode }) {
   const [pendingReminders, setPendingReminders] = useState<ReminderItem[]>([])
+  const [pendingTodos, setPendingTodos] = useState<TodoItem[]>([])
   const [userStats, setUserStats] = useState<UserStatsData | null>(null)
   const notifiedIds = useRef<Set<string>>(new Set())
   const permissionRequested = useRef(false)
@@ -73,6 +88,13 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
       }
     } catch { /* ignore */ }
     return []
+  }, [])
+
+  const fetchTodos = useCallback(async () => {
+    try {
+      const res = await fetch('/api/todos?status=pending')
+      if (res.ok) setPendingTodos(await res.json())
+    } catch { /* ignore */ }
   }, [])
 
   const fetchStats = useCallback(async () => {
@@ -149,17 +171,18 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
   useEffect(() => {
     requestPermission()
     fetchReminders()
+    fetchTodos()
     fetchStats()
 
-    const interval = setInterval(checkAndNotify, 30_000)
-    const visibilityHandler = () => { if (!document.hidden) checkAndNotify() }
+    const interval = setInterval(() => { checkAndNotify(); fetchTodos() }, 30_000)
+    const visibilityHandler = () => { if (!document.hidden) { checkAndNotify(); fetchTodos() } }
     document.addEventListener('visibilitychange', visibilityHandler)
 
     return () => {
       clearInterval(interval)
       document.removeEventListener('visibilitychange', visibilityHandler)
     }
-  }, [requestPermission, fetchReminders, fetchStats, checkAndNotify])
+  }, [requestPermission, fetchReminders, fetchTodos, fetchStats, checkAndNotify])
 
   const urgentCount = pendingReminders.filter(isUrgent).length
 
@@ -167,8 +190,10 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
     <NotificationContext.Provider value={{
       urgentCount,
       pendingReminders,
+      pendingTodos,
       userStats,
       refreshReminders: fetchReminders,
+      refreshTodos: fetchTodos,
       refreshStats: fetchStats,
       awardXP,
     }}>

@@ -46,7 +46,7 @@ export function ChatInterface({ conversationId, onConversationCreated, onToggleS
   const [currentConvId, setCurrentConvId] = useState<string | null>(conversationId)
   const [escalation, setEscalation] = useState<string | null>(null)
   const [showModelPicker, setShowModelPicker] = useState(false)
-  const { refreshReminders } = useNotifications()
+  const { refreshReminders, refreshTodos } = useNotifications()
 
   useEffect(() => { setCurrentConvId(conversationId) }, [conversationId])
 
@@ -135,8 +135,9 @@ export function ChatInterface({ conversationId, onConversationCreated, onToggleS
         )
         setMessages(finalMessages)
         setStreamingContent('')
-        // Stream closed = saves complete. Refresh bell so new reminders show immediately.
+        // Stream closed = saves complete. Refresh bell so new reminders/todos show immediately.
         refreshReminders()
+        refreshTodos()
 
         setTimeout(async () => {
           try {
@@ -170,7 +171,7 @@ export function ChatInterface({ conversationId, onConversationCreated, onToggleS
     },
     [isLoading, currentConvId, messages, selectedModel, addMessage, setLoading, setStreaming,
      setStreamingContent, setMessages, onConversationCreated, addConversation, updateConversationTitle,
-     refreshReminders]
+     refreshReminders, refreshTodos]
   )
 
   const displayMessages = messages.map((m) =>

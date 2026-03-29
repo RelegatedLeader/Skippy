@@ -2,7 +2,7 @@
 
 import { useState, useRef, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Bell, X, CheckCircle2, Circle, ArrowRight, Zap, Flame, Trophy } from 'lucide-react'
+import { Bell, X, CheckCircle2, Circle, CheckSquare, Square, ArrowRight, Zap, Flame, Trophy } from 'lucide-react'
 import Link from 'next/link'
 import { useNotifications } from './NotificationProvider'
 import { cn } from '@/lib/utils'
@@ -28,11 +28,13 @@ export function NotificationBell() {
   const [completing, setCompleting] = useState<string | null>(null)
   const [xpPop, setXpPop] = useState<{ id: string; amount: number } | null>(null)
   const panelRef = useRef<HTMLDivElement>(null)
-  const { urgentCount, pendingReminders, userStats, refreshReminders, awardXP } = useNotifications()
+  const { urgentCount, pendingReminders, pendingTodos, userStats, refreshReminders, refreshTodos, awardXP } = useNotifications()
 
-  const pendingCount = pendingReminders.filter(r => !r.isDone).length
+  const pendingReminderCount = pendingReminders.filter(r => !r.isDone).length
+  const pendingTodoCount = pendingTodos.length
+  const pendingCount = pendingReminderCount + pendingTodoCount
 
-  // Sort: overdue first, then today, then upcoming
+  // Sort reminders: overdue first, then today, then upcoming
   const sorted = [...pendingReminders]
     .filter(r => !r.isDone)
     .sort((a, b) => {
@@ -41,7 +43,13 @@ export function NotificationBell() {
       if (!b.dueDate) return -1
       return new Date(a.dueDate).getTime() - new Date(b.dueDate).getTime()
     })
-    .slice(0, 6)
+    .slice(0, 5)
+
+  // Sort todos by priority then creation
+  const PRIO_ORDER: Record<string, number> = { urgent: 0, high: 1, normal: 2, low: 3 }
+  const sortedTodos = [...pendingTodos]
+    .sort((a, b) => (PRIO_ORDER[a.priority] ?? 2) - (PRIO_ORDER[b.priority] ?? 2))
+    .slice(0, 5)
 
   // Close on outside click
   useEffect(() => {
@@ -66,6 +74,20 @@ export function NotificationBell() {
     setXpPop({ id, amount: earned })
     setTimeout(() => setXpPop(null), 1800)
     refreshReminders()
+    setCompleting(null)
+  }
+
+  const handleCompleteTodo = async (id: string, xpReward: number) => {
+    setCompleting(id)
+    await fetch(`/api/todos/${id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ isDone: true }),
+    })
+    const earned = await awardXP(xpReward, 'todo')
+    setXpPop({ id, amount: earned })
+    setTimeout(() => setXpPop(null), 1800)
+    refreshTodos()
     setCompleting(null)
   }
 
@@ -174,7 +196,7 @@ export function NotificationBell() {
             <div className="flex items-center justify-between px-4 py-3 border-b" style={{ borderColor: 'rgba(30,58,110,0.8)' }}>
               <div className="flex items-center gap-2">
                 <Bell className="w-4 h-4 text-accent" />
-                <span className="text-sm font-bold text-foreground">Reminders</span>
+                <span className="text-sm font-bold text-foreground">Reminders & Todos</span>
                 {urgentCount > 0 && (
                   <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-red-500/15 text-red-400 border border-red-500/20">
                     {urgentCount} urgent
@@ -223,77 +245,88 @@ export function NotificationBell() {
               </div>
             )}
 
-            {/* Reminder list */}
-            <div className="overflow-y-auto" style={{ maxHeight: 'min(288px, calc(100dvh - 220px))' }}>
-              {sorted.length === 0 ? (
+            {/* Combined list */}
+            <div className="overflow-y-auto" style={{ maxHeight: 'min(320px, calc(100dvh - 220px))' }}>
+              {/* ── Reminders section ── */}
+              {sorted.length > 0 && (
+                <>
+                  <div className="px-4 pt-2.5 pb-1">
+                    <span className="text-[9px] font-bold text-accent/40 uppercase tracking-widest">Reminders</span>
+                  </div>
+                  {sorted.map(r => {
+                    const dueInfo = r.dueDate ? formatDue(r.dueDate) : null
+                    const isCompleting = completing === r.id
+                    return (
+                      <div
+                        key={r.id}
+                        className="flex items-start gap-2.5 px-4 py-2.5 border-b transition-all hover:bg-white/[0.02]"
+                        style={{ borderColor: 'rgba(30,58,110,0.4)', background: dueInfo?.urgent ? 'rgba(239,68,68,0.04)' : undefined }}
+                      >
+                        <button onClick={() => handleComplete(r.id, r.xpReward)} disabled={isCompleting} className="mt-0.5 shrink-0 text-muted/40 hover:text-accent transition-colors">
+                          {isCompleting ? <CheckCircle2 className="w-4 h-4 text-accent animate-pulse" /> : <Circle className="w-4 h-4" style={{ color: dueInfo?.urgent ? '#ef4444' : '#29c2e6' }} />}
+                        </button>
+                        <div className="flex-1 min-w-0">
+                          <p className="text-xs text-foreground/90 leading-relaxed line-clamp-2">{r.content}</p>
+                          {dueInfo && <span className={cn('text-[10px] font-medium mt-0.5 block', dueInfo.urgent ? 'text-red-400' : 'text-muted/50')}>{dueInfo.urgent && '⚠ '}{dueInfo.text}</span>}
+                          {!r.dueDate && r.timeframeLabel && <span className="text-[10px] text-muted/40 mt-0.5 block">{r.timeframeLabel}</span>}
+                        </div>
+                        <div className="flex items-center gap-1 shrink-0">
+                          <Zap className="w-2.5 h-2.5 text-yellow-400/60" />
+                          <span className="text-[9px] text-yellow-400/60 font-bold">+{r.xpReward}</span>
+                        </div>
+                      </div>
+                    )
+                  })}
+                </>
+              )}
+
+              {/* ── Todos section ── */}
+              {sortedTodos.length > 0 && (
+                <>
+                  <div className="px-4 pt-2.5 pb-1">
+                    <span className="text-[9px] font-bold text-emerald-400/40 uppercase tracking-widest">To-Do</span>
+                  </div>
+                  {sortedTodos.map(t => {
+                    const PRIO_COLOR: Record<string, string> = { urgent: '#ef4444', high: '#f97316', normal: '#29c2e6', low: '#64748b' }
+                    const pColor = PRIO_COLOR[t.priority] || '#29c2e6'
+                    const isCompleting = completing === t.id
+                    const dueInfo = t.dueDate ? formatDue(t.dueDate) : null
+                    return (
+                      <div key={t.id} className="flex items-start gap-2.5 px-4 py-2.5 border-b transition-all hover:bg-white/[0.02]" style={{ borderColor: 'rgba(30,58,110,0.4)' }}>
+                        <button onClick={() => handleCompleteTodo(t.id, t.xpReward)} disabled={isCompleting} className="mt-0.5 shrink-0 transition-colors" style={{ color: pColor + '80' }}>
+                          {isCompleting ? <CheckSquare className="w-4 h-4 text-emerald-400 animate-pulse" /> : <Square className="w-4 h-4" />}
+                        </button>
+                        <div className="flex-1 min-w-0">
+                          <p className="text-xs text-foreground/90 leading-relaxed line-clamp-2">{t.content}</p>
+                          {dueInfo && <span className={cn('text-[10px] font-medium mt-0.5 block', dueInfo.urgent ? 'text-red-400' : 'text-muted/50')}>{dueInfo.urgent && '⚠ '}{dueInfo.text}</span>}
+                        </div>
+                        <div className="flex items-center gap-1 shrink-0">
+                          <Zap className="w-2.5 h-2.5 text-yellow-400/60" />
+                          <span className="text-[9px] text-yellow-400/60 font-bold">+{t.xpReward}</span>
+                        </div>
+                      </div>
+                    )
+                  })}
+                </>
+              )}
+
+              {/* Empty state */}
+              {sorted.length === 0 && sortedTodos.length === 0 && (
                 <div className="py-8 text-center">
                   <div className="text-2xl mb-2">🎉</div>
                   <p className="text-xs text-muted/50">All caught up!</p>
-                  <p className="text-[10px] text-muted/30 mt-1">Ask Skippy to set a reminder</p>
+                  <p className="text-[10px] text-muted/30 mt-1">Ask Skippy to set a reminder or add a task</p>
                 </div>
-              ) : (
-                sorted.map(r => {
-                  const dueInfo = r.dueDate ? formatDue(r.dueDate) : null
-                  const isCompleting = completing === r.id
-
-                  return (
-                    <div
-                      key={r.id}
-                      className="flex items-start gap-2.5 px-4 py-3 border-b transition-all hover:bg-white/[0.02]"
-                      style={{
-                        borderColor: 'rgba(30,58,110,0.4)',
-                        background: dueInfo?.urgent ? 'rgba(239,68,68,0.04)' : undefined,
-                      }}
-                    >
-                      <button
-                        onClick={() => handleComplete(r.id, r.xpReward)}
-                        disabled={isCompleting}
-                        className="mt-0.5 shrink-0 text-muted/40 hover:text-accent transition-colors"
-                      >
-                        {isCompleting
-                          ? <CheckCircle2 className="w-4 h-4 text-accent animate-pulse" />
-                          : <Circle className="w-4 h-4" style={{ color: dueInfo?.urgent ? '#ef4444' : '#29c2e6' }} />
-                        }
-                      </button>
-                      <div className="flex-1 min-w-0">
-                        <p className="text-xs text-foreground/90 leading-relaxed line-clamp-2">{r.content}</p>
-                        {dueInfo && (
-                          <span className={cn(
-                            'text-[10px] font-medium mt-0.5 block',
-                            dueInfo.urgent ? 'text-red-400' : 'text-muted/50'
-                          )}>
-                            {dueInfo.urgent && '⚠ '}{dueInfo.text}
-                          </span>
-                        )}
-                        {!r.dueDate && r.timeframeLabel && (
-                          <span className="text-[10px] text-muted/40 mt-0.5 block">{r.timeframeLabel}</span>
-                        )}
-                      </div>
-                      <div className="flex items-center gap-1 shrink-0">
-                        <Zap className="w-2.5 h-2.5 text-yellow-400/60" />
-                        <span className="text-[9px] text-yellow-400/60 font-bold">+{r.xpReward}</span>
-                      </div>
-                    </div>
-                  )
-                })
               )}
             </div>
 
             {/* Footer */}
             <div className="px-4 py-2.5 flex items-center justify-between border-t" style={{ borderColor: 'rgba(30,58,110,0.4)' }}>
-              <Link
-                href="/memory"
-                onClick={() => setOpen(false)}
-                className="text-xs text-muted/50 hover:text-accent transition-colors flex items-center gap-1"
-              >
+              <Link href="/memory" onClick={() => setOpen(false)} className="text-xs text-muted/50 hover:text-accent transition-colors flex items-center gap-1">
                 All reminders <ArrowRight className="w-3 h-3" />
               </Link>
-              <Link
-                href="/todos"
-                onClick={() => setOpen(false)}
-                className="text-xs text-muted/50 hover:text-accent transition-colors flex items-center gap-1"
-              >
-                Todos <ArrowRight className="w-3 h-3" />
+              <Link href="/todos" onClick={() => setOpen(false)} className="text-xs text-muted/50 hover:text-accent transition-colors flex items-center gap-1">
+                All todos <ArrowRight className="w-3 h-3" />
               </Link>
             </div>
           </motion.div>
