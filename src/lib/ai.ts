@@ -136,33 +136,70 @@ export async function streamAIResponse(
     })
   }
 
-  // Default: Grok
-  const response = await grok.chat.completions.create({
-    model: GROK_MODEL,
-    stream: true,
-    messages: [
-      { role: 'system', content: systemPrompt },
-      ...messages,
-    ] as Parameters<typeof grok.chat.completions.create>[0]['messages'],
-    temperature: 0.8,
-    max_tokens: 2048,
-  })
+  // Default: Grok — with automatic Claude fallback if connection fails
+  async function grokStream(): Promise<ReadableStream<Uint8Array>> {
+    const response = await grok.chat.completions.create({
+      model: GROK_MODEL,
+      stream: true,
+      messages: [
+        { role: 'system', content: systemPrompt },
+        ...messages,
+      ] as Parameters<typeof grok.chat.completions.create>[0]['messages'],
+      temperature: 0.8,
+      max_tokens: 2048,
+    })
 
-  return new ReadableStream({
-    async start(controller) {
-      try {
-        for await (const chunk of response) {
-          const delta = chunk.choices[0]?.delta?.content || ''
-          if (delta) controller.enqueue(encoder.encode(delta))
+    return new ReadableStream({
+      async start(controller) {
+        try {
+          for await (const chunk of response) {
+            const delta = chunk.choices[0]?.delta?.content || ''
+            if (delta) controller.enqueue(encoder.encode(delta))
+          }
+        } catch (err) {
+          console.error('[Grok stream error]', err)
+          controller.error(err)
+        } finally {
+          controller.close()
         }
-      } catch (err) {
-        console.error('[Grok stream error]', err)
-        controller.error(err)
-      } finally {
-        controller.close()
-      }
-    },
-  })
-}
+      },
+    })
+  }
 
-export { claudeAvailable }
+  try {
+    return await grokStream()
+  } catch (grokErr) {
+    // If Grok fails with a connection error (e.g. API unreachable from this host)
+    // automatically fall back to Claude if available
+    const isConnErr = grokErr instanceof Error &&
+      (grokErr.message.includes('Connection error') || grokErr.message.includes('fetch failed') || grokErr.message.includes('ECONNREFUSED') || grokErr.message.includes('ENOTFOUND'))
+    if (isConnErr && claudeAvailable()) {
+      console.warn('[AI] Grok unreachable — falling back to Claude')
+      return new ReadableStream({
+        async start(controller) {
+          try {
+            const stream = anthropic.messages.stream({
+              model: CLAUDE_MODEL,
+              max_tokens: 2048,
+              system: systemPrompt,
+              messages: messages
+                .filter((m) => m.role === 'user' || m.role === 'assistant')
+                .map((m) => ({ role: m.role as 'user' | 'assistant', content: m.content })),
+            })
+            for await (const event of stream) {
+              if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
+                controller.enqueue(encoder.encode(event.delta.text))
+              }
+            }
+          } catch (err) {
+            console.error('[Claude fallback stream error]', err)
+            controller.error(err)
+          } finally {
+            controller.close()
+          }
+        },
+      })
+    }
+    throw grokErr
+  }
+}

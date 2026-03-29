@@ -1,34 +1,40 @@
 import { NextResponse } from 'next/server'
 import { grok, GROK_MODEL } from '@/lib/grok'
+import { anthropic, CLAUDE_MODEL } from '@/lib/claude'
 
 export const runtime = 'nodejs'
 
-/** Temporary diagnostic endpoint — tests Grok API reachability from Vercel. Remove after debugging. */
+/** Temporary diagnostic endpoint — tests both AI APIs from Vercel. */
 export async function GET() {
-  const start = Date.now()
+  const results: Record<string, unknown> = {}
+
+  // Test Grok
+  const grokStart = Date.now()
   try {
     const res = await grok.chat.completions.create({
       model: GROK_MODEL,
-      messages: [{ role: 'user', content: 'Say exactly: ok' }],
+      messages: [{ role: 'user', content: 'Say: ok' }],
       max_tokens: 5,
       stream: false,
     })
-    const elapsed = Date.now() - start
-    return NextResponse.json({
-      ok: true,
-      model: GROK_MODEL,
-      response: res.choices[0]?.message?.content,
-      elapsed_ms: elapsed,
-      key_prefix: process.env.GROK_API_KEY?.slice(0, 12) + '…',
-    })
+    results.grok = { ok: true, response: res.choices[0]?.message?.content, elapsed_ms: Date.now() - grokStart }
   } catch (err) {
-    const elapsed = Date.now() - start
-    return NextResponse.json({
-      ok: false,
-      error: err instanceof Error ? err.message : String(err),
-      error_type: err instanceof Error ? err.constructor.name : 'Unknown',
-      elapsed_ms: elapsed,
-      key_prefix: process.env.GROK_API_KEY?.slice(0, 12) + '…',
-    }, { status: 500 })
+    results.grok = { ok: false, error: err instanceof Error ? err.message : String(err), elapsed_ms: Date.now() - grokStart }
   }
+
+  // Test Claude
+  const claudeStart = Date.now()
+  try {
+    const res = await anthropic.messages.create({
+      model: CLAUDE_MODEL,
+      max_tokens: 10,
+      messages: [{ role: 'user', content: 'Say: ok' }],
+    })
+    const text = res.content[0]?.type === 'text' ? res.content[0].text : ''
+    results.claude = { ok: true, response: text, elapsed_ms: Date.now() - claudeStart }
+  } catch (err) {
+    results.claude = { ok: false, error: err instanceof Error ? err.message : String(err), elapsed_ms: Date.now() - claudeStart }
+  }
+
+  return NextResponse.json(results)
 }
