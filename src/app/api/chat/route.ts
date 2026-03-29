@@ -89,10 +89,12 @@ export async function POST(req: Request) {
           console.error('Stream read error:', streamErr)
           controller.error(streamErr)
         } finally {
-          controller.close()
+          // Run extractions BEFORE closing: keeps the HTTP response open (and the
+          // Vercel function alive) until memories/reminders/notes are saved.
           if (conversationId && accumulated) {
-            saveConversation(conversationId, messages, accumulated, resolvedModel).catch(console.error)
+            await saveConversation(conversationId, messages, accumulated, resolvedModel).catch(console.error)
           }
+          controller.close()
         }
       },
     })
@@ -144,10 +146,14 @@ async function saveConversation(
     }
 
     const allMessages = messages.concat([{ role: 'assistant', content: completion }])
-    extractMemoriesFromConversation(allMessages, { conversationId }).catch(console.error)
-    extractRemindersFromConversation(allMessages, conversationId).catch(console.error)
-    extractNoteFromConversation(allMessages, conversationId).catch(console.error)
-    updateConversationSummary(conversationId, allMessages).catch(console.error)
+    // Run all extractions in parallel and await — this keeps the stream open on
+    // Vercel until they actually complete (memories, reminders, notes, summaries).
+    await Promise.allSettled([
+      extractMemoriesFromConversation(allMessages, { conversationId }),
+      extractRemindersFromConversation(allMessages, conversationId),
+      extractNoteFromConversation(allMessages, conversationId),
+      updateConversationSummary(conversationId, allMessages),
+    ])
   } catch (err) {
     console.error('Failed to save conversation:', err)
   }

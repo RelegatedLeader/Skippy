@@ -57,7 +57,14 @@ async function callAI(
         messages: merged,
       })
       const block = claudeRes.content[0]
-      return block.type === 'text' ? block.text.trim() : (opts.json ? '{}' : '')
+      if (block.type !== 'text') return opts.json ? '{}' : ''
+      let raw = block.text.trim()
+      // Claude sometimes wraps JSON in markdown code fences — strip them
+      if (opts.json) {
+        const fence = raw.match(/```(?:json)?\s*([\s\S]*?)```/)
+        if (fence) raw = fence[1].trim()
+      }
+      return raw
     }
     throw err
   }

@@ -8,6 +8,7 @@ import { nanoid } from 'nanoid'
 import { useChatStore, type AIModel } from '@/store/chat'
 import { MessageBubble } from './MessageBubble'
 import { ChatInput } from './ChatInput'
+import { useNotifications } from '@/components/notifications/NotificationProvider'
 import { cn } from '@/lib/utils'
 import Link from 'next/link'
 
@@ -45,6 +46,7 @@ export function ChatInterface({ conversationId, onConversationCreated, onToggleS
   const [currentConvId, setCurrentConvId] = useState<string | null>(conversationId)
   const [escalation, setEscalation] = useState<string | null>(null)
   const [showModelPicker, setShowModelPicker] = useState(false)
+  const { refreshReminders } = useNotifications()
 
   useEffect(() => { setCurrentConvId(conversationId) }, [conversationId])
 
@@ -133,6 +135,8 @@ export function ChatInterface({ conversationId, onConversationCreated, onToggleS
         )
         setMessages(finalMessages)
         setStreamingContent('')
+        // Stream closed = saves complete. Refresh bell so new reminders show immediately.
+        refreshReminders()
 
         setTimeout(async () => {
           try {
@@ -165,7 +169,8 @@ export function ChatInterface({ conversationId, onConversationCreated, onToggleS
       }
     },
     [isLoading, currentConvId, messages, selectedModel, addMessage, setLoading, setStreaming,
-     setStreamingContent, setMessages, onConversationCreated, addConversation, updateConversationTitle]
+     setStreamingContent, setMessages, onConversationCreated, addConversation, updateConversationTitle,
+     refreshReminders]
   )
 
   const displayMessages = messages.map((m) =>

@@ -1,11 +1,12 @@
 'use client'
 
 import { useState, useEffect } from 'react'
+import { useRouter } from 'next/navigation'
 import { motion } from 'framer-motion'
 import {
   Settings, Shield, Lock, Download, Trash2, User, Bot,
   CheckCircle2, AlertTriangle, Eye, Copy, Check,
-  Sparkles, Save, Loader2, Menu,
+  Sparkles, Save, Loader2, Menu, LogOut,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Sidebar } from '@/components/layout/Sidebar'
@@ -18,11 +19,13 @@ const SECTION_VARIANTS = {
 
 export default function SettingsPage() {
   const { toggle } = useSidebar()
+  const router = useRouter()
   const [exportFormat, setExportFormat] = useState<'txt' | 'md' | 'json'>('md')
   const [copied, setCopied] = useState(false)
   const [showClearConfirm, setShowClearConfirm] = useState(false)
   const [clearing, setClearing] = useState(false)
   const [clearDone, setClearDone] = useState(false)
+  const [loggingOut, setLoggingOut] = useState(false)
 
   // Custom instructions
   const [customInstructions, setCustomInstructions] = useState('')
@@ -64,6 +67,15 @@ export default function SettingsPage() {
   const handleExportNotes = () => window.open(`/api/export?type=notes&format=${exportFormat}`, '_blank')
   const handleExportSummaries = () => window.open(`/api/export?type=summaries&format=${exportFormat}`, '_blank')
   const handleExportFull = () => window.open('/api/export?type=full', '_blank')
+
+  const handleLogout = async () => {
+    setLoggingOut(true)
+    try {
+      await fetch('/api/auth/logout', { method: 'POST' })
+    } finally {
+      router.replace('/login')
+    }
+  }
 
   const handleClearMemories = async () => {
     setClearing(true)
@@ -302,6 +314,31 @@ export default function SettingsPage() {
                     </button>
                   </div>
                 )}
+              </div>
+            </div>
+          </motion.section>
+
+          {/* Log Out */}
+          <motion.section custom={5} variants={SECTION_VARIANTS} initial="hidden" animate="visible" className="pb-8">
+            <SectionHeader icon={LogOut} title="Account" color="text-muted/60" />
+            <div className="bg-surface border border-border rounded-2xl p-5">
+              <div className="flex items-center justify-between gap-4">
+                <div>
+                  <p className="text-sm font-semibold text-foreground">Log Out</p>
+                  <p className="text-xs text-muted mt-0.5 leading-relaxed">
+                    Sign out of Skippy on this device. Your data stays safe — just log back in when you&apos;re ready.
+                  </p>
+                </div>
+                <button
+                  onClick={handleLogout}
+                  disabled={loggingOut}
+                  className="flex-shrink-0 flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold text-red-400 bg-red-400/10 border border-red-400/25 hover:bg-red-400/20 active:scale-95 transition-all disabled:opacity-50"
+                >
+                  {loggingOut
+                    ? <Loader2 className="w-4 h-4 animate-spin" />
+                    : <LogOut className="w-4 h-4" />}
+                  {loggingOut ? 'Logging out…' : 'Log Out'}
+                </button>
               </div>
             </div>
           </motion.section>
