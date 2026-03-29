@@ -44,3 +44,41 @@ self.addEventListener('fetch', event => {
       .catch(() => caches.match(event.request).then(r => r || Response.error()))
   )
 })
+
+// ── Web Push: show OS notification even when app is closed ──────────────────
+self.addEventListener('push', event => {
+  let data = {}
+  try { data = event.data?.json() ?? {} } catch { data = { title: 'Skippy', body: event.data?.text() || '' } }
+
+  const title = data.title || 'Skippy'
+  const options = {
+    body: data.body || '',
+    icon: '/img/skippyENHANCED3D-removebg.png',
+    badge: '/img/skippyENHANCED3D-removebg.png',
+    data: { url: data.url || '/chat' },
+    tag: data.tag || 'skippy-push',
+    requireInteraction: data.requireInteraction || false,
+    vibrate: [200, 100, 200],
+    actions: data.actions || [],
+  }
+  event.waitUntil(self.registration.showNotification(title, options))
+})
+
+// ── Tap notification → open/focus the app ───────────────────────────────────
+self.addEventListener('notificationclick', event => {
+  event.notification.close()
+  const targetUrl = event.notification.data?.url || '/chat'
+  event.waitUntil(
+    clients.matchAll({ type: 'window', includeUncontrolled: true }).then(list => {
+      // If a Skippy window is already open, focus it and navigate
+      const existing = list.find(c => c.url.includes(self.location.origin))
+      if (existing) {
+        existing.focus()
+        existing.navigate(targetUrl)
+        return
+      }
+      // Otherwise open a new window
+      return clients.openWindow(targetUrl)
+    })
+  )
+})

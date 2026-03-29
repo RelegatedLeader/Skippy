@@ -2,6 +2,16 @@
 
 import { createContext, useContext, useEffect, useState, useCallback, useRef } from 'react'
 
+// ── Utility: convert base64url VAPID public key to Uint8Array ───────────────
+function urlBase64ToUint8Array(base64String: string): ArrayBuffer {
+  const padding = '='.repeat((4 - (base64String.length % 4)) % 4)
+  const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/')
+  const raw = atob(base64)
+  const arr = new Uint8Array(raw.length)
+  for (let i = 0; i < raw.length; i++) arr[i] = raw.charCodeAt(i)
+  return arr.buffer as ArrayBuffer
+}
+
 export interface ReminderItem {
   id: string
   content: string
@@ -111,7 +121,48 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
     if (Notification.permission === 'default') {
       await Notification.requestPermission()
     }
+    // After permission is granted (or was already granted), register for Web Push
+    // so notifications arrive even when the app is closed.
+    if (Notification.permission === 'granted') {
+      await registerPushSubscription()
+    }
   }, [])
+
+  // Register this device for Web Push using VAPID.
+  // Upserts the subscription to the server so cron jobs can reach it.
+  async function registerPushSubscription() {
+    try {
+      if (!('serviceWorker' in navigator) || !('PushManager' in window)) return
+
+      const reg = await navigator.serviceWorker.ready
+
+      // Fetch the VAPID public key from the server
+      const keyRes = await fetch('/api/push/vapid-public-key')
+      if (!keyRes.ok) return
+      const { publicKey } = await keyRes.json() as { publicKey?: string }
+      if (!publicKey) return
+
+      // Get existing subscription or create a new one
+      let sub = await reg.pushManager.getSubscription()
+      if (!sub) {
+        sub = await reg.pushManager.subscribe({
+          userVisibleOnly: true,
+          applicationServerKey: urlBase64ToUint8Array(publicKey),
+        })
+      }
+
+      // Save to DB (upsert — handles re-installs / key rotation)
+      const subJson = sub.toJSON() as { endpoint: string; keys: { p256dh: string; auth: string } }
+      await fetch('/api/push/subscribe', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(subJson),
+      })
+    } catch (e) {
+      // Non-fatal: push is a bonus feature — in-app polling still works
+      console.warn('[push] Registration failed:', e)
+    }
+  }
 
   const fireNotification = useCallback((reminder: ReminderItem) => {
     if (typeof window === 'undefined' || !('Notification' in window)) return

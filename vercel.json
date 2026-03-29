@@ -4,5 +4,15 @@
   "framework": "nextjs",
   "env": {
     "BUILD_STANDALONE": "0"
-  }
+  },
+  "crons": [
+    {
+      "path": "/api/cron/daily-brief",
+      "schedule": "0 13 * * *"
+    },
+    {
+      "path": "/api/cron/nudge",
+      "schedule": "0 16,20 * * *"
+    }
+  ]
 }
