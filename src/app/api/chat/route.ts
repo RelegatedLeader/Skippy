@@ -57,6 +57,11 @@ export async function POST(req: Request) {
       }
     }
 
+    // Guard: Grok key must be present (Grok is the default/fallback model)
+    if (!process.env.GROK_API_KEY) {
+      return new Response('GROK_API_KEY is not configured. Add it to your environment variables.', { status: 503 })
+    }
+
     // Validate model — fall back to grok if claude not configured
     const resolvedModel: AIModel = (model === 'claude' && !claudeAvailable()) ? 'grok' : model
 
@@ -79,6 +84,9 @@ export async function POST(req: Request) {
             accumulated += text
             controller.enqueue(value)
           }
+        } catch (streamErr) {
+          console.error('Stream read error:', streamErr)
+          controller.error(streamErr)
         } finally {
           controller.close()
           if (conversationId && accumulated) {

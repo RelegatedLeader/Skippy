@@ -155,6 +155,9 @@ export async function streamAIResponse(
           const delta = chunk.choices[0]?.delta?.content || ''
           if (delta) controller.enqueue(encoder.encode(delta))
         }
+      } catch (err) {
+        console.error('[Grok stream error]', err)
+        controller.error(err)
       } finally {
         controller.close()
       }

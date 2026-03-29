@@ -107,7 +107,10 @@ export function ChatInterface({ conversationId, onConversationCreated, onToggleS
           signal: abortControllerRef.current.signal,
         })
 
-        if (!res.ok) throw new Error(`HTTP ${res.status}`)
+        if (!res.ok) {
+          const errText = await res.text().catch(() => '')
+          throw new Error(errText || `HTTP ${res.status}`)
+        }
         if (!res.body) throw new Error('No body')
 
         if (res.headers.get('X-Skippy-Escalate') === '1') {
@@ -144,10 +147,14 @@ export function ChatInterface({ conversationId, onConversationCreated, onToggleS
       } catch (err: unknown) {
         if (err instanceof Error && err.name === 'AbortError') return
         console.error('Chat error:', err)
+        const errMsg = err instanceof Error ? err.message : String(err)
+        const display = errMsg && !errMsg.startsWith('HTTP ')
+          ? `⚠️ ${errMsg}`
+          : '⚠️ Error connecting to AI. Check console for details.'
         setMessages(
           useChatStore.getState().messages.map((m) =>
             m.id === streamingId
-              ? { ...m, content: '⚠️ Error connecting. Check your API key and try again.' }
+              ? { ...m, content: display }
               : m
           )
         )
