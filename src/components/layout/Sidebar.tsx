@@ -246,8 +246,8 @@ export function Sidebar({ children, className }: SidebarProps) {
         initial={false}
         animate={{ x: isOpen ? 0 : '-100%' }}
         transition={{ type: 'spring', stiffness: 340, damping: 34 }}
-        className="fixed top-0 left-0 bottom-0 z-50 flex flex-col w-[280px] border-r md:hidden overflow-hidden"
-        style={sharedStyle}
+        className="fixed top-0 left-0 bottom-0 z-50 flex flex-col w-[280px] border-r md:hidden overflow-y-auto overscroll-contain"
+        style={{ ...sharedStyle, touchAction: 'pan-y' }}
       >
         <SidebarInner showClose onClose={close}>
           {children}

@@ -39,6 +39,12 @@ a, button {
   padding-bottom: env(safe-area-inset-bottom);
 }
 
+/* ── Prevent scroll passthrough when sidebar drawer is open ── */
+body.sidebar-open {
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+
 /* ── Glass ── */
 .glass {
   background: rgba(10, 26, 53, 0.82);

@@ -352,7 +352,7 @@ export function ChatInterface({ conversationId, onConversationCreated, onToggleS
       {/* Messages area */}
       <div className="flex-1 overflow-y-auto relative z-10">
         {isEmpty ? (
-          <div className="flex flex-col items-center justify-center h-full px-4 sm:px-8 py-8 sm:py-16">
+          <div className="flex flex-col items-center px-4 sm:px-8 py-8 sm:py-16 min-h-full justify-center">
             <motion.div
               initial={{ opacity: 0, scale: 0.9 }}
               animate={{ opacity: 1, scale: 1 }}
