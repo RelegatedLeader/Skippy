@@ -225,6 +225,12 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
     fetchTodos()
     fetchStats()
 
+    // If permission was already granted (e.g. re-opened after install),
+    // re-register push subscription silently so the DB stays current.
+    if (typeof window !== 'undefined' && Notification.permission === 'granted') {
+      registerPushSubscription()
+    }
+
     const interval = setInterval(() => { checkAndNotify(); fetchTodos() }, 30_000)
     const visibilityHandler = () => { if (!document.hidden) { checkAndNotify(); fetchTodos() } }
     document.addEventListener('visibilitychange', visibilityHandler)

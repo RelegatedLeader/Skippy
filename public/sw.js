@@ -54,10 +54,12 @@ self.addEventListener('push', event => {
   const options = {
     body: data.body || '',
     icon: '/img/skippyENHANCED3D-removebg.png',
-    badge: '/img/skippyENHANCED3D-removebg.png',
+    // badge: small monochrome icon shown in Android status bar
+    badge: '/img/badge-96.png',
     data: { url: data.url || '/chat' },
+    // Use a timestamp-based tag for nudges so they stack instead of replacing each other
     tag: data.tag || 'skippy-push',
-    requireInteraction: data.requireInteraction || false,
+    requireInteraction: false,  // false = Android dismisses after tap, no lingering
     vibrate: [200, 100, 200],
     actions: data.actions || [],
   }
@@ -72,12 +74,15 @@ self.addEventListener('notificationclick', event => {
     clients.matchAll({ type: 'window', includeUncontrolled: true }).then(list => {
       // If a Skippy window is already open, focus it and navigate
       const existing = list.find(c => c.url.includes(self.location.origin))
+      if (existing && 'navigate' in existing) {
+        existing.focus()
+        return existing.navigate(targetUrl)
+      }
       if (existing) {
         existing.focus()
-        existing.navigate(targetUrl)
         return
       }
-      // Otherwise open a new window
+      // Otherwise open a new window (primary path on Android)
       return clients.openWindow(targetUrl)
     })
   )

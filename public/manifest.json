@@ -23,6 +23,12 @@
       "src": "/img/skippyENHANCED3D-removebg.png",
       "sizes": "512x512",
       "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/img/skippyENHANCED3D-removebg.png",
+      "sizes": "512x512",
+      "type": "image/png",
       "purpose": "maskable"
     }
   ],
