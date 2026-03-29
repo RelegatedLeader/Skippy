@@ -67,7 +67,7 @@ export async function POST(req: Request) {
     // Validate model — fall back to grok if claude not configured
     const resolvedModel: AIModel = (model === 'claude' && !claudeAvailable()) ? 'grok' : model
 
-    const systemPrompt = await buildSystemPrompt()
+    const systemPrompt = await buildSystemPrompt(timezoneOffsetMinutes ?? 0)
     const escalate = detectEscalation(messages)
 
     let accumulated = ''

@@ -15,10 +15,12 @@ const TABS = [
 
 export function MobileBottomNav() {
   const pathname = usePathname()
-  const { urgentCount } = useNotifications()
+  const { urgentCount, pendingTodos } = useNotifications()
 
   // Hide on login / setup
   if (!pathname || pathname.startsWith('/login') || pathname.startsWith('/setup')) return null
+
+  const todoBadge = pendingTodos.length
 
   return (
     <nav
@@ -33,7 +35,8 @@ export function MobileBottomNav() {
     >
       {TABS.map(({ href, icon: Icon, label }) => {
         const active = pathname.startsWith(href)
-        const showBadge = label === 'Memory' && urgentCount > 0
+        const showMemoryBadge = label === 'Memory' && urgentCount > 0
+        const showTodoBadge = label === 'Todos' && todoBadge > 0
         return (
           <Link
             key={href}
@@ -51,11 +54,19 @@ export function MobileBottomNav() {
                 className="w-[22px] h-[22px] transition-colors"
                 style={{ color: active ? '#29c2e6' : 'rgba(77,112,153,0.7)' }}
               />
-              {showBadge && (
+              {showMemoryBadge && (
                 <span
                   className="absolute -top-1 -right-1.5 min-w-[14px] h-[14px] px-0.5 rounded-full bg-red-500 text-white text-[8px] font-black flex items-center justify-center"
                 >
                   {urgentCount > 9 ? '9+' : urgentCount}
+                </span>
+              )}
+              {showTodoBadge && (
+                <span
+                  className="absolute -top-1 -right-1.5 min-w-[14px] h-[14px] px-0.5 rounded-full text-white text-[8px] font-black flex items-center justify-center"
+                  style={{ background: '#10b981' }}
+                >
+                  {todoBadge > 99 ? '99+' : todoBadge}
                 </span>
               )}
             </span>

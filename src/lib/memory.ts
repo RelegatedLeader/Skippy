@@ -747,7 +747,34 @@ export async function getUserProfile() {
 
 // ─── System prompt ────────────────────────────────────────────────────────────
 
-export async function buildSystemPrompt(): Promise<string> {
+export async function buildSystemPrompt(tzOffsetMinutes = 0): Promise<string> {
+  // Compute the user's local date/time (server runs UTC on Vercel)
+  const serverNow = new Date()
+  const localNow = new Date(serverNow.getTime() - tzOffsetMinutes * 60 * 1000)
+  const localDateStr = localNow.toISOString().slice(0, 10)          // YYYY-MM-DD
+  const localDayName = localNow.toLocaleDateString('en-US', { weekday: 'long', timeZone: 'UTC' })
+  const localTimeStr = localNow.toISOString().slice(11, 16)          // HH:MM
+
+  // Helper: turn a stored UTC dueDate into a human-readable label relative to user's local today
+  function toRelativeLabel(dueDateInput: Date | string): string {
+    const due = new Date(dueDateInput)
+    // Shift the due date into the user's local "calendar day"
+    const dueLocal = new Date(due.getTime() - tzOffsetMinutes * 60 * 1000)
+    const dueDay = dueLocal.toISOString().slice(0, 10)
+    const diffMs = new Date(dueDay).getTime() - new Date(localDateStr).getTime()
+    const diffDays = Math.round(diffMs / 86_400_000)
+    const hasTime = due.getUTCHours() !== 0 || due.getUTCMinutes() !== 0
+    const timeLabel = hasTime
+      ? ` at ${due.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', timeZone: 'UTC' })}`
+      : ''
+    if (diffDays < -1) return `OVERDUE (was ${dueLocal.toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' })}${timeLabel})`
+    if (diffDays === -1) return `OVERDUE (yesterday${timeLabel})`
+    if (diffDays === 0) return `TODAY${timeLabel}`
+    if (diffDays === 1) return `tomorrow${timeLabel}`
+    if (diffDays <= 6) return `${dueLocal.toLocaleDateString('en-US', { weekday: 'long', timeZone: 'UTC' })}${timeLabel}`
+    return `${dueLocal.toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' })}${timeLabel}`
+  }
+
   // Surface reminders due through end of tomorrow (catches "tomorrow night" cases)
   const endOfTomorrow = new Date()
   endOfTomorrow.setDate(endOfTomorrow.getDate() + 1)
@@ -847,10 +874,10 @@ export async function buildSystemPrompt(): Promise<string> {
     const PRIO = { urgent: '🔴', high: '🟠', normal: '🔵', low: '⚪' } as Record<string, string>
     const todoLines = pendingTodos.map(t => {
       const icon = PRIO[t.priority] || '🔵'
-      const due = t.dueDate ? ` [due ${new Date(t.dueDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}]` : ''
+      const due = t.dueDate ? ` [due ${toRelativeLabel(t.dueDate)}]` : ''
       return `- ${icon} ${t.content}${due}`
     })
-    todoSection = `\n\n## Your current todo list (use this to understand what they're working on and help prioritise):\n${todoLines.join('\n')}`
+    todoSection = `\n\n## Your current todo list (today is ${localDayName} ${localDateStr}):\n${todoLines.join('\n')}`
   }
 
   let conversationSection = ''
@@ -866,7 +893,7 @@ export async function buildSystemPrompt(): Promise<string> {
   if (pendingReminders.length > 0) {
     const reminderLines = pendingReminders.map(r => {
       const duePart = r.dueDate
-        ? ` — due ${formatDueDate(r.dueDate)}`
+        ? ` — due ${toRelativeLabel(r.dueDate)}`
         : r.timeframeLabel
         ? ` — ${r.timeframeLabel}`
         : ''
@@ -913,7 +940,9 @@ IMPORTANT: You know EXACTLY which words they have studied (listed above). When t
 - Celebrate progress and streaks naturally`
   }
 
-  return `You are Skippy — a deeply personal AI assistant who knows the user better than anyone. You are intelligent, insightful, occasionally witty, and always genuinely helpful. You remember everything across all conversations.
+  return `TODAY: ${localDayName}, ${localDateStr} · Current time: ${localTimeStr} (user's local time)
+
+You are Skippy — a deeply personal AI assistant who knows the user better than anyone. You are intelligent, insightful, occasionally witty, and always genuinely helpful. You remember everything across all conversations.
 
 You are NOT a generic AI assistant. You are SKIPPY — a unique personality who has an ongoing relationship with this specific user. You speak naturally, directly, and with genuine care. You anticipate needs before they're stated. You notice patterns. You push back when appropriate.
 
