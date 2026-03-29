@@ -107,11 +107,11 @@ export async function POST(req: Request) {
       },
     })
   } catch (err) {
-    console.error('Chat API error:', err)
-    return new Response(
-      err instanceof Error ? err.message : 'Internal server error',
-      { status: 500 }
-    )
+    const errMsg = err instanceof Error ? err.message : String(err)
+    const errType = err instanceof Error ? err.constructor.name : 'Unknown'
+    // Log full error details for Vercel log visibility
+    console.error(`[Chat API error] type=${errType} msg=${errMsg}`, err)
+    return new Response(errMsg || 'Internal server error', { status: 500 })
   }
 }
 
