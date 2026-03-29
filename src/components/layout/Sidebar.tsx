@@ -36,7 +36,7 @@ function SidebarInner({
 }) {
   const pathname = usePathname()
   const router = useRouter()
-  const { urgentCount, userStats } = useNotifications()
+  const { urgentCount, pendingTodos, userStats } = useNotifications()
 
   async function handleLogout() {
     await fetch('/api/auth/logout', { method: 'POST' }).catch(() => {})
@@ -156,6 +156,13 @@ function SidebarInner({
                 {label === 'Memory' && urgentCount > 0 && (
                   <span className="ml-auto min-w-[18px] h-[18px] px-1 rounded-full bg-red-500 text-white text-[9px] font-black flex items-center justify-center badge-pulse">
                     {urgentCount > 9 ? '9+' : urgentCount}
+                  </span>
+                )}
+                {/* Todos pending badge */}
+                {label === 'Todos' && pendingTodos.length > 0 && (
+                  <span className="ml-auto min-w-[18px] h-[18px] px-1 rounded-full text-white text-[9px] font-black flex items-center justify-center"
+                    style={{ background: '#10b981' }}>
+                    {pendingTodos.length > 99 ? '99+' : pendingTodos.length}
                   </span>
                 )}
               </button>
