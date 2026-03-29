@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { verifySessionToken, SESSION_COOKIE } from '@/lib/session'
 
 // Paths that don't require authentication
-const PUBLIC_PATHS = ['/login', '/setup', '/api/auth', '/api/version']
+const PUBLIC_PATHS = ['/login', '/setup', '/api/auth', '/api/version', '/api/test-grok']
 
 export async function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl
