@@ -461,34 +461,55 @@ export async function extractTodosFromConversation(
   conversationId?: string,
 ): Promise<void> {
   try {
-    const userText = messages.filter(m => m.role === 'user').map(m => m.content).join(' ')
-    // Broad pre-scan: catches "add X to my to-do", "create a task", "put X on my list",
-    // "to-do: X", etc. The old regex required "add" immediately before "to my" which
-    // didn't match the natural phrasing "add TASK to my list".
-    const hasTodoLanguage = /\badd\b.{0,120}\bto\s+my\s+(to[\s-]?do|todo|tasks?|list)|to[\s-]?do\s*:|\btodo\s*:|create\s+(a\s+)?(new\s+)?(task|todo)\b|put\b.{0,80}\b(to[\s-]?do|todo|my\s*(task|list|todo))|\badd\s+(a\s+)?(task|todo)\b|\bnew\s+task\b|\badd\s+to\s+my\s+(to[\s-]?do|todo|tasks?|list)/i.test(userText)
+    // Only scan the most recent user message — NOT the full history.
+    // Scanning all messages caused re-extraction of todos already created in
+    // earlier turns of the same conversation, producing duplicates and confusing the AI.
+    const lastUserMsg = messages.filter(m => m.role === 'user').slice(-1)[0]?.content ?? ''
+    if (!lastUserMsg) return
+
+    const hasTodoLanguage =
+      /\bto[\s-]?do\b|\btodo\b/i.test(lastUserMsg) ||
+      /\b(add|put|create|make|new)\b.{0,100}\b(task|tasks|list)\b/i.test(lastUserMsg) ||
+      /\b(add|put)\b.{0,120}\bmy\s+(list|tasks?|todos?|to[\s-]?do)\b/i.test(lastUserMsg) ||
+      /\badd\b.{0,120}\bto\s+my\b/i.test(lastUserMsg) ||
+      /\b(create|add)\s+a\s+(new\s+)?(task|todo)\b/i.test(lastUserMsg)
     if (!hasTodoLanguage) return
+
+    // Fetch existing pending todos for deduplication before creating new ones
+    const existingTodos = await prisma.todo.findMany({
+      where: { isDone: false },
+      select: { content: true },
+      orderBy: { createdAt: 'desc' },
+      take: 100,
+    })
+    const existingContents = existingTodos.map(t => t.content)
+
+    // Only pass the last few messages so the AI isn't confused by prior turns.
+    // The final user-role "extract" prompt tells it to look at the MOST RECENT request only.
+    const recentMessages = messages.slice(-6)
 
     const text = await callAI([
       {
         role: 'system',
-        content: `Extract explicit to-do item creation requests from this conversation.
-Only extract items the user specifically wants added to their to-do list — not general plans.
+        content: `You are a to-do extraction assistant. Look ONLY at the most recent user message and extract any task they explicitly want added to their to-do list.
 
 Return JSON: {"todos": [{"content": "concise task description", "priority": "low|normal|high|urgent", "dueDate": "YYYY-MM-DD or null"}]}
 
-Examples:
-- "add call the dentist to my to-do list" → {"content": "Call the dentist", "priority": "normal", "dueDate": null}
-- "add buy groceries to my todos" → {"content": "Buy groceries", "priority": "normal", "dueDate": null}
-- "add finish the report to my list" → {"content": "Finish the report", "priority": "normal", "dueDate": null}
-- "put this on my todos: finish the report by Friday" → {"content": "Finish the report", "priority": "normal", "dueDate": "[next Friday ISO date]"}
-- "create a task for updating my resume" → {"content": "Update my resume", "priority": "normal", "dueDate": null}
-- "new task: clean the garage" → {"content": "Clean the garage", "priority": "normal", "dueDate": null}
-- "to-do: book the flight" → {"content": "Book the flight", "priority": "normal", "dueDate": null}
+ONLY extract if the user is clearly asking to add something to a list right now. Do NOT re-extract tasks mentioned in older parts of the conversation.
 
-If no explicit todo-creation request exists, return {"todos": []}.`,
+Examples of valid requests:
+- "add call the dentist to my to-do list" → [{"content": "Call the dentist", "priority": "normal", "dueDate": null}]
+- "add buy groceries to my todos" → [{"content": "Buy groceries", "priority": "normal", "dueDate": null}]
+- "put finish the report on my list" → [{"content": "Finish the report", "priority": "normal", "dueDate": null}]
+- "add this to my tasks: clean the garage" → [{"content": "Clean the garage", "priority": "normal", "dueDate": null}]
+- "to-do: book the flight" → [{"content": "Book the flight", "priority": "normal", "dueDate": null}]
+- "create a task for updating my resume" → [{"content": "Update my resume", "priority": "normal", "dueDate": null}]
+- "new task: call mom by Friday" → [{"content": "Call mom", "priority": "normal", "dueDate": "[next Friday]"}]
+
+If no explicit to-do creation request in the LATEST user message, return {"todos": []}.`,
       },
-      ...messages.filter(m => m.role === 'user'),
-      { role: 'user', content: 'Extract any explicit to-do creation requests. Return ONLY valid JSON.' },
+      ...recentMessages.filter(m => m.role !== 'system'),
+      { role: 'user', content: 'Extract only what the user JUST asked to add. Return ONLY valid JSON.' },
     ], { json: true, temperature: 0.1, max_tokens: 400 })
 
     const parsed = JSON.parse(text)
@@ -497,21 +518,29 @@ If no explicit todo-creation request exists, return {"todos": []}.`,
 
     for (const t of todos) {
       if (!t.content?.trim()) continue
+      const normalized = t.content.trim().slice(0, 500)
+
+      // Skip if an identical or near-identical pending todo already exists
+      const isDupe = existingContents.some(c => wordJaccard(c, normalized) >= 0.55)
+      if (isDupe) continue
+
       const priority = t.priority && ['low', 'normal', 'high', 'urgent'].includes(t.priority) ? t.priority : 'normal'
       let dueDate: Date | null = null
       if (t.dueDate) {
         const d = new Date(t.dueDate)
         if (!isNaN(d.getTime())) dueDate = d
       }
+
       await prisma.todo.create({
         data: {
-          content: t.content.trim().slice(0, 500),
+          content: normalized,
           priority,
           dueDate: dueDate ?? undefined,
           tags: JSON.stringify([]),
           xpReward: 1,
         },
       })
+      existingContents.push(normalized)
     }
   } catch (e) {
     console.error('Failed to extract todos:', e)
