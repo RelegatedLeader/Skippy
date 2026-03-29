@@ -5,6 +5,7 @@ import { claudeAvailable } from '@/lib/claude'
 import { checkRateLimit } from '@/lib/rate-limit'
 
 export const runtime = 'nodejs'
+export const maxDuration = 60
 
 // High-stakes phrases that warrant an escalation nudge
 const ESCALATION_PATTERNS = [
