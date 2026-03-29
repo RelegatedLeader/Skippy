@@ -1,5 +1,5 @@
 import { prisma } from '@/lib/db'
-import { buildSystemPrompt, extractMemoriesFromConversation, extractRemindersFromConversation, extractNoteFromConversation, generateConversationTitle, updateConversationSummary } from '@/lib/memory'
+import { buildSystemPrompt, extractMemoriesFromConversation, extractRemindersFromConversation, extractTodosFromConversation, markItemsCompleteFromChat, extractNoteFromConversation, generateConversationTitle, updateConversationSummary } from '@/lib/memory'
 import { streamAIResponse, type AIModel } from '@/lib/ai'
 import { claudeAvailable } from '@/lib/claude'
 import { checkRateLimit } from '@/lib/rate-limit'
@@ -153,6 +153,8 @@ async function saveConversation(
     await Promise.allSettled([
       extractMemoriesFromConversation(allMessages, { conversationId }),
       extractRemindersFromConversation(allMessages, conversationId, timezoneOffsetMinutes),
+      extractTodosFromConversation(allMessages, conversationId),
+      markItemsCompleteFromChat(allMessages),
       extractNoteFromConversation(allMessages, conversationId),
       updateConversationSummary(conversationId, allMessages),
     ])

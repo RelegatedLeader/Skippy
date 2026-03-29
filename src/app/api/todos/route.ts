@@ -42,7 +42,7 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'Content is required' }, { status: 400 })
     }
 
-    const PRIORITY_XP: Record<string, number> = { low: 5, normal: 10, high: 15, urgent: 25 }
+    const PRIORITY_XP: Record<string, number> = { low: 1, normal: 1, high: 1, urgent: 1 }
     const p = priority && ['low', 'normal', 'high', 'urgent'].includes(priority) ? priority : 'normal'
 
     let parsedDate: Date | null = null

@@ -38,7 +38,7 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
       fetch('/api/user-stats', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ xp: updated.xpReward, type: 'todo' }),
+        body: JSON.stringify({ xp: updated.xpReward || 1, type: 'todo' }),
       }).catch(() => {})
     }
 

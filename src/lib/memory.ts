@@ -307,15 +307,22 @@ export async function extractRemindersFromConversation(
     if (!hasReminderLanguage) return
 
     const now = new Date()
-    const today = now.toISOString().slice(0, 10)
-    const tomorrowDate = new Date(now)
-    tomorrowDate.setDate(tomorrowDate.getDate() + 1)
+    // Compute the user's local date by shifting UTC time by their timezone offset.
+    // e.g. at 10pm EST (UTC-5, offset=300) the server is on the next UTC day;
+    // localNow gives the correct calendar day in the user's timezone so that
+    // "tonight" and "today" map to the right date in the AI prompt.
+    const localNow = new Date(now.getTime() - tzOffsetMinutes * 60 * 1000)
+    const today = localNow.toISOString().slice(0, 10)
+    const tomorrowDate = new Date(localNow)
+    tomorrowDate.setUTCDate(tomorrowDate.getUTCDate() + 1)
     const tomorrow = tomorrowDate.toISOString().slice(0, 10)
+    // Current local time (HH:MM) so AI can judge whether "tonight" has already passed.
+    const localHHMM = localNow.toISOString().slice(11, 16)
 
     const text = await callAI([
       {
         role: 'system',
-        content: `You extract reminder requests from conversations. Today is ${today}.
+        content: `You extract reminder requests from conversations. Today is ${today} and the current local time is ${localHHMM}.
 
 Look for messages where the user wants to be reminded about something later:
 - "remind me to X" / "remind me about X at 3pm"
@@ -324,7 +331,7 @@ Look for messages where the user wants to be reminded about something later:
 - "set a reminder for X"
 - Any explicit request to be reminded
 
-IMPORTANT date/time parsing rules (today = ${today}, tomorrow = ${tomorrow}):
+IMPORTANT date/time parsing rules (today = ${today}, tomorrow = ${tomorrow}, current time = ${localHHMM}):
 - "tomorrow at 9am" → ${tomorrow}T09:00:00
 - "tomorrow night" / "tomorrow evening" / "tomorrow at night" → ${tomorrow}T20:00:00
 - "tomorrow afternoon" → ${tomorrow}T15:00:00
@@ -337,8 +344,9 @@ IMPORTANT date/time parsing rules (today = ${today}, tomorrow = ${tomorrow}):
 - "by [date]" with no time → that date at 09:00
 - If user gives a specific time like "8pm" → use 20:00:00
 - If no time at all specified → return YYYY-MM-DD with no time portion
+- If the requested time has already passed today (current time ${localHHMM} > requested time), do NOT skip — keep it as-is, the system will handle it
 
-Return JSON: {"reminders": [{"content": "concise reminder text", "dueDate": "YYYY-MM-DDTHH:mm:ss or YYYY-MM-DD or null", "timeframeLabel": "human-readable like 'tomorrow night at 8pm'"}]}
+Return JSON: {"reminders": [{"content": "concise reminder text", "dueDate": "YYYY-MM-DDTHH:mm:ss or YYYY-MM-DD or null", "timeframeLabel": "human-readable like 'tonight at 9pm'"}]}
 
 Extract ALL reminder requests. Return ONLY valid JSON. If none found, return {"reminders": []}.`,
         },
@@ -414,6 +422,162 @@ Extract ALL reminder requests. Return ONLY valid JSON. If none found, return {"r
     }
   } catch (e) {
     console.error('Failed to extract reminders:', e)
+  }
+}
+
+// ─── XP helper (direct DB — avoids HTTP loopback from server-side functions) ──
+
+async function awardXpDirect(xp: number, type: 'todo' | 'reminder'): Promise<void> {
+  try {
+    const today = new Date().toISOString().slice(0, 10)
+    const existing = await prisma.userStats.findUnique({ where: { id: 'singleton' } })
+    let newStreak = 1
+    if (existing?.lastActivityDate === today) {
+      newStreak = existing.currentStreak
+    } else if (existing?.lastActivityDate) {
+      const yesterday = new Date()
+      yesterday.setDate(yesterday.getDate() - 1)
+      if (existing.lastActivityDate === yesterday.toISOString().slice(0, 10)) {
+        newStreak = (existing.currentStreak ?? 0) + 1
+      }
+    }
+    const longestStreak = Math.max(newStreak, existing?.longestStreak ?? 1)
+    await prisma.userStats.upsert({
+      where: { id: 'singleton' },
+      create: { id: 'singleton', totalXP: xp, currentStreak: 1, longestStreak: 1, lastActivityDate: today, remindersCompleted: type === 'reminder' ? 1 : 0, todosCompleted: type === 'todo' ? 1 : 0 },
+      update: { totalXP: { increment: xp }, currentStreak: newStreak, longestStreak, lastActivityDate: today, ...(type === 'reminder' ? { remindersCompleted: { increment: 1 } } : { todosCompleted: { increment: 1 } }) },
+    })
+  } catch { /* non-critical */ }
+}
+
+// ─── Todo extraction from chat ────────────────────────────────────────────────
+
+/**
+ * When the user explicitly asks Skippy to add something to their to-do list,
+ * extract the task(s) and create them directly in the database.
+ */
+export async function extractTodosFromConversation(
+  messages: Array<{ role: string; content: string }>,
+  conversationId?: string,
+): Promise<void> {
+  try {
+    const userText = messages.filter(m => m.role === 'user').map(m => m.content).join(' ')
+    const hasTodoLanguage = /\badd\s+(to\s+my\s+(to[\s-]?do|todo|task|list)|(it|this|that)\s+to\s+my\s+(to[\s-]?do|todo|task|list))|to[\s-]?do\s*:|todo\s*:|create\s+(a\s+)?(task|todo)|put\s+(it|this|that)\s+on\s+my\s+(list|todos?|to[\s-]?do)|add\s+(a\s+)?(task|todo)/i.test(userText)
+    if (!hasTodoLanguage) return
+
+    const text = await callAI([
+      {
+        role: 'system',
+        content: `Extract explicit to-do item creation requests from this conversation.
+Only extract items the user specifically wants added to their to-do list — not general plans.
+
+Return JSON: {"todos": [{"content": "concise task description", "priority": "low|normal|high|urgent", "dueDate": "YYYY-MM-DD or null"}]}
+
+Examples:
+- "add to my to-do list: call the dentist" → {"content": "Call the dentist", "priority": "normal", "dueDate": null}
+- "put this on my todos: finish the report by Friday" → {"content": "Finish the report", "priority": "normal", "dueDate": "[next Friday ISO date]"}
+- "create a task for updating my resume" → {"content": "Update my resume", "priority": "normal", "dueDate": null}
+
+If no explicit todo-creation request exists, return {"todos": []}.`,
+      },
+      ...messages.filter(m => m.role === 'user'),
+      { role: 'user', content: 'Extract any explicit to-do creation requests. Return ONLY valid JSON.' },
+    ], { json: true, temperature: 0.1, max_tokens: 400 })
+
+    const parsed = JSON.parse(text)
+    const todos: Array<{ content?: string; priority?: string; dueDate?: string }> = parsed.todos || []
+    if (todos.length === 0) return
+
+    for (const t of todos) {
+      if (!t.content?.trim()) continue
+      const priority = t.priority && ['low', 'normal', 'high', 'urgent'].includes(t.priority) ? t.priority : 'normal'
+      let dueDate: Date | null = null
+      if (t.dueDate) {
+        const d = new Date(t.dueDate)
+        if (!isNaN(d.getTime())) dueDate = d
+      }
+      await prisma.todo.create({
+        data: {
+          content: t.content.trim().slice(0, 500),
+          priority,
+          dueDate: dueDate ?? undefined,
+          tags: JSON.stringify([]),
+          xpReward: 1,
+        },
+      })
+    }
+  } catch (e) {
+    console.error('Failed to extract todos:', e)
+  }
+}
+
+// ─── Mark items complete via chat ─────────────────────────────────────────────
+
+/**
+ * When the user tells Skippy they've completed a task or reminder in chat,
+ * find the matching pending item(s) and mark them done in the database.
+ */
+export async function markItemsCompleteFromChat(
+  messages: Array<{ role: string; content: string }>,
+): Promise<void> {
+  try {
+    const recentUser = messages.filter(m => m.role === 'user').slice(-3).map(m => m.content).join(' ')
+    const hasCompletionLanguage = /\b(done|finished|completed|i did|i've done|already did|just did|crossed off|checked off|mark.{0,10}done|i.m done with|done with)\b/i.test(recentUser)
+    if (!hasCompletionLanguage) return
+
+    const [pendingTodos, pendingReminders] = await Promise.all([
+      prisma.todo.findMany({ where: { isDone: false }, select: { id: true, content: true }, take: 30 }),
+      prisma.reminder.findMany({ where: { isDone: false }, select: { id: true, content: true }, take: 30 }),
+    ])
+    if (pendingTodos.length === 0 && pendingReminders.length === 0) return
+
+    const itemList = [
+      ...pendingTodos.map(t => `TODO:${t.id}: ${t.content}`),
+      ...pendingReminders.map(r => `REMINDER:${r.id}: ${r.content}`),
+    ].join('\n')
+
+    const recentMessages = messages.filter(m => m.role === 'user').slice(-3)
+    const text = await callAI([
+      {
+        role: 'system',
+        content: `You determine which pending items a user has claimed to have completed in their messages.
+
+Pending items:
+${itemList}
+
+User messages (most recent first):
+${recentMessages.map(m => m.content).join('\n---\n')}
+
+Return JSON: {"completed": ["TODO:id1", "REMINDER:id2"]}
+Only include items EXPLICITLY mentioned as done/finished/completed. Be conservative — only match when the user clearly means a specific item from the list above. If nothing matches, return {"completed": []}.`,
+      },
+      { role: 'user', content: 'Which items did the user mark as completed? Return ONLY valid JSON.' },
+    ], { json: true, temperature: 0.1, max_tokens: 300 })
+
+    const parsed = JSON.parse(text)
+    const completed: string[] = parsed.completed || []
+
+    for (const item of completed) {
+      try {
+        if (item.startsWith('TODO:')) {
+          const id = item.slice('TODO:'.length)
+          const todo = await prisma.todo.findUnique({ where: { id } })
+          if (todo && !todo.isDone) {
+            await prisma.todo.update({ where: { id }, data: { isDone: true, completedAt: new Date() } })
+            await awardXpDirect(todo.xpReward || 1, 'todo')
+          }
+        } else if (item.startsWith('REMINDER:')) {
+          const id = item.slice('REMINDER:'.length)
+          const reminder = await prisma.reminder.findUnique({ where: { id } })
+          if (reminder && !reminder.isDone) {
+            await prisma.reminder.update({ where: { id }, data: { isDone: true, completedAt: new Date() } })
+            await awardXpDirect(reminder.xpReward || 10, 'reminder')
+          }
+        }
+      } catch { /* skip invalid/already-updated items */ }
+    }
+  } catch (e) {
+    console.error('Failed to mark items complete:', e)
   }
 }
 
@@ -724,7 +888,9 @@ Your core traits:
 - You're honest, sometimes bluntly so, but always supportive
 - You celebrate wins and help process setbacks
 - You help organize thoughts, build systems, and make things happen
-- When the user asks you to "write a daily note", "log what I did today", "save this as a note", or anything similar, write the full reflection in your response and let them know it's being saved to their notes automatically${profileSection}${instructionsSection}${reminderSection}${todoSection}${conversationSection}${memorySection}${notesSection}${debateSection}${langSection}
+- When the user asks you to "write a daily note", "log what I did today", "save this as a note", or anything similar, write the full reflection in your response and let them know it's being saved to their notes automatically
+- When the user asks you to add something to their to-do list ("add X to my to-do", "put X on my list", "create a task for X"), confirm it in your response — it's being added automatically
+- When the user tells you they finished or completed something ("I finished X", "I did X", "I'm done with X", "crossed off X"), acknowledge it warmly and let them know it's being marked as done in their system automatically — you have full visibility of their todos and reminders${profileSection}${instructionsSection}${reminderSection}${todoSection}${conversationSection}${memorySection}${notesSection}${debateSection}${langSection}
 
 Always respond in a way that reflects deep knowledge of this specific person. Never be generic. Use markdown formatting for structure when helpful — headers, bullet points, code blocks, etc.`
 }
