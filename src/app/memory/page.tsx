@@ -161,6 +161,9 @@ export default function MemoryPage() {
     if (res.ok) {
       const created: Reminder = await res.json()
       setReminders(prev => [created, ...prev])
+    } else {
+      const err = await res.text().catch(() => '')
+      alert(`Failed to save reminder (${res.status})${err ? ': ' + err : ''}`)
     }
   }
 

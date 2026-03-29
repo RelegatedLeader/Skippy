@@ -32,7 +32,7 @@ function LoginForm() {
         return
       }
 
-      router.push(from)
+      router.replace(from)
       router.refresh()
     } catch {
       setError('Network error — try again')

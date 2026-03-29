@@ -26,6 +26,9 @@ export const metadata: Metadata = {
     statusBarStyle: 'black-translucent',
     title: 'Skippy',
   },
+  other: {
+    'mobile-web-app-capable': 'yes',
+  },
   icons: {
     icon: '/img/skippyENHANCED3D-removebg.png',
     apple: '/img/skippyENHANCED3D-removebg.png',

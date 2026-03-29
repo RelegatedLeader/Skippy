@@ -2,9 +2,9 @@
 
 import Link from 'next/link'
 import Image from 'next/image'
-import { usePathname } from 'next/navigation'
+import { usePathname, useRouter } from 'next/navigation'
 import { motion, AnimatePresence } from 'framer-motion'
-import { MessageSquare, FileText, Brain, Settings, Info, Swords, Sparkles, CheckSquare, Flame, Trophy, GraduationCap, X } from 'lucide-react'
+import { MessageSquare, FileText, Brain, Settings, Info, Swords, Sparkles, CheckSquare, Flame, Trophy, GraduationCap, X, LogOut } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useNotifications } from '@/components/notifications/NotificationProvider'
 import { useSidebar } from './SidebarContext'
@@ -35,7 +35,13 @@ function SidebarInner({
   children?: React.ReactNode
 }) {
   const pathname = usePathname()
+  const router = useRouter()
   const { urgentCount, userStats } = useNotifications()
+
+  async function handleLogout() {
+    await fetch('/api/auth/logout', { method: 'POST' }).catch(() => {})
+    router.replace('/login')
+  }
 
   return (
     <>
@@ -160,7 +166,7 @@ function SidebarInner({
 
       <div className="flex-1 overflow-hidden">{children}</div>
 
-      <div className="p-3 border-t" style={{ borderColor: 'rgba(30,58,110,0.7)' }}>
+      <div className="p-3 border-t space-y-1" style={{ borderColor: 'rgba(30,58,110,0.7)' }}>
         <Link href="/settings" className="block">
           <button className={cn(
             'w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-all duration-200 border',
@@ -182,6 +188,20 @@ function SidebarInner({
             <Settings className="w-4 h-4" />Settings
           </button>
         </Link>
+        <button
+          onClick={handleLogout}
+          className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-all duration-200 border border-transparent text-muted hover:text-red-400"
+          onMouseEnter={e => {
+            (e.currentTarget as HTMLButtonElement).style.background = 'rgba(239,68,68,0.08)'
+            ;(e.currentTarget as HTMLButtonElement).style.borderColor = 'rgba(239,68,68,0.2)'
+          }}
+          onMouseLeave={e => {
+            (e.currentTarget as HTMLButtonElement).style.background = ''
+            ;(e.currentTarget as HTMLButtonElement).style.borderColor = 'transparent'
+          }}
+        >
+          <LogOut className="w-4 h-4" />Log out
+        </button>
       </div>
     </>
   )
