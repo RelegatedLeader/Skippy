@@ -105,7 +105,7 @@ export function ChatInterface({ conversationId, onConversationCreated, onToggleS
         const res = await fetch('/api/chat', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ messages: allMessages, conversationId: convId, model: selectedModel }),
+          body: JSON.stringify({ messages: allMessages, conversationId: convId, model: selectedModel, timezoneOffsetMinutes: new Date().getTimezoneOffset() }),
           signal: abortControllerRef.current.signal,
         })
 

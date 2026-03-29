@@ -381,7 +381,7 @@ function Dashboard({
       ) : (
         <div className="space-y-5">
           {/* Stats row */}
-          <div className="grid grid-cols-4 gap-3">
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
             <StatCard icon={<Flame className="w-4 h-4" />}    label="Streak"   value={`${p?.currentStreak ?? 0}d`}          color="#f97316" />
             <StatCard icon={<Trophy className="w-4 h-4" />}   label="Level"    value={`Lv.${level}`}                        color="#f59e0b" />
             <StatCard icon={<BookOpen className="w-4 h-4" />} label="Learned"  value={String(stats?.learnedWords ?? 0)}     sub={`/${stats?.totalWords ?? 0}`} color="#3b82f6" />
@@ -482,7 +482,7 @@ function Dashboard({
           {/* Practice Mode Selector */}
           <div className="p-4 rounded-xl border" style={{ background: 'rgba(10,26,53,0.6)', borderColor: 'rgba(30,58,110,0.6)' }}>
             <h3 className="text-xs font-bold text-muted uppercase tracking-wider mb-3">Practice Mode</h3>
-            <div className="grid grid-cols-5 gap-2">
+            <div className="grid grid-cols-3 sm:grid-cols-5 gap-2">
               {PRACTICE_MODES.map(pm => (
                 <button
                   key={pm.mode}

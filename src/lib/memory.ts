@@ -297,7 +297,8 @@ Extract 3-5 insights. Be specific and psychological — not generic. Reference t
 
 export async function extractRemindersFromConversation(
   messages: Array<{ role: string; content: string }>,
-  conversationId?: string
+  conversationId?: string,
+  tzOffsetMinutes = 0
 ): Promise<void> {
   try {
     // Quick pre-scan to avoid unnecessary API calls
@@ -369,7 +370,10 @@ Extract ALL reminder requests. Return ONLY valid JSON. If none found, return {"r
 
       let dueDate: Date | null = null
       if (r.dueDate && isValidFutureDate(r.dueDate)) {
-        dueDate = new Date(r.dueDate)
+        // AI generates times without timezone (e.g. "T20:00:00"). Node parses
+        // these as UTC. Apply the client's offset to shift back to their local
+        // time expressed as UTC so the correct wall-clock time is stored.
+        dueDate = new Date(new Date(r.dueDate).getTime() + tzOffsetMinutes * 60 * 1000)
       }
 
       await prisma.reminder.create({

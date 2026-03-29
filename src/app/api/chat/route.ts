@@ -38,10 +38,11 @@ export async function POST(req: Request) {
       })
     }
 
-    const { messages, conversationId, model = 'grok' } = await req.json() as {
+    const { messages, conversationId, model = 'grok', timezoneOffsetMinutes } = await req.json() as {
       messages: Array<{ role: string; content: string }>
       conversationId?: string
       model?: AIModel
+      timezoneOffsetMinutes?: number
     }
 
     if (!messages || !Array.isArray(messages)) {
@@ -92,7 +93,7 @@ export async function POST(req: Request) {
           // Run extractions BEFORE closing: keeps the HTTP response open (and the
           // Vercel function alive) until memories/reminders/notes are saved.
           if (conversationId && accumulated) {
-            await saveConversation(conversationId, messages, accumulated, resolvedModel).catch(console.error)
+            await saveConversation(conversationId, messages, accumulated, resolvedModel, timezoneOffsetMinutes ?? 0).catch(console.error)
           }
           controller.close()
         }
@@ -121,7 +122,8 @@ async function saveConversation(
   conversationId: string,
   messages: Array<{ role: string; content: string }>,
   completion: string,
-  model: string
+  model: string,
+  timezoneOffsetMinutes = 0
 ) {
   try {
     const lastUserMsg = messages[messages.length - 1]
@@ -150,7 +152,7 @@ async function saveConversation(
     // Vercel until they actually complete (memories, reminders, notes, summaries).
     await Promise.allSettled([
       extractMemoriesFromConversation(allMessages, { conversationId }),
-      extractRemindersFromConversation(allMessages, conversationId),
+      extractRemindersFromConversation(allMessages, conversationId, timezoneOffsetMinutes),
       extractNoteFromConversation(allMessages, conversationId),
       updateConversationSummary(conversationId, allMessages),
     ])

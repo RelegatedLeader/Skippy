@@ -203,7 +203,7 @@ export default function DebateSessionPage() {
         <div className="flex-shrink-0 px-6 py-3 bg-surface/50 border-b border-border">
           <div className="flex items-center gap-3 max-w-4xl mx-auto">
             {/* User label */}
-            <div className="flex items-center gap-1.5 w-28 justify-end">
+            <div className="flex items-center gap-1.5 w-16 sm:w-28 justify-end">
               <User className="w-3.5 h-3.5 text-navy-bright" />
               <span className={cn('text-xs font-black tabular-nums', userLeads ? 'text-navy-bright' : 'text-muted/60')}>
                 {currentUserScore}%
@@ -233,7 +233,7 @@ export default function DebateSessionPage() {
             </div>
 
             {/* AI label */}
-            <div className="flex items-center gap-1.5 w-28">
+            <div className="flex items-center gap-1.5 w-16 sm:w-28">
               <span className={cn('text-xs font-black tabular-nums', !userLeads && !tied ? 'text-accent' : 'text-muted/60')}>
                 {currentAiScore}%
               </span>
@@ -248,8 +248,8 @@ export default function DebateSessionPage() {
         {/* ── Arena ── */}
         <div className="flex-1 overflow-y-auto">
           <div className="max-w-5xl mx-auto px-4 py-4">
-            {/* Column headers */}
-            <div className="grid grid-cols-2 gap-4 mb-3">
+            {/* Column headers — only visible on sm+ where the two-column layout applies */}
+            <div className="hidden sm:grid grid-cols-2 gap-4 mb-3">
               <div className="flex items-center gap-2 px-2">
                 <div className="w-6 h-6 rounded-lg bg-navy-light border border-navy-bright/30 flex items-center justify-center">
                   <User className="w-3 h-3 text-navy-bright" />
@@ -268,7 +268,7 @@ export default function DebateSessionPage() {
             <motion.div
               initial={{ opacity: 0, y: 8 }}
               animate={{ opacity: 1, y: 0 }}
-              className="grid grid-cols-2 gap-4 mb-5"
+              className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-5"
             >
               {/* User opening */}
               <div className="rounded-2xl rounded-tl-sm p-4 border border-navy-bright/20 relative overflow-hidden"
@@ -310,7 +310,7 @@ export default function DebateSessionPage() {
 
             {/* Streaming round */}
             {submitting && (
-              <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} className="grid grid-cols-2 gap-4 mb-3">
+              <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-3">
                 {/* User arg placeholder */}
                 <div className="rounded-2xl rounded-tl-sm p-4 bg-navy-light/80 border border-navy-bright/20 text-xs text-foreground/80 italic">
                   Argument submitted…
@@ -388,7 +388,7 @@ function RoundRow({ round }: { round: DebateRound }) {
       layout
       initial={{ opacity: 0, y: 10 }}
       animate={{ opacity: 1, y: 0 }}
-      className="grid grid-cols-2 gap-4 mb-3"
+      className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-3"
     >
       {/* User argument */}
       <div className="rounded-2xl rounded-tl-sm p-4 border border-navy-bright/20 text-sm leading-relaxed relative overflow-hidden"
