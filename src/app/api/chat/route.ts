@@ -153,7 +153,7 @@ async function saveConversation(
     await Promise.allSettled([
       extractMemoriesFromConversation(allMessages, { conversationId }),
       extractRemindersFromConversation(allMessages, conversationId, timezoneOffsetMinutes),
-      extractTodosFromConversation(allMessages, conversationId),
+      extractTodosFromConversation(allMessages, conversationId, timezoneOffsetMinutes ?? 0),
       markItemsCompleteFromChat(allMessages),
       extractNoteFromConversation(allMessages, conversationId),
       updateConversationSummary(conversationId, allMessages),

@@ -459,6 +459,7 @@ async function awardXpDirect(xp: number, type: 'todo' | 'reminder'): Promise<voi
 export async function extractTodosFromConversation(
   messages: Array<{ role: string; content: string }>,
   conversationId?: string,
+  tzOffsetMinutes = 0,
 ): Promise<void> {
   try {
     // Only scan the most recent user message — NOT the full history.
@@ -528,7 +529,13 @@ If no explicit to-do creation request in the LATEST user message, return {"todos
       let dueDate: Date | null = null
       if (t.dueDate) {
         const d = new Date(t.dueDate)
-        if (!isNaN(d.getTime())) dueDate = d
+        if (!isNaN(d.getTime())) {
+          // If AI returned a date-only value (midnight UTC), apply the timezone offset
+          // so it's stored at the user's local midnight — consistent with how reminders
+          // are stored, and prevents toRelativeLabel from rolling it back a calendar day.
+          const hasTime = d.getUTCHours() !== 0 || d.getUTCMinutes() !== 0
+          dueDate = hasTime ? d : new Date(d.getTime() + tzOffsetMinutes * 60 * 1000)
+        }
       }
 
       await prisma.todo.create({
@@ -758,15 +765,34 @@ export async function buildSystemPrompt(tzOffsetMinutes = 0): Promise<string> {
   // Helper: turn a stored UTC dueDate into a human-readable label relative to user's local today
   function toRelativeLabel(dueDateInput: Date | string): string {
     const due = new Date(dueDateInput)
-    // Shift the due date into the user's local "calendar day"
-    const dueLocal = new Date(due.getTime() - tzOffsetMinutes * 60 * 1000)
+
+    // Date-only values (e.g. todo due "March 29") are stored as midnight UTC with no
+    // timezone shift applied. Subtracting the user's offset would roll them back to the
+    // previous evening, making today's todos look overdue. So: if the stored time is
+    // exactly UTC midnight, treat the UTC calendar date as the intended local calendar date.
+    //
+    // Timed values (reminders, todos with a specific time) ARE stored with the timezone
+    // offset applied (e.g., 8pm EST stored as 01:00 UTC next day), so we shift those back.
+    const isStoredMidnight =
+      due.getUTCHours() === 0 && due.getUTCMinutes() === 0 && due.getUTCSeconds() === 0
+    // dueLocal: the instant expressed in the user's local wall clock
+    const dueLocal = isStoredMidnight
+      ? due  // already the local calendar date — no shift needed
+      : new Date(due.getTime() - tzOffsetMinutes * 60 * 1000)
+
     const dueDay = dueLocal.toISOString().slice(0, 10)
     const diffMs = new Date(dueDay).getTime() - new Date(localDateStr).getTime()
     const diffDays = Math.round(diffMs / 86_400_000)
-    const hasTime = due.getUTCHours() !== 0 || due.getUTCMinutes() !== 0
+
+    // hasTime: true only if there is a meaningful local time (not midnight)
+    const localH = dueLocal.getUTCHours()
+    const localM = dueLocal.getUTCMinutes()
+    const hasTime = localH !== 0 || localM !== 0
+    // timeLabel uses dueLocal (already in local-wall-clock frame) so it shows "8:00 PM" not "1:00 AM"
     const timeLabel = hasTime
-      ? ` at ${due.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', timeZone: 'UTC' })}`
+      ? ` at ${dueLocal.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', timeZone: 'UTC' })}`
       : ''
+
     if (diffDays < -1) return `OVERDUE (was ${dueLocal.toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' })}${timeLabel})`
     if (diffDays === -1) return `OVERDUE (yesterday${timeLabel})`
     if (diffDays === 0) return `TODAY${timeLabel}`
