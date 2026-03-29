@@ -2,6 +2,66 @@ import type { ChatCompletionMessageParam } from 'openai/resources'
 import { prisma } from './db'
 import { grok, GROK_MODEL } from './grok'
 import { decrypt, encrypt } from './encryption'
+import { anthropic, CLAUDE_MODEL, claudeAvailable } from './claude'
+
+// ─── AI helper with Claude fallback ─────────────────────────────────────────
+
+type AIMsg = { role: string; content: string }
+
+function isConnErr(err: unknown): boolean {
+  if (!(err instanceof Error)) return false
+  const msg = err.message.toLowerCase()
+  return (
+    msg.includes('connection error') ||
+    msg.includes('fetch failed') ||
+    msg.includes('econnrefused') ||
+    msg.includes('etimedout') ||
+    msg.includes('network')
+  )
+}
+
+async function callAI(
+  messages: AIMsg[],
+  opts: { json?: boolean; temperature?: number; max_tokens?: number } = {}
+): Promise<string> {
+  try {
+    const res = await grok.chat.completions.create({
+      model: GROK_MODEL,
+      messages: messages as ChatCompletionMessageParam[],
+      ...(opts.json ? { response_format: { type: 'json_object' as const } } : {}),
+      temperature: opts.temperature ?? 0.3,
+      ...(opts.max_tokens ? { max_tokens: opts.max_tokens } : {}),
+    })
+    return res.choices[0]?.message?.content || (opts.json ? '{}' : '')
+  } catch (err) {
+    if (isConnErr(err) && claudeAvailable()) {
+      const sys = messages.find(m => m.role === 'system')?.content ?? ''
+      const rest = messages.filter(m => m.role !== 'system')
+      // Merge consecutive same-role messages — Claude requires strictly alternating user/assistant
+      const merged: Array<{ role: 'user' | 'assistant'; content: string }> = []
+      for (const m of rest) {
+        const lr: 'user' | 'assistant' = m.role === 'assistant' ? 'assistant' : 'user'
+        if (merged.length && merged[merged.length - 1].role === lr) {
+          merged[merged.length - 1].content += '\n' + m.content
+        } else {
+          merged.push({ role: lr, content: m.content })
+        }
+      }
+      if (!merged.length || merged[0].role !== 'user') {
+        merged.unshift({ role: 'user', content: 'Process the following.' })
+      }
+      const claudeRes = await anthropic.messages.create({
+        model: CLAUDE_MODEL,
+        max_tokens: opts.max_tokens ?? 1024,
+        system: opts.json ? `${sys}\n\nReturn ONLY valid JSON, no other text.` : sys,
+        messages: merged,
+      })
+      const block = claudeRes.content[0]
+      return block.type === 'text' ? block.text.trim() : (opts.json ? '{}' : '')
+    }
+    throw err
+  }
+}
 
 // ─── Deduplication ───────────────────────────────────────────────────────────
 
@@ -80,18 +140,16 @@ export async function extractMemoriesFromConversation(
       sourceLabel = firstUser?.content.slice(0, 50).trim()
     }
 
-    const [existingMemories, extractionResult] = await Promise.all([
+    const [existingMemories, text] = await Promise.all([
       prisma.memory.findMany({
         select: { category: true, content: true },
         orderBy: { createdAt: 'desc' },
         take: 200,
       }),
-      grok.chat.completions.create({
-        model: GROK_MODEL,
-        messages: [
-          {
-            role: 'system',
-            content: `You are a memory extraction system. Analyze the conversation and extract important facts about the user.
+      callAI([
+        {
+          role: 'system',
+          content: `You are a memory extraction system. Analyze the conversation and extract important facts about the user.
 Return a JSON object with a "memories" array containing memory objects with this shape:
 {"memories": [{"category": "fact|preference|goal|mood|skill|context", "content": "...", "importance": 1-10, "tags": ["tag1", "tag2"]}]}
 Only extract genuinely useful, non-trivial information. Be concise and specific.
@@ -102,19 +160,14 @@ Categories:
 - mood: emotional states and patterns
 - skill: abilities and expertise
 - context: situational context about their life`,
-          },
-          ...(messages as ChatCompletionMessageParam[]),
-          {
-            role: 'user',
-            content: 'Extract memories from this conversation. Return ONLY valid JSON object with memories array, no other text.',
-          },
-        ],
-        response_format: { type: 'json_object' },
-        temperature: 0.3,
-      }),
+        },
+        ...messages,
+        {
+          role: 'user',
+          content: 'Extract memories from this conversation. Return ONLY valid JSON object with memories array, no other text.',
+        },
+      ], { json: true, temperature: 0.3 }),
     ])
-
-    const text = extractionResult.choices[0].message.content || '{}'
     const parsed = JSON.parse(text)
     const rawMemories: Array<{ category?: string; content?: string; importance?: number; tags?: string[] }> = Array.isArray(parsed) ? parsed : parsed.memories || []
 
@@ -180,31 +233,23 @@ CONCLUSION: ${debate.conclusion || 'n/a'}
 TRANSCRIPT:
 ${transcript}`
 
-    const [existingMemories, extractionResult] = await Promise.all([
+    const [existingMemories, text] = await Promise.all([
       prisma.memory.findMany({
         select: { category: true, content: true },
         orderBy: { createdAt: 'desc' },
         take: 200,
       }),
-      grok.chat.completions.create({
-        model: GROK_MODEL,
-        messages: [
-          {
-            role: 'system',
-            content: `You extract behavioral and personality insights from debate transcripts for a personal AI memory system.
+      callAI([
+        {
+          role: 'system',
+          content: `You extract behavioral and personality insights from debate transcripts for a personal AI memory system.
 Analyze: how the person constructs arguments, what values they reveal under pressure, what they passionately defend vs readily concede, how they respond to being challenged, and what this reveals about their decision-making patterns.
 Return a JSON object: {"memories": [{"category": "fact|preference|goal|mood|skill|context", "content": "specific psychological insight about this person", "importance": 1-10, "tags": ["debate", "reasoning", ...topic-specific tags]}]}
 Extract 3-5 insights. Be specific and psychological — not generic. Reference the debate topic. Return ONLY valid JSON.`,
-          },
-          { role: 'user', content: context },
-        ],
-        response_format: { type: 'json_object' },
-        temperature: 0.3,
-        max_tokens: 700,
-      }),
+        },
+        { role: 'user', content: context },
+      ], { json: true, temperature: 0.3, max_tokens: 700 }),
     ])
-
-    const text = extractionResult.choices[0]?.message?.content || '{}'
     const parsed = JSON.parse(text)
     const rawMemories: Array<{ category?: string; content?: string; importance?: number; tags?: string[] }> = parsed.memories || []
 
@@ -259,12 +304,10 @@ export async function extractRemindersFromConversation(
     tomorrowDate.setDate(tomorrowDate.getDate() + 1)
     const tomorrow = tomorrowDate.toISOString().slice(0, 10)
 
-    const response = await grok.chat.completions.create({
-      model: GROK_MODEL,
-      messages: [
-        {
-          role: 'system',
-          content: `You extract reminder requests from conversations. Today is ${today}.
+    const text = await callAI([
+      {
+        role: 'system',
+        content: `You extract reminder requests from conversations. Today is ${today}.
 
 Look for messages where the user wants to be reminded about something later:
 - "remind me to X" / "remind me about X at 3pm"
@@ -291,18 +334,12 @@ Return JSON: {"reminders": [{"content": "concise reminder text", "dueDate": "YYY
 
 Extract ALL reminder requests. Return ONLY valid JSON. If none found, return {"reminders": []}.`,
         },
-        ...(messages.filter(m => m.role === 'user') as ChatCompletionMessageParam[]),
+        ...messages.filter(m => m.role === 'user'),
         {
           role: 'user',
           content: 'Extract any explicit reminder requests. Return ONLY valid JSON.',
         },
-      ],
-      response_format: { type: 'json_object' },
-      temperature: 0.1,
-      max_tokens: 500,
-    })
-
-    const text = response.choices[0]?.message?.content || '{}'
+      ], { json: true, temperature: 0.1, max_tokens: 500 })
     const parsed = JSON.parse(text)
     const reminders: Array<{ content?: string; dueDate?: string; timeframeLabel?: string }> = parsed.reminders || []
     if (reminders.length === 0) return
@@ -427,12 +464,10 @@ export async function extractNoteFromConversation(
       .map(m => `${m.role === 'user' ? 'User' : 'Skippy'}: ${m.content.slice(0, 400)}`)
       .join('\n')
 
-    const response = await grok.chat.completions.create({
-      model: GROK_MODEL,
-      messages: [
-        {
-          role: 'system',
-          content: `You write personal daily reflection notes. Today is ${todayStr}.
+    const text = await callAI([
+      {
+        role: 'system',
+        content: `You write personal daily reflection notes. Today is ${todayStr}.
 
 Write a well-structured personal note that captures:
 1. What was accomplished today (reference specific completed todos and reminders)
@@ -448,13 +483,7 @@ Return ONLY valid JSON: {"title": "...", "content": "markdown note content", "ta
           role: 'user',
           content: `Completed todos today:\n${todosText}\n\nCompleted reminders today:\n${remindersText}\n\nConversation context:\n${conversationText}\n\nWrite a daily reflection note. Return ONLY valid JSON.`,
         },
-      ],
-      response_format: { type: 'json_object' },
-      temperature: 0.4,
-      max_tokens: 600,
-    })
-
-    const text = response.choices[0]?.message?.content || '{}'
+      ], { json: true, temperature: 0.4, max_tokens: 600 })
     const parsed = JSON.parse(text)
     if (!parsed.title?.trim() || !parsed.content?.trim()) return
 
@@ -709,12 +738,10 @@ export async function updateConversationSummary(
       .map(m => `${m.role === 'user' ? 'User' : 'Skippy'}: ${m.content.slice(0, 600)}`)
       .join('\n')
 
-    const response = await grok.chat.completions.create({
-      model: GROK_MODEL,
-      messages: [
-        {
-          role: 'system',
-          content: `You produce dense, specific conversation summaries for a personal AI memory system. Your job is to write a 4-6 sentence summary that captures:
+    const summary = await callAI([
+      {
+        role: 'system',
+        content: `You produce dense, specific conversation summaries for a personal AI memory system. Your job is to write a 4-6 sentence summary that captures:
 - Every person mentioned by name (and their relationship to the user)
 - The core topic(s) discussed
 - Any decisions, agreements, or conclusions reached
@@ -722,17 +749,12 @@ export async function updateConversationSummary(
 - Key specific details that would be important to recall later (dates, plans, emotions expressed)
 
 Be specific. Include names. Preserve nuance. This will be used by the AI in future conversations to recall exactly what happened here.`,
-        },
-        {
-          role: 'user',
-          content: `Summarise this conversation:\n\n${transcript}`,
-        },
-      ],
-      temperature: 0.2,
-      max_tokens: 300,
-    })
-
-    const summary = response.choices[0]?.message?.content?.trim()
+      },
+      {
+        role: 'user',
+        content: `Summarise this conversation:\n\n${transcript}`,
+      },
+    ], { temperature: 0.2, max_tokens: 300 })
     if (summary) {
       await prisma.conversation.update({
         where: { id: conversationId },
@@ -748,18 +770,13 @@ Be specific. Include names. Preserve nuance. This will be used by the AI in futu
 
 export async function generateConversationTitle(firstMessage: string): Promise<string> {
   try {
-    const response = await grok.chat.completions.create({
-      model: GROK_MODEL,
-      messages: [
-        {
-          role: 'user',
-          content: `Generate a short 4-6 word title for a conversation that starts with: "${firstMessage}". Return ONLY the title, no quotes, no punctuation at the end.`,
-        },
-      ],
-      max_tokens: 20,
-      temperature: 0.5,
-    })
-    return response.choices[0].message.content?.trim() || 'New Chat'
+    const title = await callAI([
+      {
+        role: 'user',
+        content: `Generate a short 4-6 word title for a conversation that starts with: "${firstMessage}". Return ONLY the title, no quotes, no punctuation at the end.`,
+      },
+    ], { max_tokens: 20, temperature: 0.5 })
+    return title.trim() || 'New Chat'
   } catch {
     return 'New Chat'
   }
