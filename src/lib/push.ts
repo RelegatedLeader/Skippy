@@ -23,21 +23,30 @@ export interface PushPayload {
   requireInteraction?: boolean
 }
 
+export interface PushResult {
+  sent: number
+  failed: number
+  errors: string[]
+}
+
 /**
  * Send a push notification to every stored subscription.
- * Stale / invalid subscriptions are automatically pruned from the DB.
+ * Returns counts of sent/failed so callers can surface errors.
+ * Stale / invalid subscriptions (404/410) are pruned from the DB.
  */
-export async function sendPushToAll(payload: PushPayload): Promise<void> {
+export async function sendPushToAll(payload: PushPayload): Promise<PushResult> {
   const { publicKey, privateKey, contact } = getVapidConfig()
   if (!publicKey || !privateKey) {
-    console.warn('[push] VAPID keys not configured — skipping push')
-    return
+    return { sent: 0, failed: 0, errors: ['VAPID keys not configured on server'] }
   }
 
   webPush.setVapidDetails(`mailto:${contact.replace('mailto:', '')}`, publicKey, privateKey)
 
   const subs = await prisma.pushSubscription.findMany()
-  if (subs.length === 0) return
+  if (subs.length === 0) return { sent: 0, failed: 0, errors: [] }
+
+  let sent = 0
+  const errors: string[] = []
 
   await Promise.allSettled(
     subs.map(async (sub) => {
@@ -48,17 +57,23 @@ export async function sendPushToAll(payload: PushPayload): Promise<void> {
             keys: { p256dh: sub.p256dh, auth: sub.auth },
           },
           JSON.stringify(payload),
-          { TTL: 86400 } // 24-hour time-to-live
+          { TTL: 86400 }
         )
+        sent++
       } catch (err: unknown) {
-        // 404/410 = subscription expired or unsubscribed — remove from DB
-        const status = (err as { statusCode?: number }).statusCode
+        const e = err as { statusCode?: number; body?: string; message?: string }
+        const status = e.statusCode
         if (status === 404 || status === 410) {
           await prisma.pushSubscription.delete({ where: { id: sub.id } }).catch(() => {})
+          errors.push(`Subscription expired (${status}) — re-register device`)
         } else {
-          console.error('[push] Failed to send to subscription:', sub.endpoint.slice(-20), err)
+          const detail = e.body || e.message || String(err)
+          errors.push(`Send failed (${status ?? 'unknown'}): ${detail}`)
+          console.error('[push] Failed:', sub.endpoint.slice(-20), detail)
         }
       }
     })
   )
+
+  return { sent, failed: errors.length, errors }
 }
