@@ -24,6 +24,7 @@ export default function SettingsPage() {
   const { notifPermission, requestPermission } = useNotifications()
   const [notifLoading, setNotifLoading] = useState(false)
   const [testSent, setTestSent] = useState(false)
+  const [testError, setTestError] = useState('')
   const [exportFormat, setExportFormat] = useState<'txt' | 'md' | 'json'>('md')
   const [copied, setCopied] = useState(false)
   const [showClearConfirm, setShowClearConfirm] = useState(false)
@@ -312,27 +313,41 @@ export default function SettingsPage() {
                       <button
                         onClick={async () => {
                           setTestSent(false)
+                          setTestError('')
+                          setNotifLoading(true)
                           try {
-                            // Fire a direct browser notification — proves permission is real
-                            new Notification('Skippy test 🔔', {
-                              body: 'If you see this, push notifications are working!',
-                              icon: '/img/skippyENHANCED3D-removebg.png',
-                              badge: '/img/badge-96.png',
-                              tag: 'skippy-test',
-                            })
-                            setTestSent(true)
-                            setTimeout(() => setTestSent(false), 4000)
+                            // Fire via server-side VAPID push — works in PWA/standalone mode
+                            const res = await fetch('/api/push/test', { method: 'POST' })
+                            if (res.ok) {
+                              setTestSent(true)
+                              setTimeout(() => setTestSent(false), 5000)
+                            } else {
+                              const d = await res.json().catch(() => ({}))
+                              setTestError(d.error || 'Push failed — check subscription is registered.')
+                              setTimeout(() => setTestError(''), 6000)
+                            }
                           } catch {
-                            alert('Notification fired but your browser may have suppressed it. Check site notification settings.')
+                            setTestError('Network error — check connection.')
+                            setTimeout(() => setTestError(''), 6000)
+                          } finally {
+                            setNotifLoading(false)
                           }
                         }}
-                        className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold border transition-all active:scale-95"
+                        disabled={notifLoading}
+                        className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold border transition-all active:scale-95 disabled:opacity-50"
                         style={testSent
                           ? { background: 'rgba(16,185,129,0.12)', borderColor: 'rgba(16,185,129,0.3)', color: '#10b981' }
                           : { background: 'rgba(59,130,246,0.1)', borderColor: 'rgba(59,130,246,0.3)', color: '#93c5fd' }}
                       >
-                        {testSent ? <><CheckCircle2 className="w-3 h-3" />Sent!</> : <><Bell className="w-3 h-3" />Send test</>}
+                        {notifLoading
+                          ? <><Loader2 className="w-3 h-3 animate-spin" />Sending…</>
+                          : testSent
+                          ? <><CheckCircle2 className="w-3 h-3" />Sent!</>
+                          : <><Bell className="w-3 h-3" />Send test</>}
                       </button>
+                      {testError && (
+                        <p className="text-[10px] text-red-400 max-w-[160px] text-right leading-tight">{testError}</p>
+                      )}
                     </>
                   )}
                   {notifPermission === 'denied' && (
