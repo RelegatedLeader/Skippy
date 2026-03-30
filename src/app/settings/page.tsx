@@ -21,8 +21,10 @@ const SECTION_VARIANTS = {
 export default function SettingsPage() {
   const { toggle } = useSidebar()
   const router = useRouter()
-  const { notifPermission, requestPermission } = useNotifications()
+  const { notifPermission, requestPermission, subscribePush } = useNotifications()
   const [notifLoading, setNotifLoading] = useState(false)
+  const [subError, setSubError] = useState('')
+  const [subDone, setSubDone] = useState(false)
   const [testSent, setTestSent] = useState(false)
   const [testError, setTestError] = useState('')
   const [exportFormat, setExportFormat] = useState<'txt' | 'md' | 'json'>('md')
@@ -281,96 +283,131 @@ export default function SettingsPage() {
           {/* Notifications */}
           <motion.section custom={4} variants={SECTION_VARIANTS} initial="hidden" animate="visible">
             <SectionHeader icon={Bell} title="Notifications" color="text-blue-400" />
-            <div className="bg-surface border border-border rounded-2xl divide-y divide-border overflow-hidden">
-              <div className="flex items-start justify-between gap-4 px-5 py-4">
-                <div className="flex items-start gap-3 flex-1 min-w-0">
-                  <div className="mt-0.5 flex-shrink-0 text-blue-400">
-                    {notifPermission === 'granted' ? (
-                      <BellRing className="w-4 h-4" />
-                    ) : notifPermission === 'denied' ? (
-                      <BellOff className="w-4 h-4 text-red-400" />
-                    ) : (
-                      <Bell className="w-4 h-4" />
-                    )}
-                  </div>
-                  <div>
-                    <p className="text-sm font-semibold text-foreground leading-tight">Push Notifications</p>
-                    <p className="text-xs text-muted mt-0.5 leading-relaxed">
-                      {notifPermission === 'granted'
-                        ? 'Notifications are enabled. Skippy will send you daily briefs and reminders even when the app is closed.'
-                        : notifPermission === 'denied'
-                        ? 'Notifications are blocked. To re-enable, open your browser or system settings and allow notifications for this site.'
-                        : 'Allow Skippy to send push notifications — morning briefings, reminders, and personalized nudges.'}
-                    </p>
-                  </div>
+            <div className="bg-surface border border-border rounded-2xl p-5 space-y-4">
+
+              {/* Status row */}
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex items-center gap-2">
+                  {notifPermission === 'granted'
+                    ? <BellRing className="w-4 h-4 text-emerald-400" />
+                    : notifPermission === 'denied'
+                    ? <BellOff className="w-4 h-4 text-red-400" />
+                    : <Bell className="w-4 h-4 text-blue-400" />}
+                  <span className="text-sm font-semibold text-foreground">Push Notifications</span>
                 </div>
-                <div className="flex-shrink-0 mt-0.5 flex flex-col items-end gap-2">
-                  {notifPermission === 'granted' && (
-                    <>
-                      <span className="flex items-center gap-1.5 text-xs text-emerald-400 font-semibold bg-emerald-400/10 px-2.5 py-1 rounded-full border border-emerald-400/25">
-                        <CheckCircle2 className="w-3 h-3" />Enabled
-                      </span>
-                      <button
-                        onClick={async () => {
-                          setTestSent(false)
-                          setTestError('')
-                          setNotifLoading(true)
-                          try {
-                            // Fire via server-side VAPID push — works in PWA/standalone mode
-                            const res = await fetch('/api/push/test', { method: 'POST' })
-                            if (res.ok) {
-                              setTestSent(true)
-                              setTimeout(() => setTestSent(false), 5000)
-                            } else {
-                              const d = await res.json().catch(() => ({}))
-                              setTestError(d.error || 'Push failed — check subscription is registered.')
-                              setTimeout(() => setTestError(''), 6000)
-                            }
-                          } catch {
-                            setTestError('Network error — check connection.')
-                            setTimeout(() => setTestError(''), 6000)
-                          } finally {
-                            setNotifLoading(false)
-                          }
-                        }}
-                        disabled={notifLoading}
-                        className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold border transition-all active:scale-95 disabled:opacity-50"
-                        style={testSent
-                          ? { background: 'rgba(16,185,129,0.12)', borderColor: 'rgba(16,185,129,0.3)', color: '#10b981' }
-                          : { background: 'rgba(59,130,246,0.1)', borderColor: 'rgba(59,130,246,0.3)', color: '#93c5fd' }}
-                      >
-                        {notifLoading
-                          ? <><Loader2 className="w-3 h-3 animate-spin" />Sending…</>
-                          : testSent
-                          ? <><CheckCircle2 className="w-3 h-3" />Sent!</>
-                          : <><Bell className="w-3 h-3" />Send test</>}
-                      </button>
-                      {testError && (
-                        <p className="text-[10px] text-red-400 max-w-[160px] text-right leading-tight">{testError}</p>
-                      )}
-                    </>
-                  )}
-                  {notifPermission === 'denied' && (
-                    <span className="flex items-center gap-1.5 text-xs text-red-400 font-semibold bg-red-400/10 px-2.5 py-1 rounded-full border border-red-400/25">
-                      <BellOff className="w-3 h-3" />Blocked
-                    </span>
-                  )}
-                  {(notifPermission === 'default' || notifPermission === 'unsupported') && (
-                    <button
-                      onClick={async () => {
-                        setNotifLoading(true)
-                        await requestPermission()
-                        setNotifLoading(false)
-                      }}
-                      disabled={notifLoading || notifPermission === 'unsupported'}
-                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold text-background bg-blue-500 hover:bg-blue-400 active:scale-95 transition-all disabled:opacity-50"
-                    >
-                      {notifLoading ? <Loader2 className="w-3 h-3 animate-spin" /> : <Bell className="w-3 h-3" />}
-                      {notifPermission === 'unsupported' ? 'Not supported' : 'Enable'}
-                    </button>
-                  )}
-                </div>
+                {notifPermission === 'granted' && (
+                  <span className="flex items-center gap-1.5 text-xs text-emerald-400 font-semibold bg-emerald-400/10 px-2.5 py-1 rounded-full border border-emerald-400/25">
+                    <CheckCircle2 className="w-3 h-3" />Permission granted
+                  </span>
+                )}
+                {notifPermission === 'denied' && (
+                  <span className="flex items-center gap-1.5 text-xs text-red-400 font-semibold bg-red-400/10 px-2.5 py-1 rounded-full border border-red-400/25">
+                    <BellOff className="w-3 h-3" />Blocked by browser
+                  </span>
+                )}
               </div>
+
+              <p className="text-xs text-muted leading-relaxed">
+                {notifPermission === 'denied'
+                  ? 'Blocked in browser settings. Go to your browser → Site Settings → Notifications → allow this site, then come back and tap Register.'
+                  : notifPermission === 'granted'
+                  ? 'Permission is granted. Tap Register to connect this device, then Send test to confirm everything works end-to-end.'
+                  : 'Tap Enable to allow notifications — Skippy will ping you about due tasks, morning briefs, and personalised nudges.'}
+              </p>
+
+              {/* Error display */}
+              {(subError || testError) && (
+                <div className="flex items-start gap-2 text-xs text-red-400 bg-red-400/10 border border-red-400/20 rounded-xl px-3 py-2.5">
+                  <AlertTriangle className="w-3.5 h-3.5 mt-0.5 flex-shrink-0" />
+                  <span className="leading-relaxed">{subError || testError}</span>
+                </div>
+              )}
+              {subDone && (
+                <div className="flex items-center gap-2 text-xs text-emerald-400 bg-emerald-400/10 border border-emerald-400/20 rounded-xl px-3 py-2.5">
+                  <CheckCircle2 className="w-3.5 h-3.5" />Device registered — push notifications are active.
+                </div>
+              )}
+              {testSent && (
+                <div className="flex items-center gap-2 text-xs text-blue-400 bg-blue-400/10 border border-blue-400/20 rounded-xl px-3 py-2.5">
+                  <BellRing className="w-3.5 h-3.5" />Test sent! You should see a notification appear now.
+                </div>
+              )}
+
+              {/* Action buttons */}
+              <div className="flex flex-wrap gap-2 pt-1">
+                {/* Step 1: grant permission */}
+                {notifPermission !== 'granted' && notifPermission !== 'denied' && (
+                  <button
+                    onClick={async () => {
+                      setNotifLoading(true); setSubError('')
+                      await requestPermission()
+                      setNotifLoading(false)
+                    }}
+                    disabled={notifLoading}
+                    className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold text-background bg-blue-500 hover:bg-blue-400 active:scale-95 transition-all disabled:opacity-50"
+                  >
+                    {notifLoading ? <Loader2 className="w-3 h-3 animate-spin" /> : <Bell className="w-3 h-3" />}
+                    Enable
+                  </button>
+                )}
+
+                {/* Step 2: register device (force re-subscribe) */}
+                {notifPermission === 'granted' && (
+                  <button
+                    onClick={async () => {
+                      setNotifLoading(true); setSubError(''); setSubDone(false)
+                      const result = await subscribePush(true) // force=true clears stale sub first
+                      setNotifLoading(false)
+                      if (result.ok) {
+                        setSubDone(true)
+                        setTimeout(() => setSubDone(false), 6000)
+                      } else {
+                        setSubError(result.error || 'Registration failed')
+                        setTimeout(() => setSubError(''), 10000)
+                      }
+                    }}
+                    disabled={notifLoading}
+                    className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold border border-blue-400/30 text-blue-400 bg-blue-400/10 hover:bg-blue-400/20 active:scale-95 transition-all disabled:opacity-50"
+                  >
+                    {notifLoading ? <Loader2 className="w-3 h-3 animate-spin" /> : <BellRing className="w-3 h-3" />}
+                    Register device
+                  </button>
+                )}
+
+                {/* Step 3: send test push via server */}
+                {notifPermission === 'granted' && (
+                  <button
+                    onClick={async () => {
+                      setTestSent(false); setTestError(''); setNotifLoading(true)
+                      try {
+                        const res = await fetch('/api/push/test', { method: 'POST' })
+                        const d = await res.json().catch(() => ({}))
+                        if (res.ok) {
+                          setTestSent(true)
+                          setTimeout(() => setTestSent(false), 6000)
+                        } else {
+                          setTestError(d.error || 'Push failed')
+                          setTimeout(() => setTestError(''), 10000)
+                        }
+                      } catch {
+                        setTestError('Network error')
+                        setTimeout(() => setTestError(''), 6000)
+                      } finally {
+                        setNotifLoading(false)
+                      }
+                    }}
+                    disabled={notifLoading}
+                    className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold border border-border text-muted hover:text-foreground hover:border-accent/30 active:scale-95 transition-all disabled:opacity-50"
+                  >
+                    {notifLoading ? <Loader2 className="w-3 h-3 animate-spin" /> : <Bell className="w-3 h-3" />}
+                    Send test
+                  </button>
+                )}
+              </div>
+
+              <p className="text-[10px] text-muted/40 leading-relaxed">
+                Daily brief arrives each morning · Nudges throughout the day · Reminders fire when due
+              </p>
             </div>
           </motion.section>
 

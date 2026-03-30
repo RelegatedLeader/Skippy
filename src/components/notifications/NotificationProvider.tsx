@@ -3,13 +3,13 @@
 import { createContext, useContext, useEffect, useState, useCallback, useRef } from 'react'
 
 // ── Utility: convert base64url VAPID public key to Uint8Array ───────────────
-function urlBase64ToUint8Array(base64String: string): ArrayBuffer {
+function urlBase64ToUint8Array(base64String: string): Uint8Array {
   const padding = '='.repeat((4 - (base64String.length % 4)) % 4)
   const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/')
   const raw = atob(base64)
   const arr = new Uint8Array(raw.length)
   for (let i = 0; i < raw.length; i++) arr[i] = raw.charCodeAt(i)
-  return arr.buffer as ArrayBuffer
+  return arr
 }
 
 export interface ReminderItem {
@@ -56,6 +56,7 @@ interface NotificationContextType {
   refreshTodos: () => void
   refreshStats: () => void
   requestPermission: () => Promise<void>
+  subscribePush: (force?: boolean) => Promise<{ ok: boolean; error?: string }>
   awardXP: (xp: number, type?: 'reminder' | 'todo') => Promise<number>
 }
 
@@ -69,6 +70,7 @@ const NotificationContext = createContext<NotificationContextType>({
   refreshTodos: () => {},
   refreshStats: () => {},
   requestPermission: async () => {},
+  subscribePush: async () => ({ ok: false }),
   awardXP: async () => 0,
 })
 
@@ -126,49 +128,69 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
       const result = await Notification.requestPermission()
       setNotifPermission(result)
     }
-    // After permission is granted (or was already granted), register for Web Push
-    // so notifications arrive even when the app is closed.
     if (Notification.permission === 'granted') {
       setNotifPermission('granted')
-      await registerPushSubscription()
     }
   }, [])
 
   // Register this device for Web Push using VAPID.
-  // Upserts the subscription to the server so cron jobs can reach it.
-  async function registerPushSubscription() {
+  // Returns { ok, error } so callers can surface problems in the UI.
+  // Pass force=true to unsubscribe first (clears stale subscriptions).
+  const subscribePush = useCallback(async (force = false): Promise<{ ok: boolean; error?: string }> => {
+    if (typeof window === 'undefined') return { ok: false, error: 'Not in browser' }
+    if (!('serviceWorker' in navigator)) return { ok: false, error: 'Service workers not supported' }
+    if (!('PushManager' in window)) return { ok: false, error: 'Push not supported in this browser' }
+    if (Notification.permission !== 'granted') return { ok: false, error: 'Notification permission not granted' }
+
     try {
-      if (!('serviceWorker' in navigator) || !('PushManager' in window)) return
+      // Wait up to 8s for SW to become ready
+      const swReady = navigator.serviceWorker.ready
+      const timeout = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('Service worker took too long to activate')), 8000)
+      )
+      const reg = await Promise.race([swReady, timeout])
 
-      const reg = await navigator.serviceWorker.ready
-
-      // Fetch the VAPID public key from the server
+      // Fetch VAPID public key
       const keyRes = await fetch('/api/push/vapid-public-key')
-      if (!keyRes.ok) return
-      const { publicKey } = await keyRes.json() as { publicKey?: string }
-      if (!publicKey) return
+      if (!keyRes.ok) return { ok: false, error: 'Could not fetch VAPID key from server' }
+      const { publicKey, error: keyErr } = await keyRes.json() as { publicKey?: string; error?: string }
+      if (!publicKey) return { ok: false, error: keyErr || 'Push not configured on server' }
 
-      // Get existing subscription or create a new one
+      // Optionally force-clear stale subscription
+      if (force) {
+        const existing = await reg.pushManager.getSubscription()
+        if (existing) await existing.unsubscribe()
+      }
+
+      // Get or create subscription
       let sub = await reg.pushManager.getSubscription()
       if (!sub) {
         sub = await reg.pushManager.subscribe({
           userVisibleOnly: true,
-          applicationServerKey: urlBase64ToUint8Array(publicKey),
+          applicationServerKey: urlBase64ToUint8Array(publicKey).buffer as ArrayBuffer,
         })
       }
 
-      // Save to DB (upsert — handles re-installs / key rotation)
+      // Save to DB
       const subJson = sub.toJSON() as { endpoint: string; keys: { p256dh: string; auth: string } }
-      await fetch('/api/push/subscribe', {
+      if (!subJson.endpoint || !subJson.keys?.p256dh) {
+        return { ok: false, error: 'Browser returned incomplete subscription — try reinstalling the PWA' }
+      }
+
+      const saveRes = await fetch('/api/push/subscribe', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(subJson),
       })
-    } catch (e) {
-      // Non-fatal: push is a bonus feature — in-app polling still works
-      console.warn('[push] Registration failed:', e)
+      if (!saveRes.ok) return { ok: false, error: 'Failed to save subscription to server' }
+
+      return { ok: true }
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e)
+      console.warn('[push] Registration failed:', msg)
+      return { ok: false, error: msg }
     }
-  }
+  }, [])
 
   const fireNotification = useCallback((reminder: ReminderItem) => {
     if (typeof window === 'undefined' || !('Notification' in window)) return
@@ -237,7 +259,7 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
     // If permission was already granted (e.g. re-opened after install),
     // re-register push subscription silently so the DB stays current.
     if (typeof window !== 'undefined' && Notification.permission === 'granted') {
-      registerPushSubscription()
+      subscribePush()
     }
 
     const interval = setInterval(() => { checkAndNotify(); fetchTodos() }, 30_000)
@@ -263,6 +285,7 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
       refreshTodos: fetchTodos,
       refreshStats: fetchStats,
       requestPermission,
+      subscribePush,
       awardXP,
     }}>
       {children}
