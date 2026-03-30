@@ -51,9 +51,11 @@ interface NotificationContextType {
   pendingReminders: ReminderItem[]
   pendingTodos: TodoItem[]
   userStats: UserStatsData | null
+  notifPermission: NotificationPermission | 'unsupported'
   refreshReminders: () => void
   refreshTodos: () => void
   refreshStats: () => void
+  requestPermission: () => Promise<void>
   awardXP: (xp: number, type?: 'reminder' | 'todo') => Promise<number>
 }
 
@@ -62,9 +64,11 @@ const NotificationContext = createContext<NotificationContextType>({
   pendingReminders: [],
   pendingTodos: [],
   userStats: null,
+  notifPermission: 'unsupported',
   refreshReminders: () => {},
   refreshTodos: () => {},
   refreshStats: () => {},
+  requestPermission: async () => {},
   awardXP: async () => 0,
 })
 
@@ -85,6 +89,8 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
   const [pendingReminders, setPendingReminders] = useState<ReminderItem[]>([])
   const [pendingTodos, setPendingTodos] = useState<TodoItem[]>([])
   const [userStats, setUserStats] = useState<UserStatsData | null>(null)
+  const [notifPermission, setNotifPermission] = useState<NotificationPermission | 'unsupported'>('unsupported')
+  const [bannerDismissed, setBannerDismissed] = useState(false)
   const notifiedIds = useRef<Set<string>>(new Set())
   const permissionRequested = useRef(false)
 
@@ -116,14 +122,15 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
 
   const requestPermission = useCallback(async () => {
     if (typeof window === 'undefined' || !('Notification' in window)) return
-    if (permissionRequested.current) return
     permissionRequested.current = true
     if (Notification.permission === 'default') {
-      await Notification.requestPermission()
+      const result = await Notification.requestPermission()
+      setNotifPermission(result)
     }
     // After permission is granted (or was already granted), register for Web Push
     // so notifications arrive even when the app is closed.
     if (Notification.permission === 'granted') {
+      setNotifPermission('granted')
       await registerPushSubscription()
     }
   }, [])
@@ -220,7 +227,10 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
   }, [])
 
   useEffect(() => {
-    requestPermission()
+    // Initialise permission state (read only — no auto-prompt; Brave blocks auto-prompts)
+    if (typeof window !== 'undefined' && 'Notification' in window) {
+      setNotifPermission(Notification.permission)
+    }
     fetchReminders()
     fetchTodos()
     fetchStats()
@@ -243,18 +253,81 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
 
   const urgentCount = pendingReminders.filter(isUrgent).length
 
+  const showBanner =
+    !bannerDismissed &&
+    notifPermission === 'default' &&
+    typeof window !== 'undefined' &&
+    'Notification' in window
+
   return (
     <NotificationContext.Provider value={{
       urgentCount,
       pendingReminders,
       pendingTodos,
       userStats,
+      notifPermission,
       refreshReminders: fetchReminders,
       refreshTodos: fetchTodos,
       refreshStats: fetchStats,
+      requestPermission,
       awardXP,
     }}>
       {children}
+
+      {/* Enable-notifications banner — shown when permission not yet granted.
+          Must be triggered by user tap to satisfy Brave/Firefox gesture requirement. */}
+      {showBanner && (
+        <div
+          style={{
+            position: 'fixed',
+            bottom: '80px',
+            left: '50%',
+            transform: 'translateX(-50%)',
+            zIndex: 9999,
+            display: 'flex',
+            alignItems: 'center',
+            gap: '8px',
+            background: '#1e3a6e',
+            border: '1px solid rgba(99,179,237,0.4)',
+            borderRadius: '999px',
+            padding: '10px 16px',
+            boxShadow: '0 4px 24px rgba(0,0,0,0.5)',
+            maxWidth: 'calc(100vw - 32px)',
+            whiteSpace: 'nowrap',
+          }}
+        >
+          <span style={{ fontSize: '18px' }}>🔔</span>
+          <button
+            onClick={requestPermission}
+            style={{
+              background: 'none',
+              border: 'none',
+              color: '#93c5fd',
+              fontSize: '14px',
+              fontWeight: 600,
+              cursor: 'pointer',
+              padding: 0,
+            }}
+          >
+            Enable notifications
+          </button>
+          <button
+            onClick={() => setBannerDismissed(true)}
+            style={{
+              background: 'none',
+              border: 'none',
+              color: 'rgba(147,197,253,0.5)',
+              fontSize: '16px',
+              cursor: 'pointer',
+              padding: '0 0 0 4px',
+              lineHeight: 1,
+            }}
+            aria-label="Dismiss"
+          >
+            ✕
+          </button>
+        </div>
+      )}
     </NotificationContext.Provider>
   )
 }
