@@ -6,11 +6,12 @@ import { motion } from 'framer-motion'
 import {
   Settings, Shield, Lock, Download, Trash2, User, Bot,
   CheckCircle2, AlertTriangle, Eye, Copy, Check,
-  Sparkles, Save, Loader2, Menu, LogOut,
+  Sparkles, Save, Loader2, Menu, LogOut, Bell, BellOff, BellRing,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Sidebar } from '@/components/layout/Sidebar'
 import { useSidebar } from '@/components/layout/SidebarContext'
+import { useNotifications } from '@/components/notifications/NotificationProvider'
 
 const SECTION_VARIANTS = {
   hidden: { opacity: 0, y: 16 },
@@ -20,6 +21,8 @@ const SECTION_VARIANTS = {
 export default function SettingsPage() {
   const { toggle } = useSidebar()
   const router = useRouter()
+  const { notifPermission, requestPermission } = useNotifications()
+  const [notifLoading, setNotifLoading] = useState(false)
   const [exportFormat, setExportFormat] = useState<'txt' | 'md' | 'json'>('md')
   const [copied, setCopied] = useState(false)
   const [showClearConfirm, setShowClearConfirm] = useState(false)
@@ -273,8 +276,64 @@ export default function SettingsPage() {
             </div>
           </motion.section>
 
-          {/* Danger Zone */}
+          {/* Notifications */}
           <motion.section custom={4} variants={SECTION_VARIANTS} initial="hidden" animate="visible">
+            <SectionHeader icon={Bell} title="Notifications" color="text-blue-400" />
+            <div className="bg-surface border border-border rounded-2xl divide-y divide-border overflow-hidden">
+              <div className="flex items-start justify-between gap-4 px-5 py-4">
+                <div className="flex items-start gap-3 flex-1 min-w-0">
+                  <div className="mt-0.5 flex-shrink-0 text-blue-400">
+                    {notifPermission === 'granted' ? (
+                      <BellRing className="w-4 h-4" />
+                    ) : notifPermission === 'denied' ? (
+                      <BellOff className="w-4 h-4 text-red-400" />
+                    ) : (
+                      <Bell className="w-4 h-4" />
+                    )}
+                  </div>
+                  <div>
+                    <p className="text-sm font-semibold text-foreground leading-tight">Push Notifications</p>
+                    <p className="text-xs text-muted mt-0.5 leading-relaxed">
+                      {notifPermission === 'granted'
+                        ? 'Notifications are enabled. Skippy will send you daily briefs and reminders even when the app is closed.'
+                        : notifPermission === 'denied'
+                        ? 'Notifications are blocked. To re-enable, open your browser or system settings and allow notifications for this site.'
+                        : 'Allow Skippy to send push notifications — morning briefings, reminders, and personalized nudges.'}
+                    </p>
+                  </div>
+                </div>
+                <div className="flex-shrink-0 mt-0.5">
+                  {notifPermission === 'granted' && (
+                    <span className="flex items-center gap-1.5 text-xs text-emerald-400 font-semibold bg-emerald-400/10 px-2.5 py-1 rounded-full border border-emerald-400/25">
+                      <CheckCircle2 className="w-3 h-3" />Enabled
+                    </span>
+                  )}
+                  {notifPermission === 'denied' && (
+                    <span className="flex items-center gap-1.5 text-xs text-red-400 font-semibold bg-red-400/10 px-2.5 py-1 rounded-full border border-red-400/25">
+                      <BellOff className="w-3 h-3" />Blocked
+                    </span>
+                  )}
+                  {(notifPermission === 'default' || notifPermission === 'unsupported') && (
+                    <button
+                      onClick={async () => {
+                        setNotifLoading(true)
+                        await requestPermission()
+                        setNotifLoading(false)
+                      }}
+                      disabled={notifLoading || notifPermission === 'unsupported'}
+                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold text-background bg-blue-500 hover:bg-blue-400 active:scale-95 transition-all disabled:opacity-50"
+                    >
+                      {notifLoading ? <Loader2 className="w-3 h-3 animate-spin" /> : <Bell className="w-3 h-3" />}
+                      {notifPermission === 'unsupported' ? 'Not supported' : 'Enable'}
+                    </button>
+                  )}
+                </div>
+              </div>
+            </div>
+          </motion.section>
+
+          {/* Danger Zone */}
+          <motion.section custom={5} variants={SECTION_VARIANTS} initial="hidden" animate="visible">
             <SectionHeader icon={AlertTriangle} title="Danger Zone" color="text-red-400" />
             <div className="bg-surface border border-red-400/15 rounded-2xl p-5 space-y-4">
               {clearDone && (
@@ -319,7 +378,7 @@ export default function SettingsPage() {
           </motion.section>
 
           {/* Log Out */}
-          <motion.section custom={5} variants={SECTION_VARIANTS} initial="hidden" animate="visible" className="pb-8">
+          <motion.section custom={6} variants={SECTION_VARIANTS} initial="hidden" animate="visible" className="pb-8">
             <SectionHeader icon={LogOut} title="Account" color="text-muted/60" />
             <div className="bg-surface border border-border rounded-2xl p-5">
               <div className="flex items-center justify-between gap-4">
