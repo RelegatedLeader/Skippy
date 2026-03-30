@@ -162,13 +162,22 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
         if (existing) await existing.unsubscribe()
       }
 
-      // Get or create subscription
-      let sub = await reg.pushManager.getSubscription()
-      if (!sub) {
+      // When force=true always call subscribe() fresh — don't re-check getSubscription()
+      // because some Brave/Android versions still return the old sub after unsubscribe().
+      let sub: PushSubscription | null = null
+      if (force) {
         sub = await reg.pushManager.subscribe({
           userVisibleOnly: true,
           applicationServerKey: urlBase64ToUint8Array(publicKey).buffer as ArrayBuffer,
         })
+      } else {
+        sub = await reg.pushManager.getSubscription()
+        if (!sub) {
+          sub = await reg.pushManager.subscribe({
+            userVisibleOnly: true,
+            applicationServerKey: urlBase64ToUint8Array(publicKey).buffer as ArrayBuffer,
+          })
+        }
       }
 
       // Save to DB
