@@ -23,6 +23,7 @@ export default function SettingsPage() {
   const router = useRouter()
   const { notifPermission, requestPermission } = useNotifications()
   const [notifLoading, setNotifLoading] = useState(false)
+  const [testSent, setTestSent] = useState(false)
   const [exportFormat, setExportFormat] = useState<'txt' | 'md' | 'json'>('md')
   const [copied, setCopied] = useState(false)
   const [showClearConfirm, setShowClearConfirm] = useState(false)
@@ -302,11 +303,37 @@ export default function SettingsPage() {
                     </p>
                   </div>
                 </div>
-                <div className="flex-shrink-0 mt-0.5">
+                <div className="flex-shrink-0 mt-0.5 flex flex-col items-end gap-2">
                   {notifPermission === 'granted' && (
-                    <span className="flex items-center gap-1.5 text-xs text-emerald-400 font-semibold bg-emerald-400/10 px-2.5 py-1 rounded-full border border-emerald-400/25">
-                      <CheckCircle2 className="w-3 h-3" />Enabled
-                    </span>
+                    <>
+                      <span className="flex items-center gap-1.5 text-xs text-emerald-400 font-semibold bg-emerald-400/10 px-2.5 py-1 rounded-full border border-emerald-400/25">
+                        <CheckCircle2 className="w-3 h-3" />Enabled
+                      </span>
+                      <button
+                        onClick={async () => {
+                          setTestSent(false)
+                          try {
+                            // Fire a direct browser notification — proves permission is real
+                            new Notification('Skippy test 🔔', {
+                              body: 'If you see this, push notifications are working!',
+                              icon: '/img/skippyENHANCED3D-removebg.png',
+                              badge: '/img/badge-96.png',
+                              tag: 'skippy-test',
+                            })
+                            setTestSent(true)
+                            setTimeout(() => setTestSent(false), 4000)
+                          } catch {
+                            alert('Notification fired but your browser may have suppressed it. Check site notification settings.')
+                          }
+                        }}
+                        className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold border transition-all active:scale-95"
+                        style={testSent
+                          ? { background: 'rgba(16,185,129,0.12)', borderColor: 'rgba(16,185,129,0.3)', color: '#10b981' }
+                          : { background: 'rgba(59,130,246,0.1)', borderColor: 'rgba(59,130,246,0.3)', color: '#93c5fd' }}
+                      >
+                        {testSent ? <><CheckCircle2 className="w-3 h-3" />Sent!</> : <><Bell className="w-3 h-3" />Send test</>}
+                      </button>
+                    </>
                   )}
                   {notifPermission === 'denied' && (
                     <span className="flex items-center gap-1.5 text-xs text-red-400 font-semibold bg-red-400/10 px-2.5 py-1 rounded-full border border-red-400/25">
