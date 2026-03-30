@@ -1,7 +1,7 @@
 /**
  * POST /api/push/test
- * Sends a real server-side push notification to all registered devices.
- * Returns detailed error info so the Settings UI can surface exactly what failed.
+ * Sends a real server-side push notification to the registered device.
+ * Uses actual pending items to make it feel real.
  */
 import { NextResponse } from 'next/server'
 import { sendPushToAll } from '@/lib/push'
@@ -19,10 +19,32 @@ export async function POST() {
       )
     }
 
+    // Build a meaningful test message from real data
+    const [pendingTodos, pendingReminders, userProfile] = await Promise.all([
+      prisma.todo.findMany({ where: { isDone: false }, orderBy: [{ priority: 'desc' }], take: 3 }),
+      prisma.reminder.findMany({ where: { isDone: false }, orderBy: { dueDate: 'asc' }, take: 2 }),
+      prisma.userProfile.findUnique({ where: { id: 'singleton' } }),
+    ])
+
+    const name = userProfile?.name ? `, ${userProfile.name}` : ''
+    let body: string
+
+    if (pendingTodos.length > 0) {
+      const first = pendingTodos[0].content
+      const rest  = pendingTodos.length - 1
+      body = rest > 0
+        ? `You have "${first}" and ${rest} other task${rest !== 1 ? 's' : ''} waiting.`
+        : `Don't forget: "${first}"`
+    } else if (pendingReminders.length > 0) {
+      body = `Reminder: "${pendingReminders[0].content}"`
+    } else {
+      body = `Hey${name} — Skippy here. Push notifications are working!`
+    }
+
     const result = await sendPushToAll({
-      title: 'Skippy 🔔',
-      body: "Test notification — everything is working! I'll ping you about things that are due.",
-      url: '/chat',
+      title: `Skippy 🔔`,
+      body,
+      url: '/todos',
       tag: `skippy-test-${Date.now()}`,
     })
 
@@ -40,3 +62,4 @@ export async function POST() {
     return NextResponse.json({ error: `Server error: ${msg}` }, { status: 500 })
   }
 }
+

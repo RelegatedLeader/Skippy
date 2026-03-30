@@ -96,10 +96,55 @@ Be personal and specific — NOT generic. Don't say "Hey [name]", just get to th
       title: 'Skippy',
       body: nudgeBody,
       url: '/chat',
-      tag: `nudge-${Date.now()}`, // unique tag so nudges stack, not replace each other
+      tag: `nudge-${Date.now()}`,
     })
 
-    return NextResponse.json({ ok: true, sent: subCount, body: nudgeBody })
+    // Also fire individual notifications for any reminders/todos due within 3 hours
+    const soonStart = new Date()
+    const soonEnd   = new Date(soonStart.getTime() + 3 * 60 * 60 * 1000)
+
+    const [dueSoonReminders, dueSoonTodos] = await Promise.all([
+      prisma.reminder.findMany({
+        where: { isDone: false, isNotified: false, dueDate: { gte: soonStart, lte: soonEnd } },
+        orderBy: { dueDate: 'asc' },
+      }),
+      prisma.todo.findMany({
+        where: { isDone: false, dueDate: { gte: soonStart, lte: soonEnd } },
+        orderBy: { dueDate: 'asc' },
+      }),
+    ])
+
+    for (const r of dueSoonReminders) {
+      const due = r.dueDate ? new Date(r.dueDate) : null
+      const timeStr = due ? due.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', timeZone: 'America/New_York' }) : ''
+      await sendPushToAll({
+        title: '⏰ Reminder due soon',
+        body: timeStr ? `"${r.content}" — due at ${timeStr}` : r.content,
+        url: '/chat',
+        tag: `reminder-${r.id}`,
+      })
+      // Mark as notified so it doesn't fire again
+      await prisma.reminder.update({ where: { id: r.id }, data: { isNotified: true } }).catch(() => {})
+    }
+
+    for (const t of dueSoonTodos) {
+      const due = t.dueDate ? new Date(t.dueDate) : null
+      const timeStr = due ? due.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', timeZone: 'America/New_York' }) : ''
+      await sendPushToAll({
+        title: '✅ Todo due soon',
+        body: timeStr ? `"${t.content}" — due at ${timeStr}` : t.content,
+        url: '/todos',
+        tag: `todo-${t.id}`,
+      })
+    }
+
+    return NextResponse.json({
+      ok: true,
+      sent: subCount,
+      body: nudgeBody,
+      remindersNotified: dueSoonReminders.length,
+      todosNotified: dueSoonTodos.length,
+    })
   } catch (err) {
     console.error('[cron/nudge]', err)
     return NextResponse.json({ error: 'Failed' }, { status: 500 })
