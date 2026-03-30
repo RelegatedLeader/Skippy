@@ -40,7 +40,12 @@ export async function sendPushToAll(payload: PushPayload): Promise<PushResult> {
     return { sent: 0, failed: 0, errors: ['VAPID keys not configured on server'] }
   }
 
-  webPush.setVapidDetails(`mailto:${contact.replace('mailto:', '')}`, publicKey, privateKey)
+  // Strip any base64 padding — web-push requires unpadded base64url keys
+  webPush.setVapidDetails(
+    `mailto:${contact.replace('mailto:', '')}`,
+    publicKey.replace(/=+$/, ''),
+    privateKey.replace(/=+$/, '')
+  )
 
   const subs = await prisma.pushSubscription.findMany()
   if (subs.length === 0) return { sent: 0, failed: 0, errors: [] }
