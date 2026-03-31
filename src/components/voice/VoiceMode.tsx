@@ -536,14 +536,14 @@ export function VoiceMode({ onTranscript, chatBusy, autoActivate, className }: V
 
   const recogRef       = useRef<SpeechRecognition | null>(null)
   const utteranceRef   = useRef<SpeechSynthesisUtterance | null>(null)
-  const audioNodeRef   = useRef<AudioBufferSourceNode | null>(null)
-  const audioCtxRef    = useRef<AudioContext | null>(null)
+  const audioElRef     = useRef<HTMLAudioElement | null>(null)
+  const audioBlobRef   = useRef<string | null>(null)   // current object URL
   const streamRef      = useRef<MediaStream | null>(null)
   const animFrameRef   = useRef<number | null>(null)
   const loopTimerRef   = useRef<ReturnType<typeof setTimeout> | null>(null)
   const wordTimersRef  = useRef<ReturnType<typeof setTimeout>[]>([])
-  // Pre-fetch cache: sentence text → Promise<AudioBuffer|null>
-  const preFetchRef    = useRef<Map<string, Promise<AudioBuffer | null>>>(new Map())
+  // Pre-fetch cache: sentence text → Promise<string|null>  (object URL)
+  const preFetchRef    = useRef<Map<string, Promise<string | null>>>(new Map())
 
   const onTranscriptRef  = useRef(onTranscript)
   const startRef         = useRef<() => void>(() => {})
@@ -601,23 +601,21 @@ export function VoiceMode({ onTranscript, chatBusy, autoActivate, className }: V
     wordTimersRef.current = []
   }, [])
 
-  // ── Persistent AudioContext — created once on first user gesture ─────────────
-  // Browsers suspend AudioContext created after async operations. By creating
-  // it eagerly and calling resume() before each play we guarantee audio works.
-  const getAudioCtx = useCallback((): AudioContext => {
-    if (!audioCtxRef.current || audioCtxRef.current.state === 'closed') {
-      audioCtxRef.current = new AudioContext()
+  // ── Revoke current Blob URL ───────────────────────────────────────────────────
+  const revokeBlobUrl = useCallback(() => {
+    if (audioBlobRef.current) {
+      URL.revokeObjectURL(audioBlobRef.current)
+      audioBlobRef.current = null
     }
-    return audioCtxRef.current
   }, [])
 
-  // ── Pre-fetch TTS audio buffer ───────────────────────────────────────────────
-  // Called as soon as a sentence is known so the AudioBuffer is ready by the
-  // time the previous sentence finishes playing → zero inter-sentence gap.
-  const preFetchTTS = useCallback((text: string): Promise<AudioBuffer | null> => {
+  // ── Pre-fetch TTS → Blob URL ──────────────────────────────────────────────────
+  // Fetches MP3 from /api/tts immediately when a sentence is known, stores it
+  // as an object URL so <audio> can play it with zero network wait.
+  const preFetchTTS = useCallback((text: string): Promise<string | null> => {
     const cache = preFetchRef.current
     if (cache.has(text)) return cache.get(text)!
-    const p = (async (): Promise<AudioBuffer | null> => {
+    const p = (async (): Promise<string | null> => {
       try {
         const res = await fetch('/api/tts', {
           method: 'POST',
@@ -625,25 +623,21 @@ export function VoiceMode({ onTranscript, chatBusy, autoActivate, className }: V
           body: JSON.stringify({ text }),
           signal: AbortSignal.timeout(9_000),
         })
-        if (!res.ok) return null
-        const arr = await res.arrayBuffer()
-        if (!arr.byteLength) return null
-        const ctx = getAudioCtx()
-        await ctx.resume()
-        return await ctx.decodeAudioData(arr)
-      } catch { return null }
+        if (!res.ok) { console.warn('[TTS] server returned', res.status); return null }
+        const blob = await res.blob()
+        if (!blob.size) return null
+        return URL.createObjectURL(blob)
+      } catch (e) { console.warn('[TTS] prefetch failed', e); return null }
     })()
     cache.set(text, p)
-    // Evict after 60 s to avoid stale refs
+    // Evict entry after 60 s
     p.then(() => setTimeout(() => cache.delete(text), 60_000))
     return p
-  }, [getAudioCtx])
+  }, [])
 
-  // ── Neural TTS via /api/tts, Web Speech API fallback ────────────────────────
-  //
-  // Tries /api/tts (kokoro-js, high-quality am_puck voice) first.
-  // If the API is cold/slow/unavailable, falls back to Web Speech API.
-  // Word-boundary sync works for both paths.
+  // ── Neural TTS via /api/tts (en-US-GuyNeural) using <audio> element ───────────
+  // Uses a simple HTML <audio> element with a Blob URL — zero AudioContext
+  // timing/autoplay issues. Pre-fetched Blob URLs play instantly.
 
   const speak = useCallback(
     (text: string, onEnd: () => void): void => {
@@ -663,27 +657,36 @@ export function VoiceMode({ onTranscript, chatBusy, autoActivate, className }: V
       setWordBoundary(null)
       clearWordTimers()
 
-      // ── Neural TTS (en-US-GuyNeural via msedge-tts) ─────────────────────
-      // Uses pre-fetched buffer if already available (zero-gap playback).
-      const doNeuralTTS = async () => {
-        try {
-          // preFetchTTS may already have the buffer ready — await its promise
-          const audioBuf = await preFetchTTS(clean)
-          if (!audioBuf) {
-            console.warn('[VoiceMode] TTS buffer null for:', clean.slice(0, 40))
-            onEnd()
-            return
-          }
+      const doPlay = async () => {
+        // Stop any currently playing audio
+        if (audioElRef.current) {
+          audioElRef.current.pause()
+          audioElRef.current.src = ''
+          audioElRef.current = null
+        }
+        revokeBlobUrl()
 
-          const ctx = getAudioCtx()
-          // CRITICAL: resume before playing — browser autoplay policy suspends
-          // AudioContext created outside a user-gesture stack frame.
-          await ctx.resume()
+        // Get pre-fetched Blob URL (or fetch now if not ready)
+        const blobUrl = await preFetchTTS(clean)
+        if (!blobUrl) {
+          console.warn('[VoiceMode] TTS unavailable for:', clean.slice(0, 40))
+          setSpeakingText('')
+          onEnd()
+          return
+        }
 
-          // Word-boundary sync: distribute words evenly across audio duration
+        audioBlobRef.current = blobUrl
+
+        const audio = new Audio(blobUrl)
+        audio.volume = 1.0
+        audioElRef.current = audio
+
+        // Word-boundary sync: distribute words across estimated duration
+        // onloadedmetadata fires once we know the real duration
+        const scheduleWords = (durationSec: number) => {
+          clearWordTimers()
           const words = clean.split(/\s+/)
-          const totalMs = audioBuf.duration * 1000
-          const msPerWord = totalMs / Math.max(words.length, 1)
+          const msPerWord = (durationSec * 1000) / Math.max(words.length, 1)
           let charPos = 0
           const timers: ReturnType<typeof setTimeout>[] = []
           for (let i = 0; i < words.length; i++) {
@@ -693,45 +696,67 @@ export function VoiceMode({ onTranscript, chatBusy, autoActivate, className }: V
             charPos += words[i].length + 1
           }
           wordTimersRef.current = timers
+        }
 
-          const source = ctx.createBufferSource()
-          source.buffer = audioBuf
-          source.connect(ctx.destination)
-          audioNodeRef.current = source
+        audio.onloadedmetadata = () => scheduleWords(audio.duration)
 
-          source.onended = () => {
-            clearWordTimers()
-            setSpeakingText('')
-            setWordBoundary(null)
-            audioNodeRef.current = null
-            setIsNeuralVoice(false)
-            onEnd()
-          }
-          source.start()
-          setIsNeuralVoice(true)
-        } catch (err) {
-          console.error('[VoiceMode] TTS error:', err)
+        audio.onended = () => {
+          clearWordTimers()
+          setSpeakingText('')
+          setWordBoundary(null)
+          audioElRef.current = null
+          revokeBlobUrl()
+          setIsNeuralVoice(false)
           onEnd()
+        }
+
+        audio.onerror = (e) => {
+          console.error('[VoiceMode] audio playback error', e)
+          clearWordTimers()
+          setSpeakingText('')
+          setWordBoundary(null)
+          audioElRef.current = null
+          revokeBlobUrl()
+          setIsNeuralVoice(false)
+          onEnd()
+        }
+
+        setIsNeuralVoice(true)
+        // Estimate word timing immediately (before metadata, ~150 wpm)
+        scheduleWords(words.length / 2.5)
+
+        try {
+          await audio.play()
+        } catch (e) {
+          console.error('[VoiceMode] play() rejected:', e)
+          // Autoplay blocked — try a tiny delay then replay
+          setTimeout(async () => {
+            try { await audio.play() } catch { onEnd() }
+          }, 100)
         }
       }
 
-      doNeuralTTS()
+      const words = clean.split(/\s+/)
+      // kick off immediately
+      doPlay()
     },
-    [clearWordTimers, preFetchTTS, getAudioCtx],
+    [clearWordTimers, preFetchTTS, revokeBlobUrl],
   )
 
   const stopSpeaking = useCallback(() => {
     clearWordTimers()
-    // Stop neural audio node (but keep AudioContext alive for reuse)
-    try { audioNodeRef.current?.stop() } catch {}
-    audioNodeRef.current = null
-    // Stop Web Speech (safety)
+    if (audioElRef.current) {
+      audioElRef.current.pause()
+      audioElRef.current.src = ''
+      audioElRef.current = null
+    }
+    revokeBlobUrl()
     window.speechSynthesis?.cancel()
     utteranceRef.current = null
     setSpeakingText('')
     setWordBoundary(null)
     setIsNeuralVoice(false)
-  }, [clearWordTimers])
+  }, [clearWordTimers, revokeBlobUrl])
 
   // ── Process text → AI (Grok auto-routed if live data) → streaming TTS ───────
 
