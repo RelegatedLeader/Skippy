@@ -105,11 +105,12 @@ export async function POST(req: Request) {
 
 export async function PATCH(req: Request) {
   try {
-    const { id, importance, confidence, category } = await req.json() as {
+    const { id, importance, confidence, category, tags } = await req.json() as {
       id?: string
       importance?: number
       confidence?: number
       category?: string
+      tags?: string[]
     }
 
     if (!id) {
@@ -120,6 +121,7 @@ export async function PATCH(req: Request) {
     if (importance !== undefined) data.importance = Math.min(10, Math.max(1, importance))
     if (confidence !== undefined) data.confidence = Math.min(1, Math.max(0.1, confidence))
     if (category !== undefined) data.category = category
+    if (tags !== undefined) data.tags = JSON.stringify(Array.isArray(tags) ? tags : [])
 
     const memory = await prisma.memory.update({ where: { id }, data })
     return NextResponse.json(parseMemory(memory))

@@ -58,7 +58,8 @@ Respond in this EXACT format (no other text, no preamble):
 REBUTTAL: [your critique here]
 USER_SCORE: [0-100]
 AI_SCORE: [0-100]
-ROUND_VERDICT: [one of: "user_stronger" | "ai_stronger" | "tied"]`
+ROUND_VERDICT: [one of: "user_stronger" | "ai_stronger" | "tied"]
+EMOTIONAL_BIAS: [one of: "none" | "mild" | "strong"]`
     : `You are Skippy — a sharp, deeply personal AI debating the following topic with the user.
 
 DEBATE TOPIC: "${debate.topic}"
@@ -78,7 +79,8 @@ Respond in this EXACT format (no other text, no preamble):
 REBUTTAL: [your rebuttal here]
 USER_SCORE: [0-100]
 AI_SCORE: [0-100]
-ROUND_VERDICT: [one of: "user_stronger" | "ai_stronger" | "tied"]`
+ROUND_VERDICT: [one of: "user_stronger" | "ai_stronger" | "tied"]
+EMOTIONAL_BIAS: [Assess whether the user's argument relies on emotional reasoning over logic: "none" | "mild" | "strong"]`
 
   const parseResponse = (raw: string) => {
     const rebMatch = raw.match(/REBUTTAL:\s*([\s\S]*?)(?=USER_SCORE:|$)/)

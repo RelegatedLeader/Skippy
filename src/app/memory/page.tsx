@@ -10,7 +10,7 @@ import {
   Bell, Sparkles, CheckCircle2, Circle, Plus, X, Calendar,
   ChevronDown, ChevronUp, Menu, ListTodo, Clock, Zap,
   Shield, TrendingUp, Filter, Wand2, AlertTriangle, Activity,
-  BarChart2, Layers,
+  BarChart2, Layers, Heart, Pin, Users,
 } from 'lucide-react'
 import { cn, getCategoryColor, getCategoryIcon, formatRelativeTime, ALL_MEMORY_CATEGORIES } from '@/lib/utils'
 import { Sidebar } from '@/components/layout/Sidebar'
@@ -173,7 +173,7 @@ function memoryStrength(mem: Memory): number {
 
 // ─── Main page ────────────────────────────────────────────────────────────────
 
-type Tab = 'memories' | 'todos' | 'reminders' | 'ask' | 'system'
+type Tab = 'memories' | 'people' | 'vault' | 'todos' | 'reminders' | 'ask' | 'system'
 
 export default function MemoryPage() {
   const { toggle } = useSidebar()
@@ -289,12 +289,36 @@ export default function MemoryPage() {
     }
   }
 
+  const handleToggleCore = async (id: string, currentTags: string[]) => {
+    const isCore = currentTags.includes('core')
+    const newTags = isCore ? currentTags.filter(t => t !== 'core') : [...currentTags, 'core']
+    const res = await fetch('/api/memories', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id, tags: newTags }),
+    })
+    if (res.ok) {
+      setData(prev => {
+        if (!prev) return prev
+        const memories = prev.memories.map(m => m.id === id ? { ...m, tags: newTags } : m)
+        const grouped = memories.reduce((acc, m) => {
+          if (!acc[m.category]) acc[m.category] = []
+          acc[m.category].push(m)
+          return acc
+        }, {} as Record<string, Memory[]>)
+        return { ...prev, memories, grouped }
+      })
+    }
+  }
+
   const pendingReminders = reminders.filter(r => !r.isDone).length
   const pendingTodos = todos.filter(t => !t.isDone).length
   const urgentTodos = todos.filter(t => !t.isDone && (t.priority === 'urgent' || t.priority === 'high')).length
 
   const TAB_CONFIG: { key: Tab; label: string; icon: React.ReactNode; badge?: number; badgeUrgent?: boolean }[] = [
     { key: 'memories', label: 'Memories', icon: <Brain className="w-3.5 h-3.5" />, badge: data?.total },
+    { key: 'people', label: 'People', icon: <Users className="w-3.5 h-3.5" />, badge: data?.memories.filter(m => m.category === 'relationship').length || undefined },
+    { key: 'vault', label: 'Core Vault', icon: <Pin className="w-3.5 h-3.5" />, badge: data?.memories.filter(m => m.tags.includes('core')).length || undefined },
     { key: 'todos', label: 'Todos', icon: <ListTodo className="w-3.5 h-3.5" />, badge: pendingTodos || undefined, badgeUrgent: urgentTodos > 0 },
     { key: 'reminders', label: 'Reminders', icon: <Bell className="w-3.5 h-3.5" />, badge: pendingReminders || undefined },
     { key: 'ask', label: 'Ask Skippy', icon: <Sparkles className="w-3.5 h-3.5" /> },
@@ -373,7 +397,17 @@ export default function MemoryPage() {
           <AnimatePresence mode="wait">
             {activeTab === 'memories' && (
               <motion.div key="memories" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }}>
-                <MemoriesTab data={data} loading={loading} onDelete={handleDeleteMemory} />
+                <MemoriesTab data={data} loading={loading} onDelete={handleDeleteMemory} onToggleCore={handleToggleCore} />
+              </motion.div>
+            )}
+            {activeTab === 'people' && (
+              <motion.div key="people" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }}>
+                <PeopleTab memories={data?.memories.filter(m => m.category === 'relationship') || []} loading={loading} onDelete={handleDeleteMemory} onToggleCore={handleToggleCore} />
+              </motion.div>
+            )}
+            {activeTab === 'vault' && (
+              <motion.div key="vault" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }}>
+                <CoreVaultTab memories={data?.memories.filter(m => m.tags.includes('core')) || []} loading={loading} onDelete={handleDeleteMemory} onToggleCore={handleToggleCore} />
               </motion.div>
             )}
             {activeTab === 'todos' && (
@@ -416,11 +450,12 @@ export default function MemoryPage() {
 // ─── Memories tab ─────────────────────────────────────────────────────────────
 
 function MemoriesTab({
-  data, loading, onDelete,
+  data, loading, onDelete, onToggleCore,
 }: {
   data: MemoryData | null
   loading: boolean
   onDelete: (id: string) => Promise<void>
+  onToggleCore: (id: string, tags: string[]) => Promise<void>
 }) {
   const [selectedCategory, setSelectedCategory] = useState('all')
   const [searchQuery, setSearchQuery] = useState('')
@@ -560,7 +595,7 @@ function MemoriesTab({
               </div>
               <div className="space-y-3 pl-4 border-l-2 border-border">
                 {mems.map(mem => (
-                  <MemoryCard key={mem.id} memory={mem} onDelete={handleDelete} isDeleting={deleting === mem.id} compact />
+                  <MemoryCard key={mem.id} memory={mem} onDelete={handleDelete} isDeleting={deleting === mem.id} compact onToggleCore={onToggleCore} />
                 ))}
               </div>
             </div>
@@ -570,7 +605,7 @@ function MemoriesTab({
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <AnimatePresence mode="popLayout">
             {sorted.map(mem => (
-              <MemoryCard key={mem.id} memory={mem} onDelete={handleDelete} isDeleting={deleting === mem.id} />
+              <MemoryCard key={mem.id} memory={mem} onDelete={handleDelete} isDeleting={deleting === mem.id} onToggleCore={onToggleCore} />
             ))}
           </AnimatePresence>
         </div>
@@ -603,15 +638,17 @@ function EmptyMemories({ hasAny }: { hasAny?: boolean }) {
   )
 }
 
-function MemoryCard({ memory, onDelete, isDeleting, compact = false }: {
+function MemoryCard({ memory, onDelete, isDeleting, compact = false, onToggleCore }: {
   memory: Memory
   onDelete: (id: string) => void
   isDeleting: boolean
   compact?: boolean
+  onToggleCore: (id: string, tags: string[]) => Promise<void>
 }) {
   const color = getCategoryColor(memory.category)
   const icon = getCategoryIcon(memory.category)
   const strength = memoryStrength(memory)
+  const isCore = memory.tags.includes('core')
 
   const sourceIcon = memory.sourceType === 'debate' ? '⚔' : memory.sourceType === 'manual' ? '✏️' : memory.sourceType === 'note' ? '📝' : '💬'
 
@@ -619,9 +656,10 @@ function MemoryCard({ memory, onDelete, isDeleting, compact = false }: {
     <motion.div layout
       initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.95 }}
       whileHover={{ y: -2 }}
-      className={cn('group relative rounded-xl bg-surface border transition-all duration-200 overflow-hidden', compact ? 'p-3' : 'p-4')}
-      style={{ borderColor: `${color}20` }}
+      className={cn('group relative rounded-xl bg-surface border transition-all duration-200 overflow-hidden', compact ? 'p-3' : 'p-4', isCore && 'border-yellow-500/30')}
+      style={{ borderColor: isCore ? undefined : `${color}20` }}
     >
+      {isCore && <div className="absolute top-0 left-0 right-0 h-[2px] bg-gradient-to-r from-yellow-500/60 via-yellow-400/80 to-yellow-500/60 rounded-t-xl" />}
       <div className="absolute left-0 top-3 bottom-3 w-[2px] rounded-r-full" style={{ backgroundColor: color }} />
       <div className="absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity duration-300"
         style={{ background: `radial-gradient(circle at 0% 50%, ${color}06, transparent 60%)` }} />
@@ -661,6 +699,13 @@ function MemoryCard({ memory, onDelete, isDeleting, compact = false }: {
                 </div>
               </div>
             )}
+            {/* Core pin */}
+            <button onClick={() => onToggleCore(memory.id, memory.tags)}
+              className={cn('p-1.5 rounded-lg transition-all', isCore ? 'text-yellow-400' : 'opacity-0 group-hover:opacity-100 text-muted hover:text-yellow-400')}
+              title={isCore ? 'Remove from Core Vault' : 'Pin to Core Vault'}
+            >
+              <Pin className="w-3.5 h-3.5" />
+            </button>
             <button onClick={() => onDelete(memory.id)} disabled={isDeleting}
               className="opacity-0 group-hover:opacity-100 p-1.5 rounded-lg text-muted hover:text-red-400 hover:bg-red-400/10 transition-all">
               {isDeleting ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
@@ -1353,7 +1398,192 @@ function SystemHealthTab({
   )
 }
 
-// ─── Ask tab ──────────────────────────────────────────────────────────────────
+// ─── People tab ───────────────────────────────────────────────────────────────
+
+function PeopleTab({ memories, loading, onDelete, onToggleCore }: {
+  memories: Memory[]
+  loading: boolean
+  onDelete: (id: string) => Promise<void>
+  onToggleCore: (id: string, tags: string[]) => Promise<void>
+}) {
+  const [deleting, setDeleting] = useState<string | null>(null)
+
+  const handleDelete = async (id: string) => {
+    setDeleting(id)
+    await onDelete(id)
+    setDeleting(null)
+  }
+
+  // Group by person name — extract first capitalized word or phrase from content
+  function extractPersonName(content: string): string {
+    // Try "Name:" pattern first
+    const colonMatch = content.match(/^([A-Z][a-zA-Z\s'-]{1,30}):/)
+    if (colonMatch) return colonMatch[1].trim()
+    // Try "knows [Name]" or "about [Name]" pattern
+    const aboutMatch = content.match(/(?:about|knows?|knows about|with|with\s+)\s+([A-Z][a-zA-Z\s'-]{2,25})(?:\s|,|\.)/i)
+    if (aboutMatch) return aboutMatch[1].trim()
+    // Try leading capitalized name (2+ words)
+    const nameMatch = content.match(/^([A-Z][a-z]+(?:\s[A-Z][a-z]+)+)/)
+    if (nameMatch) return nameMatch[1].trim()
+    // First capitalized word
+    const firstCapMatch = content.match(/([A-Z][a-z]{2,})/)
+    if (firstCapMatch) return firstCapMatch[1]
+    return 'Unknown'
+  }
+
+  const grouped = memories.reduce((acc, m) => {
+    const name = extractPersonName(m.content)
+    if (!acc[name]) acc[name] = []
+    acc[name].push(m)
+    return acc
+  }, {} as Record<string, Memory[]>)
+
+  const people = Object.entries(grouped).sort((a, b) => b[1].length - a[1].length)
+
+  if (loading) return (
+    <div className="flex items-center justify-center py-24 gap-3 text-muted">
+      <Users className="w-5 h-5 text-accent animate-pulse" />
+      <span className="text-sm">Loading relationship memories…</span>
+    </div>
+  )
+
+  if (memories.length === 0) return (
+    <div className="text-center py-24">
+      <div className="w-14 h-14 rounded-2xl bg-surface border border-accent/20 flex items-center justify-center mx-auto mb-4 shadow-glow-gold-sm animate-pulse-gold">
+        <Users className="w-7 h-7 text-accent/60" />
+      </div>
+      <h3 className="font-display text-xl font-bold text-foreground mb-2">No relationship memories yet</h3>
+      <p className="text-muted text-sm max-w-sm mx-auto">Tell Skippy about the people in your life. It will build profiles from everything you share.</p>
+    </div>
+  )
+
+  return (
+    <div className="space-y-6">
+      <p className="text-xs text-muted/40">{memories.length} relationship {memories.length === 1 ? 'memory' : 'memories'} · {people.length} {people.length === 1 ? 'person' : 'people'}</p>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+        {people.map(([name, mems]) => {
+          const avgValence = mems.filter(m => m.emotionalValence !== null).reduce((s, m) => s + (m.emotionalValence ?? 0), 0) / (mems.filter(m => m.emotionalValence !== null).length || 1)
+          const lastUpdated = mems.reduce((latest, m) => m.updatedAt > latest ? m.updatedAt : latest, mems[0].updatedAt)
+          const valenceColor = avgValence > 0.2 ? '#10b981' : avgValence < -0.2 ? '#ef4444' : '#64748b'
+          const valenceLabel = avgValence > 0.2 ? 'Positive' : avgValence < -0.2 ? 'Tense' : 'Neutral'
+          const hasCore = mems.some(m => m.tags.includes('core'))
+
+          return (
+            <motion.div key={name} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}
+              className={cn('rounded-2xl bg-surface border overflow-hidden', hasCore ? 'border-yellow-500/30' : 'border-border')}>
+              {hasCore && <div className="h-[2px] bg-gradient-to-r from-yellow-500/60 via-yellow-400/80 to-yellow-500/60" />}
+              {/* Card header */}
+              <div className="p-4 border-b border-border">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-xl flex items-center justify-center text-lg font-black"
+                    style={{ background: `${valenceColor}18`, border: `1px solid ${valenceColor}30`, color: valenceColor }}>
+                    {name.charAt(0)}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="font-bold text-foreground text-sm flex items-center gap-2">
+                      {name}
+                      {hasCore && <Pin className="w-3 h-3 text-yellow-400 flex-shrink-0" />}
+                    </div>
+                    <div className="flex items-center gap-2 mt-0.5">
+                      <span className="text-[10px] font-medium px-1.5 py-0.5 rounded-full" style={{ background: `${valenceColor}15`, color: valenceColor }}>
+                        {valenceLabel}
+                      </span>
+                      <span className="text-[10px] text-muted/40">{mems.length} memor{mems.length !== 1 ? 'ies' : 'y'}</span>
+                      <span className="text-[10px] text-muted/30 ml-auto">{formatRelativeTime(lastUpdated)}</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              {/* Memories list */}
+              <div className="divide-y divide-border">
+                {mems.map(m => (
+                  <div key={m.id} className="group flex items-start gap-2.5 px-4 py-3">
+                    {m.emotionalValence !== null && (
+                      <span className={cn('mt-0.5 text-xs flex-shrink-0',
+                        m.emotionalValence > 0.3 ? 'text-emerald-400' : m.emotionalValence < -0.3 ? 'text-red-400' : 'text-muted/30'
+                      )}>
+                        {m.emotionalValence > 0.3 ? '↑' : m.emotionalValence < -0.3 ? '↓' : '●'}
+                      </span>
+                    )}
+                    <p className="text-xs text-foreground/80 flex-1 leading-relaxed">{m.content}</p>
+                    <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0">
+                      <button onClick={() => onToggleCore(m.id, m.tags)}
+                        className={cn('p-1 rounded transition-colors', m.tags.includes('core') ? 'text-yellow-400' : 'text-muted hover:text-yellow-400')}>
+                        <Pin className="w-3 h-3" />
+                      </button>
+                      <button onClick={() => handleDelete(m.id)}
+                        className="p-1 rounded text-muted hover:text-red-400 transition-colors">
+                        {deleting === m.id ? <RefreshCw className="w-3 h-3 animate-spin" /> : <Trash2 className="w-3 h-3" />}
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </motion.div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
+// ─── Core Vault tab ───────────────────────────────────────────────────────────
+
+function CoreVaultTab({ memories, loading, onDelete, onToggleCore }: {
+  memories: Memory[]
+  loading: boolean
+  onDelete: (id: string) => Promise<void>
+  onToggleCore: (id: string, tags: string[]) => Promise<void>
+}) {
+  const [deleting, setDeleting] = useState<string | null>(null)
+
+  const handleDelete = async (id: string) => {
+    setDeleting(id)
+    await onDelete(id)
+    setDeleting(null)
+  }
+
+  if (loading) return (
+    <div className="flex items-center justify-center py-24 gap-3 text-muted">
+      <Pin className="w-5 h-5 text-yellow-400 animate-pulse" />
+      <span className="text-sm">Loading core memories…</span>
+    </div>
+  )
+
+  return (
+    <div className="space-y-6">
+      {/* Header callout */}
+      <div className="p-4 rounded-xl border border-yellow-500/20 bg-yellow-500/5 flex items-start gap-3">
+        <Pin className="w-4 h-4 text-yellow-400 flex-shrink-0 mt-0.5" />
+        <div>
+          <p className="text-sm font-semibold text-yellow-300 mb-0.5">Core Vault — Permanent Memory</p>
+          <p className="text-xs text-muted/60 leading-relaxed">
+            Core memories are never archived or decayed. They always surface first in Skippy&apos;s context. Pin memories that define who you are — your identity, values, relationships, and non-negotiables.
+          </p>
+        </div>
+      </div>
+
+      {memories.length === 0 ? (
+        <div className="text-center py-16">
+          <div className="w-14 h-14 rounded-2xl bg-surface border border-yellow-500/20 flex items-center justify-center mx-auto mb-4"
+            style={{ background: 'rgba(234,179,8,0.08)' }}>
+            <Pin className="w-7 h-7 text-yellow-400/60" />
+          </div>
+          <h3 className="font-display text-xl font-bold text-foreground mb-2">No core memories yet</h3>
+          <p className="text-muted text-sm max-w-sm mx-auto">Hover over any memory card and click the pin icon (⊓) to mark it as core. Core memories are never forgotten.</p>
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <AnimatePresence mode="popLayout">
+            {memories.map(mem => (
+              <MemoryCard key={mem.id} memory={mem} onDelete={handleDelete} isDeleting={deleting === mem.id} onToggleCore={onToggleCore} />
+            ))}
+          </AnimatePresence>
+        </div>
+      )}
+    </div>
+  )
+}
 
 function AskTab() {
   const [query, setQuery] = useState('')

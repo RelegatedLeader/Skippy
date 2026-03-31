@@ -5,14 +5,15 @@ import { useParams, useRouter } from 'next/navigation'
 import { motion, AnimatePresence } from 'framer-motion'
 import {
   Swords, Bot, User, Trophy, Flag, Save, ArrowLeft,
-  ChevronRight, Loader2, CheckCircle, AlertTriangle, Equal, Cpu, Menu
+  ChevronRight, Loader2, CheckCircle, AlertTriangle, Equal, Cpu, Menu,
+  FlameKindling, Brain, TrendingDown, TrendingUp, Minus,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Sidebar } from '@/components/layout/Sidebar'
 import { useSidebar } from '@/components/layout/SidebarContext'
 
 interface DebateRound {
-  id: string; roundNumber: number; userArgument: string; aiRebuttal: string; userScore: number; aiScore: number; usedModel?: string
+  id: string; roundNumber: number; userArgument: string; aiRebuttal: string; userScore: number; aiScore: number; usedModel?: string; emotionalBias?: 'none' | 'mild' | 'strong'
 }
 interface Debate {
   id: string; topic: string; userStance: string; aiStance: string
@@ -21,6 +22,19 @@ interface Debate {
 }
 
 const MAX_ROUNDS = 6
+
+// Phase label based on round number
+function getPhase(roundNumber: number): { label: string; color: string } {
+  if (roundNumber <= 1) return { label: 'Opening', color: '#29c2e6' }
+  if (roundNumber <= 3) return { label: 'Cross-Examination', color: '#e8b84b' }
+  if (roundNumber <= 5) return { label: 'Rebuttal', color: '#f97316' }
+  return { label: 'Final Round', color: '#ef4444' }
+}
+
+function parseEmotionalBias(raw: string): 'none' | 'mild' | 'strong' {
+  const m = raw.match(/EMOTIONAL_BIAS:\s*(none|mild|strong)/i)
+  return (m?.[1]?.toLowerCase() as 'none' | 'mild' | 'strong') || 'none'
+}
 
 export default function DebateSessionPage() {
   const { id } = useParams<{ id: string }>()
@@ -31,6 +45,7 @@ export default function DebateSessionPage() {
   const [argument, setArgument] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [streamingRebuttal, setStreamingRebuttal] = useState('')
+  const [lastBias, setLastBias] = useState<'none' | 'mild' | 'strong'>('none')
   const [concluding, setConcluding] = useState(false)
   const [showConclusion, setShowConclusion] = useState(false)
   const bottomRef = useRef<HTMLDivElement>(null)
@@ -81,10 +96,13 @@ export default function DebateSessionPage() {
         if (done) break
         raw += decoder.decode(value, { stream: true })
         // Show only the REBUTTAL part while streaming
-        const rebMatch = raw.match(/REBUTTAL:\s*([\s\S]*?)(?=USER_SCORE:|AI_SCORE:|$)/)
+        const rebMatch = raw.match(/REBUTTAL:\s*([\s\S]*?)(?=USER_SCORE:|AI_SCORE:|EMOTIONAL_BIAS:|$)/)
         if (rebMatch) setStreamingRebuttal(rebMatch[1].trim())
         else setStreamingRebuttal(raw)
       }
+
+      // Parse emotional bias from completed response
+      setLastBias(parseEmotionalBias(raw))
 
       setStreamingRebuttal('')
       await fetchDebate()
@@ -140,6 +158,16 @@ export default function DebateSessionPage() {
 
   const roundsLeft = MAX_ROUNDS - debate.rounds.length
   const isLastRound = debate.rounds.length >= MAX_ROUNDS - 1
+  const devilsAdvocate = debate.model?.endsWith('-da') ?? false
+  const currentPhase = getPhase(debate.rounds.length + 1)
+
+  // Phases list
+  const PHASES = [
+    { label: 'Opening', rounds: [1], color: '#29c2e6' },
+    { label: 'Cross-Ex', rounds: [2, 3], color: '#e8b84b' },
+    { label: 'Rebuttal', rounds: [4, 5], color: '#f97316' },
+    { label: 'Final', rounds: [6], color: '#ef4444' },
+  ]
 
   return (
     <div className="h-[calc(100dvh-3.5rem)] md:h-screen flex bg-background overflow-hidden">
@@ -165,7 +193,17 @@ export default function DebateSessionPage() {
                 </span>
               </div>
               <div className="flex items-center gap-2">
-                <p className="text-[10px] text-muted/50">Round {debate.rounds.length}/{MAX_ROUNDS} · {roundsLeft > 0 ? `${roundsLeft} left` : 'Final round'}</p>
+                <p className="text-[10px] text-muted/50">
+                  Round {debate.rounds.length}/{MAX_ROUNDS} · {roundsLeft > 0 ? `${roundsLeft} left` : 'Final round'}
+                </p>
+                <span className="text-[10px] font-bold px-2 py-0.5 rounded-full" style={{ background: `${currentPhase.color}18`, color: currentPhase.color, border: `1px solid ${currentPhase.color}30` }}>
+                  {currentPhase.label}
+                </span>
+                {devilsAdvocate && (
+                  <span className="text-[10px] font-bold px-2 py-0.5 rounded-full border border-orange-500/30 bg-orange-500/10 text-orange-400 flex items-center gap-1">
+                    <FlameKindling className="w-2.5 h-2.5" />DA
+                  </span>
+                )}
                 <span className="flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-full border"
                   style={debate.model === 'claude'
                     ? { background: 'rgba(139,92,246,0.1)', borderColor: 'rgba(139,92,246,0.3)', color: '#8b5cf6' }
@@ -243,6 +281,48 @@ export default function DebateSessionPage() {
 
           {/* Topic label */}
           <p className="text-center text-[10px] text-muted/40 mt-2 truncate max-w-4xl mx-auto italic">&ldquo;{debate.topic}&rdquo;</p>
+
+          {/* Phases progress */}
+          <div className="flex items-center gap-1 mt-3 max-w-4xl mx-auto">
+            {PHASES.map((phase, i) => {
+              const completed = phase.rounds.every(r => r <= debate.rounds.length)
+              const active = phase.rounds.includes(debate.rounds.length + 1) && debate.status === 'active'
+              return (
+                <div key={phase.label} className="flex-1 flex flex-col items-center gap-1">
+                  <div className={cn('w-full h-1 rounded-full transition-all', completed || active ? '' : 'opacity-25')}
+                    style={{ backgroundColor: completed || active ? phase.color : '#1e3a6e' }} />
+                  <span className={cn('text-[9px] font-bold transition-all', active ? '' : completed ? 'opacity-60' : 'opacity-25')}
+                    style={{ color: phase.color }}>
+                    {phase.label}
+                    {active && <span className="ml-0.5 inline-block w-1 h-1 rounded-full align-middle bg-current animate-blink" />}
+                  </span>
+                </div>
+              )
+            })}
+          </div>
+
+          {/* Emotional bias warning */}
+          <AnimatePresence>
+            {lastBias !== 'none' && debate.status === 'active' && (
+              <motion.div initial={{ opacity: 0, y: -4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}
+                className={cn('flex items-center gap-2 mt-2 px-3 py-1.5 rounded-xl text-[11px] font-medium max-w-4xl mx-auto',
+                  lastBias === 'strong' ? 'bg-red-500/10 border border-red-500/20 text-red-300' : 'bg-amber-500/10 border border-amber-500/20 text-amber-300'
+                )}>
+                <Brain className="w-3.5 h-3.5 flex-shrink-0" />
+                {lastBias === 'strong'
+                  ? 'Strong emotional bias detected in your last argument — try to anchor with evidence.'
+                  : 'Mild emotional bias detected — your argument has emotional weight but could use more logic.'}
+              </motion.div>
+            )}
+          </AnimatePresence>
+
+          {/* Devil's Advocate mode banner */}
+          {devilsAdvocate && debate.rounds.length === 0 && (
+            <div className="flex items-center gap-2 mt-2 px-3 py-1.5 rounded-xl text-[11px] font-medium border border-orange-500/20 bg-orange-500/8 text-orange-300/80 max-w-4xl mx-auto">
+              <FlameKindling className="w-3.5 h-3.5 flex-shrink-0 text-orange-400" />
+              Devil&apos;s Advocate mode — Skippy agrees with your goal but will dissect every flaw in your reasoning.
+            </div>
+          )}
         </div>
 
         {/* ── Arena ── */}
@@ -430,49 +510,132 @@ function ConclusionScreen({ debate, onViewNote, onBack }: { debate: Debate; onVi
   const WinIcon = debate.winner === 'user' ? Trophy : debate.winner === 'ai' ? Bot : Equal
   const winColor = debate.winner === 'user' ? '#10b981' : debate.winner === 'ai' ? '#e8b84b' : '#64748b'
   const winLabel = debate.winner === 'user' ? 'You won the debate!' : debate.winner === 'ai' ? 'Skippy wins this one.' : 'It\'s a draw.'
+  const devilsAdvocate = debate.model?.endsWith('-da') ?? false
+
+  const totalRounds = debate.rounds.length
+  const avgUserScore = totalRounds > 0 ? Math.round(debate.rounds.reduce((s, r) => s + r.userScore, 0) / totalRounds) : 50
+  const avgAiScore = totalRounds > 0 ? Math.round(debate.rounds.reduce((s, r) => s + r.aiScore, 0) / totalRounds) : 50
+
+  // Find strongest round for each side
+  const strongestUser = debate.rounds.reduce((best, r) => r.userScore > (best?.userScore ?? -1) ? r : best, debate.rounds[0])
+  const strongestAi   = debate.rounds.reduce((best, r) => r.aiScore   > (best?.aiScore   ?? -1) ? r : best, debate.rounds[0])
+
+  // Confidence: based on winner's avg score
+  const confidenceScore = debate.winner === 'user' ? avgUserScore : debate.winner === 'ai' ? avgAiScore : 50
+  const confidenceLabel = confidenceScore >= 70 ? 'High' : confidenceScore >= 55 ? 'Moderate' : 'Narrow'
+  const confidenceColor = confidenceScore >= 70 ? '#10b981' : confidenceScore >= 55 ? '#e8b84b' : '#64748b'
 
   return (
     <div className="h-[calc(100dvh-3.5rem)] md:h-screen flex bg-background">
       <Sidebar />
       <div className="flex-1 overflow-y-auto pb-20 md:pb-0">
         <div className="fixed inset-0 pointer-events-none circuit-grid opacity-15" />
-        <div className="max-w-2xl mx-auto px-4 md:px-8 py-16 relative z-10">
-          <motion.div
-            initial={{ opacity: 0, scale: 0.95 }}
-            animate={{ opacity: 1, scale: 1 }}
-            className="text-center"
-          >
-            {/* Result icon */}
-            <div className="relative flex justify-center mb-6">
-              <div className="w-24 h-24 rounded-3xl flex items-center justify-center border-2 shadow-glow-gold animate-pulse-gold"
+        <div className="max-w-2xl mx-auto px-4 md:px-8 py-10 relative z-10 space-y-6">
+          <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }}>
+            {/* Winner badge */}
+            <div className="flex flex-col items-center text-center mb-8">
+              <div className="w-20 h-20 rounded-3xl flex items-center justify-center border-2 shadow-glow-gold animate-pulse-gold mb-4"
                 style={{ backgroundColor: `${winColor}12`, borderColor: `${winColor}40` }}>
-                <WinIcon className="w-12 h-12" style={{ color: winColor }} strokeWidth={1.5} />
+                <WinIcon className="w-10 h-10" style={{ color: winColor }} strokeWidth={1.5} />
               </div>
+              <h2 className="font-display text-3xl font-black text-foreground tracking-tight mb-1">{winLabel}</h2>
+              <p className="text-muted/50 text-xs uppercase tracking-widest">{debate.topic}</p>
+              {devilsAdvocate && (
+                <span className="mt-2 text-[10px] font-bold px-3 py-1 rounded-full border border-orange-500/30 bg-orange-500/10 text-orange-400 flex items-center gap-1.5">
+                  <FlameKindling className="w-3 h-3" />Devil&apos;s Advocate Session
+                </span>
+              )}
             </div>
 
-            <h2 className="font-display text-4xl font-black text-foreground mb-2 tracking-tight">{winLabel}</h2>
-            <p className="text-muted text-xs uppercase tracking-widest mb-8">{debate.topic}</p>
-
-            {/* Conclusion */}
-            <div className="glass-gold rounded-2xl p-6 text-left mb-6 border border-accent/15">
-              <div className="flex items-center gap-2 mb-3">
-                <Bot className="w-4 h-4 text-accent" strokeWidth={1.5} />
-                <span className="text-xs font-bold text-accent/70 uppercase tracking-wider">Skippy&apos;s Verdict</span>
+            {/* ── Decision Summary Card ── */}
+            <div className="glass-gold rounded-2xl border border-accent/20 overflow-hidden mb-4">
+              {/* Header */}
+              <div className="px-5 py-3 border-b border-accent/15 flex items-center gap-2">
+                <Brain className="w-4 h-4 text-accent" />
+                <span className="text-xs font-bold text-accent uppercase tracking-wider">Decision Summary</span>
+                <span className="ml-auto text-[10px] font-bold px-2 py-0.5 rounded-full" style={{ background: `${confidenceColor}15`, color: confidenceColor, border: `1px solid ${confidenceColor}30` }}>
+                  {confidenceLabel} Confidence
+                </span>
               </div>
-              <p className="text-sm text-foreground/90 leading-relaxed">{debate.conclusion}</p>
-            </div>
 
-            {/* Round summary */}
-            <div className="space-y-2 mb-8">
-              {debate.rounds.map((r) => (
-                <div key={r.id} className="flex items-center gap-3 px-4 py-2 rounded-xl bg-surface border border-border text-xs">
-                  <span className="text-muted/40 w-14">Round {r.roundNumber}</span>
-                  <div className="flex-1 h-1 bg-surface-3 rounded-full overflow-hidden">
-                    <div className="h-full rounded-full" style={{ width: `${r.userScore}%`, background: 'linear-gradient(90deg, #2d6ae0, #e8b84b)' }} />
+              <div className="p-5 space-y-4">
+                {/* Score row */}
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="text-center p-3 rounded-xl bg-background/40 border border-navy-bright/20">
+                    <div className="flex items-center justify-center gap-1 mb-1">
+                      <User className="w-3 h-3 text-navy-bright/60" />
+                      <span className="text-[10px] text-muted/50">You</span>
+                    </div>
+                    <div className="text-2xl font-black text-navy-bright">{avgUserScore}%</div>
+                    <div className="text-[10px] text-muted/40">avg confidence</div>
                   </div>
-                  <span className="text-muted/40 w-32 text-right">You {r.userScore}% · AI {r.aiScore}%</span>
+                  <div className="text-center p-3 rounded-xl bg-background/40 border border-accent/20">
+                    <div className="flex items-center justify-center gap-1 mb-1">
+                      <Bot className="w-3 h-3 text-accent/60" strokeWidth={1.5} />
+                      <span className="text-[10px] text-muted/50">Skippy</span>
+                    </div>
+                    <div className="text-2xl font-black text-accent">{avgAiScore}%</div>
+                    <div className="text-[10px] text-muted/40">avg confidence</div>
+                  </div>
                 </div>
-              ))}
+
+                {/* Skippy's verdict */}
+                <div>
+                  <p className="text-[10px] font-bold text-accent/70 uppercase tracking-wider mb-1.5">Skippy&apos;s Verdict</p>
+                  <p className="text-sm text-foreground/90 leading-relaxed">{debate.conclusion}</p>
+                </div>
+
+                {/* Strongest arguments */}
+                {totalRounds > 0 && (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    {strongestUser && (
+                      <div className="p-3 rounded-xl border border-navy-bright/20 bg-navy-light/30">
+                        <div className="flex items-center gap-1.5 mb-1.5">
+                          <TrendingUp className="w-3 h-3 text-navy-bright/60" />
+                          <span className="text-[10px] font-bold text-navy-bright/60 uppercase tracking-wider">Your Best Round</span>
+                          <span className="ml-auto text-[10px] font-black text-navy-bright">R{strongestUser.roundNumber}</span>
+                        </div>
+                        <p className="text-[11px] text-foreground/70 leading-relaxed line-clamp-2">{strongestUser.userArgument}</p>
+                      </div>
+                    )}
+                    {strongestAi && (
+                      <div className="p-3 rounded-xl border border-accent/20 bg-accent/5">
+                        <div className="flex items-center gap-1.5 mb-1.5">
+                          <TrendingDown className="w-3 h-3 text-accent/60" />
+                          <span className="text-[10px] font-bold text-accent/60 uppercase tracking-wider">Skippy&apos;s Best Round</span>
+                          <span className="ml-auto text-[10px] font-black text-accent">R{strongestAi.roundNumber}</span>
+                        </div>
+                        <p className="text-[11px] text-foreground/70 leading-relaxed line-clamp-2">{strongestAi.aiRebuttal}</p>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Round-by-round breakdown */}
+            <div className="p-4 bg-surface border border-border rounded-xl mb-4">
+              <p className="text-[10px] font-bold text-muted/50 uppercase tracking-wider mb-3">Round Breakdown</p>
+              <div className="space-y-2">
+                {debate.rounds.map((r) => {
+                  const userWon = r.userScore > r.aiScore
+                  const tied = r.userScore === r.aiScore
+                  return (
+                    <div key={r.id} className="flex items-center gap-3 text-xs">
+                      <span className="text-muted/40 w-12 flex-shrink-0">Round {r.roundNumber}</span>
+                      <div className="flex-1 h-1.5 bg-surface-3 rounded-full overflow-hidden relative">
+                        <div className="absolute left-0 top-0 bottom-0 rounded-l-full transition-all"
+                          style={{ width: `${r.userScore}%`, background: '#2d6ae066' }} />
+                        <div className="absolute right-0 top-0 bottom-0 rounded-r-full transition-all"
+                          style={{ width: `${r.aiScore}%`, background: '#e8b84b66' }} />
+                      </div>
+                      <span className={cn('w-16 text-right flex-shrink-0 font-bold', userWon ? 'text-navy-bright/70' : tied ? 'text-muted/40' : 'text-accent/70')}>
+                        {tied ? <Minus className="w-3 h-3 inline" /> : userWon ? `You ${r.userScore}%` : `AI ${r.aiScore}%`}
+                      </span>
+                    </div>
+                  )
+                })}
+              </div>
             </div>
 
             {/* Actions */}
