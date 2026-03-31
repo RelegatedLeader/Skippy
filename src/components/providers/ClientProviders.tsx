@@ -4,6 +4,7 @@ import { NotificationProvider } from '@/components/notifications/NotificationPro
 import { NotificationBell } from '@/components/notifications/NotificationBell'
 import { SidebarProvider } from '@/components/layout/SidebarContext'
 import { MobileBottomNav } from '@/components/layout/MobileBottomNav'
+import { GlobalVoiceListener } from '@/components/voice/GlobalVoiceListener'
 
 export function ClientProviders({ children }: { children: React.ReactNode }) {
   return (
@@ -12,6 +13,7 @@ export function ClientProviders({ children }: { children: React.ReactNode }) {
         {children}
         <NotificationBell />
         <MobileBottomNav />
+        <GlobalVoiceListener />
       </NotificationProvider>
     </SidebarProvider>
   )
