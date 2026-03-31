@@ -1,16 +1,14 @@
 'use client'
 
 import { useEffect, useRef, useCallback, useState } from 'react'
-import { motion, AnimatePresence } from 'framer-motion'
 import { createPortal } from 'react-dom'
-import Image from 'next/image'
+import { motion, AnimatePresence } from 'framer-motion'
 import { Mic, X, Loader2, Volume2, VolumeX } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-// 'ready' = overlay open, waiting for speech (replaces 'idle' inside the open overlay)
-type VoiceState = 'ready' | 'listening' | 'processing' | 'speaking' | 'error'
+type VoiceState = 'greeting' | 'ready' | 'listening' | 'processing' | 'speaking' | 'error'
 
 interface VoiceModeProps {
   onTranscript: (text: string) => Promise<string>
@@ -21,109 +19,123 @@ interface VoiceModeProps {
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-// "Skip" and "hey skip" added — user-requested
 const WAKE_WORDS = [
   'skippy', 'skip', 'hey skippy', 'hey skip',
   'ok skippy', 'ok skip', 'yo skippy', 'yo skip',
   'skipy', 'skipper',
 ]
-
-const SILENCE_MS    = 3000   // ms of silence before treating speech as done
-const MAX_LISTEN_MS = 45_000 // hard cap per listening session
-const LOOP_PAUSE_MS = 1400   // pause after speaking before next listen session
+const SILENCE_MS    = 3000
+const MAX_LISTEN_MS = 45_000
+const LOOP_PAUSE_MS = 1200
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-function getGreeting() {
+function greetingLine(): string {
   const h = new Date().getHours()
-  if (h < 5)  return 'Still up?'
-  if (h < 12) return 'Good morning'
-  if (h < 17) return 'Good afternoon'
-  if (h < 21) return 'Good evening'
-  return 'Hey, still up?'
+  if (h < 5)  return "Still up? What's on your mind?"
+  if (h < 12) return "Good morning! What can I help you with?"
+  if (h < 17) return "Hey! What can I do for you?"
+  if (h < 21) return "Good evening! What do you need?"
+  return "Hey, still up? I'm here."
 }
 
 function playChime(type: 'wake' | 'done' | 'error') {
   try {
-    const ctx  = new AudioContext()
-    const osc  = ctx.createOscillator()
+    const ctx = new AudioContext()
+    const osc = ctx.createOscillator()
     const gain = ctx.createGain()
-    osc.connect(gain); gain.connect(ctx.destination)
+    osc.connect(gain)
+    gain.connect(ctx.destination)
     if (type === 'wake') {
       osc.type = 'sine'
       osc.frequency.setValueAtTime(440, ctx.currentTime)
-      osc.frequency.linearRampToValueAtTime(680, ctx.currentTime + 0.18)
-      gain.gain.setValueAtTime(0.14, ctx.currentTime)
-      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.42)
-      osc.start(); osc.stop(ctx.currentTime + 0.42)
+      osc.frequency.linearRampToValueAtTime(880, ctx.currentTime + 0.18)
+      gain.gain.setValueAtTime(0.1, ctx.currentTime)
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.4)
+      osc.start(); osc.stop(ctx.currentTime + 0.4)
     } else if (type === 'done') {
       osc.type = 'sine'
-      osc.frequency.setValueAtTime(680, ctx.currentTime)
-      osc.frequency.linearRampToValueAtTime(440, ctx.currentTime + 0.2)
-      gain.gain.setValueAtTime(0.1, ctx.currentTime)
-      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.38)
-      osc.start(); osc.stop(ctx.currentTime + 0.38)
+      osc.frequency.setValueAtTime(660, ctx.currentTime)
+      osc.frequency.linearRampToValueAtTime(440, ctx.currentTime + 0.18)
+      gain.gain.setValueAtTime(0.08, ctx.currentTime)
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.35)
+      osc.start(); osc.stop(ctx.currentTime + 0.35)
     } else {
       osc.type = 'sine'
       osc.frequency.setValueAtTime(200, ctx.currentTime)
-      gain.gain.setValueAtTime(0.07, ctx.currentTime)
-      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.3)
-      osc.start(); osc.stop(ctx.currentTime + 0.3)
+      gain.gain.setValueAtTime(0.06, ctx.currentTime)
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.28)
+      osc.start(); osc.stop(ctx.currentTime + 0.28)
     }
-    setTimeout(() => ctx.close(), 800)
-  } catch { /* AudioContext blocked — no-op */ }
+    setTimeout(() => ctx.close(), 900)
+  } catch { /* AudioContext may be blocked */ }
 }
 
-// ─── Visual config per state ─────────────────────────────────────────────────
+// ─── Per-state config ─────────────────────────────────────────────────────────
 
-const STATE_CONFIG: Record<VoiceState, {
-  bg: string
-  glow: string       // solid rgba used as blurred ambient light behind robot
-  ringColor: string
-  label: string
-  sublabel: string
-}> = {
-  ready: {
-    bg:        'radial-gradient(ellipse at 50% 45%, rgba(12,24,58,0.98) 0%, rgba(5,9,20,0.99) 100%)',
-    glow:      'rgba(41,194,230,0.18)',
-    ringColor: 'rgba(41,194,230,0.08)',
-    label:     "I'm here",
-    sublabel:  'Tap Skippy · or say "Skippy"',
-  },
-  listening: {
-    bg:        'radial-gradient(ellipse at 50% 40%, rgba(10,28,72,0.97) 0%, rgba(5,9,20,0.99) 100%)',
-    glow:      'rgba(41,194,230,0.42)',
-    ringColor: 'rgba(41,194,230,0.38)',
-    label:     "I'm listening…",
-    sublabel:  'Go ahead — take your time',
-  },
-  processing: {
-    bg:        'radial-gradient(ellipse at 50% 45%, rgba(18,8,48,0.97) 0%, rgba(5,6,22,0.99) 100%)',
-    glow:      'rgba(124,58,237,0.42)',
-    ringColor: 'rgba(124,58,237,0.35)',
-    label:     'Thinking…',
-    sublabel:  'Working on it',
-  },
-  speaking: {
-    bg:        'radial-gradient(ellipse at 50% 45%, rgba(4,26,22,0.97) 0%, rgba(4,11,16,0.99) 100%)',
-    glow:      'rgba(16,185,129,0.38)',
-    ringColor: 'rgba(16,185,129,0.35)',
-    label:     'Skippy',
-    sublabel:  'Tap to interrupt',
-  },
-  error: {
-    bg:        'radial-gradient(ellipse at center, rgba(24,6,6,0.97) 0%, rgba(5,6,12,0.99) 100%)',
-    glow:      'rgba(239,68,68,0.28)',
-    ringColor: 'rgba(239,68,68,0.22)',
-    label:     'Hmm…',
-    sublabel:  'Something went wrong',
-  },
+const BG: Record<VoiceState, string> = {
+  greeting:   'radial-gradient(ellipse at 50% 45%, rgba(4,26,22,0.99) 0%,  rgba(4,11,16,1) 100%)',
+  ready:      'radial-gradient(ellipse at 50% 45%, rgba(12,24,58,0.99) 0%, rgba(5,9,20,1)  100%)',
+  listening:  'radial-gradient(ellipse at 50% 40%, rgba(10,28,72,0.99) 0%, rgba(5,9,20,1)  100%)',
+  processing: 'radial-gradient(ellipse at 50% 45%, rgba(18,8,48,0.99)  0%, rgba(5,6,22,1)  100%)',
+  speaking:   'radial-gradient(ellipse at 50% 45%, rgba(4,26,22,0.99)  0%, rgba(4,11,16,1) 100%)',
+  error:      'radial-gradient(ellipse at center,  rgba(24,6,6,0.99)   0%, rgba(5,6,12,1)  100%)',
 }
 
-// ─── Component ───────────────────────────────────────────────────────────────
+const GLOW: Record<VoiceState, string> = {
+  greeting:   'rgba(16,185,129,0.55)',
+  ready:      'rgba(41,194,230,0.25)',
+  listening:  'rgba(41,194,230,0.55)',
+  processing: 'rgba(124,58,237,0.55)',
+  speaking:   'rgba(16,185,129,0.55)',
+  error:      'rgba(239,68,68,0.4)',
+}
 
-export function VoiceMode({ onTranscript, chatBusy, autoActivate, className }: VoiceModeProps) {
-  const [mounted, setMounted]         = useState(false)  // SSR safety for createPortal
+const RING_COLOR: Record<VoiceState, string> = {
+  greeting:   'rgba(16,185,129,0.4)',
+  ready:      'rgba(41,194,230,0.12)',
+  listening:  'rgba(41,194,230,0.45)',
+  processing: 'rgba(124,58,237,0.4)',
+  speaking:   'rgba(16,185,129,0.4)',
+  error:      'rgba(239,68,68,0.35)',
+}
+
+const ROBOT_FILTER: Record<VoiceState, string> = {
+  greeting:   'drop-shadow(0 0 30px rgba(16,185,129,0.7))  brightness(1.08)',
+  ready:      'drop-shadow(0 0 12px rgba(41,194,230,0.3))  brightness(0.95)',
+  listening:  'drop-shadow(0 0 25px rgba(41,194,230,0.8))  brightness(1.08)',
+  processing: 'drop-shadow(0 0 26px rgba(124,58,237,0.75)) brightness(1.05)',
+  speaking:   'drop-shadow(0 0 30px rgba(16,185,129,0.7))  brightness(1.08)',
+  error:      'drop-shadow(0 0 18px rgba(239,68,68,0.5))   brightness(0.9)',
+}
+
+const MAIN_LABEL: Record<VoiceState, string> = {
+  greeting:   'Skippy',
+  ready:      "I'm here",
+  listening:  "I'm listening\u2026",
+  processing: 'Thinking\u2026',
+  speaking:   'Skippy',
+  error:      'Hmm\u2026',
+}
+
+const SUB_LABEL: Record<VoiceState, string> = {
+  greeting:   'Tap to interrupt \u00b7 start talking',
+  ready:      'Tap Skippy \u00b7 or say "Skip"',
+  listening:  'Take your time',
+  processing: 'Working on it',
+  speaking:   'Tap to interrupt',
+  error:      'Something went wrong \u00b7 tap to retry',
+}
+
+// ─── Component ────────────────────────────────────────────────────────────────
+
+export function VoiceMode({
+  onTranscript,
+  chatBusy,
+  autoActivate,
+  className,
+}: VoiceModeProps) {
+  const [mounted, setMounted]         = useState(false)
   const [open, setOpen]               = useState(false)
   const [voiceState, setVoiceState]   = useState<VoiceState>('ready')
   const [transcript, setTranscript]   = useState('')
@@ -131,58 +143,52 @@ export function VoiceMode({ onTranscript, chatBusy, autoActivate, className }: V
   const [muted, setMuted]             = useState(false)
   const [micAllowed, setMicAllowed]   = useState(true)
   const [volumeLevel, setVolumeLevel] = useState(0)
-  const [tick, setTick]               = useState(0)  // drives waveform animation
-  const [greeting]                    = useState(getGreeting)
+  const [tick, setTick]               = useState(0)
 
   // ── Refs ──────────────────────────────────────────────────────────────────
 
-  const voiceStateRef   = useRef<VoiceState>('ready')
-  const openRef         = useRef(false)
-  const mutedRef        = useRef(false)
-  const dismissingRef   = useRef(false)
-  const wakeBlockRef    = useRef(false)
+  const openRef           = useRef(false)
+  const voiceStateRef     = useRef<VoiceState>('ready')
+  const mutedRef          = useRef(false)
+  const dismissingRef     = useRef(false)
+  const wakeBlockRef      = useRef(false)
 
-  const wakeRecogRef    = useRef<SpeechRecognition | null>(null)
-  const listenRecogRef  = useRef<SpeechRecognition | null>(null)
-  const utteranceRef    = useRef<SpeechSynthesisUtterance | null>(null)
-  const streamRef       = useRef<MediaStream | null>(null)
-  const animFrameRef    = useRef<number | null>(null)
-  const silenceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const maxTimerRef     = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const loopTimerRef    = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const finalTextRef    = useRef('')
-  const onTranscriptRef = useRef(onTranscript)
-  // Forward-ref so speak/loop callbacks always see the latest startListening
+  const wakeRecogRef      = useRef<SpeechRecognition | null>(null)
+  const listenRecogRef    = useRef<SpeechRecognition | null>(null)
+  const utteranceRef      = useRef<SpeechSynthesisUtterance | null>(null)
+  const streamRef         = useRef<MediaStream | null>(null)
+  const animFrameRef      = useRef<number | null>(null)
+  const silenceTimerRef   = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const maxTimerRef       = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const loopTimerRef      = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const finalTextRef      = useRef('')
+  const onTranscriptRef   = useRef(onTranscript)
   const startListeningRef = useRef<() => void>(() => {})
+  const speakGreetingRef  = useRef<() => void>(() => {})
+  const greetingRef       = useRef(greetingLine())
 
-  useEffect(() => { voiceStateRef.current = voiceState },  [voiceState])
-  useEffect(() => { mutedRef.current = muted },             [muted])
-  useEffect(() => { openRef.current = open },               [open])
-  useEffect(() => { onTranscriptRef.current = onTranscript }, [onTranscript])
+  // Sync refs
+  useEffect(() => { openRef.current       = open },              [open])
+  useEffect(() => { voiceStateRef.current = voiceState },        [voiceState])
+  useEffect(() => { mutedRef.current      = muted },             [muted])
+  useEffect(() => { onTranscriptRef.current = onTranscript },    [onTranscript])
 
-  // Waveform tick — 12fps is plenty for smooth feel
+  // Mount flag for portal (avoids SSR mismatch)
+  useEffect(() => setMounted(true), [])
+
+  // Waveform animation tick (80ms = ~12fps is plenty)
   useEffect(() => {
     const id = setInterval(() => setTick(t => t + 1), 80)
     return () => clearInterval(id)
   }, [])
 
-  // Mount tracking (needed for createPortal — avoids SSR mismatch)
-  useEffect(() => setMounted(true), [])
-
-  // Lock html scroll when overlay open — stops iOS chrome / bottom nav bleeding through
-  useEffect(() => {
-    if (open) {
-      document.documentElement.style.setProperty('overflow', 'hidden')
-    } else {
-      document.documentElement.style.removeProperty('overflow')
-    }
-    return () => { document.documentElement.style.removeProperty('overflow') }
-  }, [open])
-
   // ── Volume visualiser ─────────────────────────────────────────────────────
 
   const stopVolumeAnalysis = useCallback(() => {
-    if (animFrameRef.current) { cancelAnimationFrame(animFrameRef.current); animFrameRef.current = null }
+    if (animFrameRef.current) {
+      cancelAnimationFrame(animFrameRef.current)
+      animFrameRef.current = null
+    }
     setVolumeLevel(0)
     streamRef.current?.getTracks().forEach(t => t.stop())
     streamRef.current = null
@@ -204,67 +210,95 @@ export function VoiceMode({ onTranscript, chatBusy, autoActivate, className }: V
         animFrameRef.current = requestAnimationFrame(frame)
       }
       animFrameRef.current = requestAnimationFrame(frame)
-    } catch { /* silently skip */ }
+    } catch { /* volume viz optional */ }
   }, [])
 
-  // ── TTS — fixed for iOS + async voice loading ─────────────────────────────
+  // ── TTS ───────────────────────────────────────────────────────────────────
+  // iOS CRITICAL: speechSynthesis.speak() must be called synchronously within
+  // a click/touch handler. speakGreeting() is called directly inside manualActivate()
+  // which is a button onClick — no awaits before it. This is the gesture context.
 
   const speak = useCallback((text: string, onEnd: () => void) => {
     if (!('speechSynthesis' in window)) { onEnd(); return }
-    window.speechSynthesis.cancel()
-    window.speechSynthesis.resume() // iOS: must call resume() before speaking
-    const clean = text
-      .replace(/\*\*(.+?)\*\*/g, '$1').replace(/\*(.+?)\*/g, '$1')
-      .replace(/`(.+?)`/g, '$1').replace(/#{1,6}\s/g, '')
-      .replace(/\n+/g, ' ').replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
-      .slice(0, 700)
 
-    let spoken = false
+    window.speechSynthesis.cancel()
+
+    const clean = text
+      .replace(/\*\*(.+?)\*\*/g, '$1')
+      .replace(/\*(.+?)\*/g, '$1')
+      .replace(/`(.+?)`/g, '$1')
+      .replace(/#{1,6}\s/g, '')
+      .replace(/\n+/g, ' ')
+      .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+      .trim()
+      .slice(0, 600)
+
+    if (!clean) { onEnd(); return }
+
     const doSpeak = () => {
-      if (spoken) return
-      spoken = true
       const utt = new SpeechSynthesisUtterance(clean)
       utteranceRef.current = utt
+
       const voices = window.speechSynthesis.getVoices()
-      // samantha = warm iOS voice; karen = Android; daniel/moira = UK
+      // Prefer warm natural voices; avoid robotic Google TTS
       const voice =
-        voices.find(v => /samantha|karen|daniel|moira|nicky|tessa/i.test(v.name) && v.lang.startsWith('en')) ||
+        voices.find(v => /samantha/i.test(v.name)) ||
+        voices.find(v => /karen|tessa|nicky|moira|serena/i.test(v.name) && v.lang.startsWith('en')) ||
+        voices.find(v => v.lang === 'en-US' && !v.name.toLowerCase().includes('google')) ||
         voices.find(v => v.lang === 'en-US') ||
         voices.find(v => v.lang.startsWith('en')) ||
-        voices[0] || null
+        null
+
       if (voice) utt.voice = voice
-      utt.rate = 1.05; utt.pitch = 0.92; utt.volume = 1.0; utt.lang = 'en-US'
-      utt.onend  = () => onEnd()
-      utt.onerror = () => onEnd()
+      utt.rate   = 1.05
+      utt.pitch  = 0.95
+      utt.volume = 1.0
+      utt.lang   = 'en-US'
+
+      // iOS Safari pauses synthesis silently after ~30s – resume() keeps it going
+      const keepAlive = setInterval(() => {
+        if (window.speechSynthesis.speaking) {
+          window.speechSynthesis.resume()
+        } else {
+          clearInterval(keepAlive)
+        }
+      }, 5000)
+
+      utt.onend = () => {
+        clearInterval(keepAlive)
+        utteranceRef.current = null
+        onEnd()
+      }
+      utt.onerror = (e) => {
+        console.warn('TTS error:', e.error)
+        clearInterval(keepAlive)
+        utteranceRef.current = null
+        onEnd()
+      }
+
       window.speechSynthesis.speak(utt)
     }
 
+    // Voices are loaded async on first page load
     const voices = window.speechSynthesis.getVoices()
     if (voices.length > 0) {
       doSpeak()
     } else {
-      // Voices load asynchronously on first page load — wait for them
-      let fallback: ReturnType<typeof setTimeout>
-      const handler = () => {
-        window.speechSynthesis.removeEventListener('voiceschanged', handler)
-        clearTimeout(fallback)
+      let fired = false
+      const go = () => {
+        if (fired) return
+        fired = true
+        window.speechSynthesis.removeEventListener('voiceschanged', go)
         doSpeak()
       }
-      window.speechSynthesis.addEventListener('voiceschanged', handler)
-      fallback = setTimeout(() => {
-        window.speechSynthesis.removeEventListener('voiceschanged', handler)
-        doSpeak()
-      }, 500)
+      window.speechSynthesis.addEventListener('voiceschanged', go)
+      setTimeout(go, 500)
     }
   }, [])
 
-  // Pre-warm TTS on user gesture — iOS requires gesture context for speechSynthesis
-  const prewarmSpeech = useCallback(() => {
-    if (!('speechSynthesis' in window)) return
-    window.speechSynthesis.getVoices() // kick off async voice list loading
-    const utt = new SpeechSynthesisUtterance(' ')
-    utt.volume = 0
-    window.speechSynthesis.speak(utt)
+  const stopSpeaking = useCallback(() => {
+    window.speechSynthesis?.cancel()
+    utteranceRef.current = null
   }, [])
 
   // ── Stop listening ────────────────────────────────────────────────────────
@@ -274,66 +308,43 @@ export function VoiceMode({ onTranscript, chatBusy, autoActivate, className }: V
     if (maxTimerRef.current)     { clearTimeout(maxTimerRef.current);     maxTimerRef.current = null }
     if (loopTimerRef.current)    { clearTimeout(loopTimerRef.current);    loopTimerRef.current = null }
     stopVolumeAnalysis()
-    listenRecogRef.current?.stop()
-    listenRecogRef.current = null
+    if (listenRecogRef.current) {
+      listenRecogRef.current.onend = null
+      try { listenRecogRef.current.stop() } catch {}
+      listenRecogRef.current = null
+    }
   }, [stopVolumeAnalysis])
-
-  const stopSpeaking = useCallback(() => {
-    window.speechSynthesis?.cancel()
-    utteranceRef.current = null
-  }, [])
-
-  // ── Full dismiss ──────────────────────────────────────────────────────────
-
-  const dismiss = useCallback(() => {
-    dismissingRef.current = true
-    wakeBlockRef.current  = false
-    stopListening()
-    stopSpeaking()
-    setOpen(false)
-    setVoiceState('ready')
-    setTranscript('')
-    setResponse('')
-    setTimeout(() => { dismissingRef.current = false }, 1200)
-    // Restart wake-word listener after dismiss (it was stopped due to wakeBlock)
-    setTimeout(() => {
-      if (wakeRecogRef.current) {
-        try { wakeRecogRef.current.start() } catch { /* already running */ }
-      }
-    }, 1500)
-  }, [stopListening, stopSpeaking])
 
   // ── Active listening ──────────────────────────────────────────────────────
 
   const startListening = useCallback(() => {
     if (!('SpeechRecognition' in window || 'webkitSpeechRecognition' in window)) {
       setVoiceState('error')
-      setTimeout(() => { setVoiceState('ready') }, 4000)
+      setTimeout(() => setVoiceState('ready'), 3500)
       return
     }
     if (dismissingRef.current) return
 
-    // Stop any previous active session cleanly
     stopVolumeAnalysis()
     if (listenRecogRef.current) {
       listenRecogRef.current.onend = null
-      listenRecogRef.current.stop()
+      try { listenRecogRef.current.stop() } catch {}
       listenRecogRef.current = null
     }
 
     wakeBlockRef.current = true
-    wakeRecogRef.current?.abort()
+    try { wakeRecogRef.current?.abort() } catch {}
 
     finalTextRef.current = ''
     setVoiceState('listening')
     setTranscript('')
-    setResponse('')
 
-    const SR = (window.SpeechRecognition || window.webkitSpeechRecognition) as typeof SpeechRecognition
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const SR: typeof SpeechRecognition = (window as any).SpeechRecognition ?? (window as any).webkitSpeechRecognition
     const recog = new SR()
-    recog.continuous     = true
-    recog.interimResults = true
-    recog.lang           = 'en-US'
+    recog.continuous      = true
+    recog.interimResults  = true
+    recog.lang            = 'en-US'
     recog.maxAlternatives = 1
 
     recog.onresult = (event) => {
@@ -343,9 +354,10 @@ export function VoiceMode({ onTranscript, chatBusy, autoActivate, className }: V
         const r = event.results[i]
         if (r.isFinal) {
           finalTextRef.current += ' ' + r[0].transcript
-          // Reset silence timer on each final result
           if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current)
-          silenceTimerRef.current = setTimeout(() => { recog.stop() }, SILENCE_MS)
+          silenceTimerRef.current = setTimeout(() => {
+            try { recog.stop() } catch {}
+          }, SILENCE_MS)
         } else {
           interim += r[0].transcript
         }
@@ -355,18 +367,16 @@ export function VoiceMode({ onTranscript, chatBusy, autoActivate, className }: V
 
     recog.onend = async () => {
       stopVolumeAnalysis()
-      wakeBlockRef.current = false
+      wakeBlockRef.current   = false
       listenRecogRef.current = null
 
       const text = finalTextRef.current.trim()
 
-      // Nothing said, or overlay closed, or dismissing → go back to ready/wake
       if (!text || !openRef.current || dismissingRef.current) {
         if (openRef.current && !dismissingRef.current) setVoiceState('ready')
-        // Restart wake listener
         setTimeout(() => {
           if (!wakeBlockRef.current && wakeRecogRef.current) {
-            try { wakeRecogRef.current.start() } catch { /* already running */ }
+            try { wakeRecogRef.current.start() } catch {}
           }
         }, 600)
         return
@@ -380,7 +390,6 @@ export function VoiceMode({ onTranscript, chatBusy, autoActivate, className }: V
         playChime('done')
 
         if (mutedRef.current || !aiResponse) {
-          // Muted — skip TTS, loop back
           setVoiceState('ready')
           loopTimerRef.current = setTimeout(() => {
             if (!dismissingRef.current && openRef.current) startListeningRef.current()
@@ -389,7 +398,6 @@ export function VoiceMode({ onTranscript, chatBusy, autoActivate, className }: V
           setVoiceState('speaking')
           speak(aiResponse, () => {
             if (dismissingRef.current || !openRef.current) return
-            // ── CONTINUOUS LOOP: after speaking, restart listening ──
             setVoiceState('ready')
             loopTimerRef.current = setTimeout(() => {
               if (!dismissingRef.current && openRef.current) startListeningRef.current()
@@ -399,12 +407,9 @@ export function VoiceMode({ onTranscript, chatBusy, autoActivate, className }: V
       } catch {
         setVoiceState('error')
         playChime('error')
-        // Recover: go back to ready after error
         setTimeout(() => {
-          if (openRef.current && !dismissingRef.current) {
-            setVoiceState('ready')
-          }
-        }, 3500)
+          if (openRef.current && !dismissingRef.current) setVoiceState('ready')
+        }, 3000)
       }
     }
 
@@ -413,54 +418,69 @@ export function VoiceMode({ onTranscript, chatBusy, autoActivate, className }: V
         setMicAllowed(false)
         setVoiceState('error')
       } else if (e.error !== 'aborted') {
-        // Non-fatal: will trigger onend and recover
         console.warn('SpeechRecognition error:', e.error)
       }
     }
 
     listenRecogRef.current = recog
-    recog.start()
+    try { recog.start() } catch (err) { console.warn('SR start failed:', err) }
 
-    // Volume analysis (best-effort, requires getUserMedia)
+    // Volume analysis (best-effort)
     navigator.mediaDevices
-      .getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, sampleRate: 16000 } })
+      ?.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } })
       .then(s => { streamRef.current = s; startVolumeAnalysis(s) })
-      .catch(() => { /* continue without volume viz */ })
+      .catch(() => { /* not fatal */ })
 
-    // Initial silence timeout — if nothing said in 7s, give up and go ready
-    silenceTimerRef.current = setTimeout(() => recog.stop(), 7000)
-    maxTimerRef.current     = setTimeout(() => recog.stop(), MAX_LISTEN_MS)
+    silenceTimerRef.current = setTimeout(() => { try { recog.stop() } catch {} }, 7000)
+    maxTimerRef.current     = setTimeout(() => { try { recog.stop() } catch {} }, MAX_LISTEN_MS)
   }, [speak, stopVolumeAnalysis, startVolumeAnalysis])
 
-  // Keep startListeningRef current
   useEffect(() => { startListeningRef.current = startListening }, [startListening])
+
+  // ── Speak greeting ────────────────────────────────────────────────────────
+  // Called synchronously from button click handler — iOS TTS gesture context OK.
+  // After greeting finishes, automatically starts listening.
+
+  const speakGreeting = useCallback(() => {
+    if (mutedRef.current) {
+      setTimeout(() => {
+        if (!dismissingRef.current && openRef.current) startListeningRef.current()
+      }, 300)
+      return
+    }
+    setVoiceState('greeting')
+    speak(greetingRef.current, () => {
+      if (dismissingRef.current || !openRef.current) return
+      setVoiceState('ready')
+      setTimeout(() => {
+        if (!dismissingRef.current && openRef.current) startListeningRef.current()
+      }, 500)
+    })
+  }, [speak])
+
+  useEffect(() => { speakGreetingRef.current = speakGreeting }, [speakGreeting])
 
   // ── Wake-word listener ────────────────────────────────────────────────────
 
   const startWakeListener = useCallback(() => {
     if (!('SpeechRecognition' in window || 'webkitSpeechRecognition' in window)) return
-    if (wakeRecogRef.current) return // already running
+    if (wakeRecogRef.current) return
 
-    const SR = (window.SpeechRecognition || window.webkitSpeechRecognition) as typeof SpeechRecognition
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const SR: typeof SpeechRecognition = (window as any).SpeechRecognition ?? (window as any).webkitSpeechRecognition
     const recog = new SR()
-    recog.continuous     = true
-    recog.interimResults = true
-    recog.lang           = 'en-US'
-    recog.maxAlternatives = 1
-    let window6 = ''
+    recog.continuous = true; recog.interimResults = true; recog.lang = 'en-US'
+    let buf = ''
 
     recog.onresult = (event) => {
-      if (wakeBlockRef.current || voiceStateRef.current !== 'ready') return
-      if (openRef.current) return // already open — VoiceMode is handling it
-      const latest = event.results[event.results.length - 1]
-      const word   = latest[0].transcript.toLowerCase().trim()
-      window6 = (window6 + ' ' + word).split(' ').slice(-6).join(' ')
-      if (WAKE_WORDS.some(w => window6.includes(w))) {
-        window6 = ''
-        // Open overlay and start listening
+      if (wakeBlockRef.current || openRef.current) return
+      const word = event.results[event.results.length - 1][0].transcript.toLowerCase().trim()
+      buf = (buf + ' ' + word).split(' ').slice(-6).join(' ')
+      if (WAKE_WORDS.some(w => buf.includes(w))) {
+        buf = ''
         setOpen(true)
         playChime('wake')
-        setTimeout(() => startListeningRef.current(), 350)
+        setTimeout(() => speakGreetingRef.current(), 300)
       }
     }
 
@@ -470,15 +490,29 @@ export function VoiceMode({ onTranscript, chatBusy, autoActivate, className }: V
 
     recog.onend = () => {
       wakeRecogRef.current = null
-      if (!wakeBlockRef.current) {
-        // Restart automatically
-        setTimeout(() => startWakeListener(), 400)
-      }
+      if (!wakeBlockRef.current) setTimeout(() => startWakeListener(), 400)
     }
 
     wakeRecogRef.current = recog
     try { recog.start() } catch { wakeRecogRef.current = null }
-  }, [])
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── Dismiss ───────────────────────────────────────────────────────────────
+
+  const dismiss = useCallback(() => {
+    dismissingRef.current = true
+    wakeBlockRef.current  = false
+    stopListening()
+    stopSpeaking()
+    setOpen(false)
+    setVoiceState('ready')
+    setTranscript('')
+    setResponse('')
+    setTimeout(() => { dismissingRef.current = false }, 1200)
+    setTimeout(() => {
+      if (wakeRecogRef.current) { try { wakeRecogRef.current.start() } catch {} }
+    }, 1600)
+  }, [stopListening, stopSpeaking])
 
   // ── Mount / unmount ───────────────────────────────────────────────────────
 
@@ -487,231 +521,242 @@ export function VoiceMode({ onTranscript, chatBusy, autoActivate, className }: V
     return () => {
       dismissingRef.current = true
       wakeBlockRef.current  = true
-      wakeRecogRef.current?.abort(); wakeRecogRef.current = null
-      listenRecogRef.current?.abort(); listenRecogRef.current = null
-      stopSpeaking(); stopVolumeAnalysis()
+      try { wakeRecogRef.current?.abort() }   catch {}; wakeRecogRef.current   = null
+      try { listenRecogRef.current?.abort() } catch {}; listenRecogRef.current = null
+      stopSpeaking()
+      stopVolumeAnalysis()
       if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current)
       if (maxTimerRef.current)     clearTimeout(maxTimerRef.current)
       if (loopTimerRef.current)    clearTimeout(loopTimerRef.current)
     }
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ── autoActivate (from ?voice=1 URL param) ────────────────────────────────
+  // ── autoActivate ──────────────────────────────────────────────────────────
 
   useEffect(() => {
     if (!autoActivate) return
     const t = setTimeout(() => {
       if (!dismissingRef.current) {
-        prewarmSpeech()
         setOpen(true)
         playChime('wake')
-        setTimeout(() => startListeningRef.current(), 400)
+        setTimeout(() => speakGreetingRef.current(), 200)
       }
-    }, 600)
+    }, 700)
     return () => clearTimeout(t)
   }, [autoActivate]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ── Manual activate (mic button tap) ─────────────────────────────────────
+  // ── Manual activate ───────────────────────────────────────────────────────
+  // speakGreeting() is called SYNCHRONOUSLY in this click handler.
+  // This is the iOS gesture context — TTS will work without popup blocking.
 
   const manualActivate = useCallback(() => {
     if (chatBusy) return
     if (open) {
-      if (voiceState === 'speaking') { stopSpeaking(); startListeningRef.current() }
-      else dismiss()
+      if (voiceState === 'speaking' || voiceState === 'greeting') {
+        stopSpeaking()
+        startListeningRef.current()
+      } else {
+        dismiss()
+      }
       return
     }
-    prewarmSpeech() // establish iOS gesture context for TTS
     setOpen(true)
     playChime('wake')
-    setTimeout(() => startListeningRef.current(), 250)
-  }, [chatBusy, open, voiceState, stopSpeaking, dismiss, prewarmSpeech])
+    speakGreeting()
+  }, [chatBusy, open, voiceState, stopSpeaking, dismiss, speakGreeting])
 
-  // Tap orb in "ready" state → start listening
+  // ── Orb / robot tap ───────────────────────────────────────────────────────
+
   const orbTap = useCallback(() => {
-    if (voiceState === 'ready')    startListeningRef.current()
-    if (voiceState === 'speaking') { stopSpeaking(); startListeningRef.current() }
-    if (voiceState === 'listening') stopListening()
+    if (voiceState === 'ready')
+      startListeningRef.current()
+    else if (voiceState === 'listening')
+      { stopListening(); setVoiceState('ready') }
+    else if (voiceState === 'speaking' || voiceState === 'greeting')
+      { stopSpeaking(); startListeningRef.current() }
   }, [voiceState, stopListening, stopSpeaking])
 
-  // ── Waveform bars (animated via `tick`) ───────────────────────────────────
+  // ── Waveform bars ─────────────────────────────────────────────────────────
 
+  const isTalking = voiceState === 'speaking' || voiceState === 'greeting' || voiceState === 'listening'
   const bars = Array.from({ length: 11 }, (_, i) => {
     const phase = (tick * 0.4 + i * 0.72) % (Math.PI * 2)
     if (voiceState === 'listening') {
-      return Math.max(2, 4 + Math.sin(phase) * volumeLevel * 22 + volumeLevel * 14)
-    } else if (voiceState === 'speaking') {
-      // Synthetic animation — varied heights to look like natural speech
-      return Math.max(3, 5 + Math.sin(phase) * 9 + Math.sin(phase * 1.8 + i * 0.5) * 5)
+      return Math.max(3, 5 + Math.sin(phase) * volumeLevel * 20 + volumeLevel * 14)
+    } else if (voiceState === 'speaking' || voiceState === 'greeting') {
+      return Math.max(4, 7 + Math.sin(phase) * 9 + Math.sin(phase * 1.8 + i * 0.5) * 5)
     }
     return 2
   })
 
-  const cfg = STATE_CONFIG[voiceState]
+  // ── Portal overlay ────────────────────────────────────────────────────────
+  // Renders to document.body to fully escape the backdropFilter stacking context
+  // in ChatInterface. Uses explicit top/left/right/bottom (not `inset`) for
+  // maximum iOS Safari compatibility. Does NOT set overflow:hidden on html/body
+  // as that breaks position:fixed on iOS Safari.
 
-  // Portaled to document.body — escapes the backdropFilter stacking context
-  // in ChatInterface which would otherwise contain position:fixed children.
-  const overlayJSX = (
+  const overlayContent = (
     <AnimatePresence>
       {open && (
         <motion.div
-          key="voice-space"
+          key="skippy-voice"
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
-          exit={{ opacity: 0, transition: { duration: 0.3 } }}
-          transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
+          exit={{ opacity: 0, transition: { duration: 0.25 } }}
+          transition={{ duration: 0.2 }}
           style={{
             position: 'fixed',
-            inset: 0,
-            zIndex: 9999,
-            background: cfg.bg,
+            top: 0, left: 0, right: 0, bottom: 0,
+            width: '100%', height: '100%',
+            zIndex: 2147483647,
+            background: BG[voiceState],
             display: 'flex',
             flexDirection: 'column',
             alignItems: 'center',
-            justifyContent: 'space-between',
-            overscrollBehavior: 'none',
-            touchAction: 'none',
-            userSelect: 'none',
+            overflow: 'hidden',
           }}
         >
-            {/* Dot grid */}
-          <div
-            style={{
-              position: 'absolute', inset: 0, pointerEvents: 'none',
-              backgroundImage: 'radial-gradient(circle, rgba(41,194,230,0.055) 1px, transparent 1px)',
-              backgroundSize: '38px 38px',
-              maskImage: 'radial-gradient(ellipse at center, black 20%, transparent 75%)',
-              WebkitMaskImage: 'radial-gradient(ellipse at center, black 20%, transparent 75%)',
-            }}
-          />
+          {/* Subtle dot grid backdrop */}
+          <div style={{
+            position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, pointerEvents: 'none',
+            backgroundImage: 'radial-gradient(circle, rgba(41,194,230,0.055) 1px, transparent 1px)',
+            backgroundSize: '36px 36px',
+            maskImage: 'radial-gradient(ellipse at center, black 20%, transparent 72%)',
+            WebkitMaskImage: 'radial-gradient(ellipse at center, black 20%, transparent 72%)',
+          }} />
 
           {/* ── Top bar ── */}
-          <div style={{ position: 'relative', zIndex: 10, width: '100%', display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', padding: '0 20px', paddingTop: 'max(env(safe-area-inset-top), 20px)' }}>
-            <motion.div initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }}>
-              <p className="text-[11px] font-bold uppercase tracking-[0.18em]" style={{ color: 'rgba(41,194,230,0.5)' }}>
-                {greeting}
+          <div style={{
+            position: 'relative', zIndex: 10, width: '100%',
+            display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between',
+            padding: '0 20px',
+            paddingTop: 'max(env(safe-area-inset-top, 0px), 20px)',
+            flexShrink: 0,
+          }}>
+            <div>
+              <p style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.18em', color: 'rgba(41,194,230,0.5)', margin: 0 }}>
+                {voiceState === 'greeting' || voiceState === 'speaking' ? 'Speaking'
+                  : voiceState === 'listening' ? 'Listening'
+                  : voiceState === 'processing' ? 'Thinking'
+                  : 'Ready'}
               </p>
-              <p className="font-black text-xl text-foreground/90 tracking-tight leading-tight mt-0.5">Skippy</p>
-              <p className="text-[10px] mt-1 font-medium" style={{ color: 'rgba(100,116,139,0.5)' }}>
-                Voice processed locally · nothing leaves your device
+              <p style={{ fontWeight: 900, fontSize: 22, color: 'rgba(216,232,248,0.92)', margin: '3px 0 0', letterSpacing: '-0.02em' }}>
+                Skippy
               </p>
-            </motion.div>
-            <motion.button
-              initial={{ opacity: 0, scale: 0.7 }}
-              animate={{ opacity: 1, scale: 1 }}
-              transition={{ delay: 0.08 }}
+              <p style={{ fontSize: 10, color: 'rgba(100,116,139,0.5)', margin: '2px 0 0' }}>
+                Voice processed locally &middot; nothing leaves your device
+              </p>
+            </div>
+            <button
               onClick={dismiss}
-              className="mt-1 p-2.5 rounded-full transition-all active:scale-90"
-              style={{ background: 'rgba(255,255,255,0.07)', border: '1px solid rgba(255,255,255,0.12)' }}
+              style={{
+                marginTop: 4, padding: 10, borderRadius: '50%', cursor: 'pointer',
+                background: 'rgba(255,255,255,0.07)', border: '1px solid rgba(255,255,255,0.12)',
+                color: 'rgba(148,163,184,0.7)', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                flexShrink: 0,
+              }}
             >
-              <X className="w-4 h-4 text-muted" />
-            </motion.button>
+              <X style={{ width: 16, height: 16 }} />
+            </button>
           </div>
 
-          {/* ── Robot + rings + waveform ── */}
-          <div style={{ position: 'relative', flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', width: '100%', gap: 16 }}>
-
-            {/* Ambient glow */}
+          {/* ── Robot + rings ── */}
+          <div style={{
+            flex: 1, position: 'relative',
+            display: 'flex', flexDirection: 'column',
+            alignItems: 'center', justifyContent: 'center',
+            width: '100%', gap: 18, minHeight: 0,
+          }}>
+            {/* Ambient glow ball */}
             <motion.div
               style={{
-                position: 'absolute', width: 340, height: 340, borderRadius: '50%',
-                background: cfg.glow, filter: 'blur(70px)', pointerEvents: 'none',
+                position: 'absolute', width: 320, height: 320, borderRadius: '50%',
+                background: GLOW[voiceState], filter: 'blur(72px)', pointerEvents: 'none',
               }}
-              animate={{ scale: [1, 1.15, 1], opacity: [0.7, 1, 0.7] }}
-              transition={{ duration: 3.8, repeat: Infinity, ease: 'easeInOut' }}
+              animate={{ scale: [1, 1.18, 1], opacity: [0.65, 1, 0.65] }}
+              transition={{ duration: 3.6, repeat: Infinity, ease: 'easeInOut' }}
             />
 
-            {/* Pulsing rings — listening + speaking */}
+            {/* Pulsing rings while active */}
             <AnimatePresence>
-              {(voiceState === 'listening' || voiceState === 'speaking') &&
-                [0, 1, 2].map(i => (
-                  <motion.div
-                    key={i}
-                    style={{
-                      position: 'absolute',
-                      width: 220 + i * 60, height: 220 + i * 60,
-                      borderRadius: '50%',
-                      border: `1.5px solid ${cfg.ringColor}`,
-                      pointerEvents: 'none',
-                    }}
-                    initial={{ scale: 0.7, opacity: 0 }}
-                    animate={{
-                      scale: voiceState === 'listening'
-                        ? [1, 1 + volumeLevel * 0.25 + 0.07 + i * 0.06, 1]
-                        : [1, 1.08 + i * 0.06, 1],
-                      opacity: [0.2, 0.5, 0.2],
-                    }}
-                    exit={{ scale: 0.7, opacity: 0, transition: { duration: 0.3 } }}
-                    transition={{ duration: 1.8 + i * 0.5, repeat: Infinity, ease: 'easeInOut', delay: i * 0.3 }}
-                  />
-                ))
-              }
+              {isTalking && [0, 1, 2].map(i => (
+                <motion.div
+                  key={i}
+                  style={{
+                    position: 'absolute',
+                    width: 230 + i * 62, height: 230 + i * 62,
+                    borderRadius: '50%',
+                    border: `1.5px solid ${RING_COLOR[voiceState]}`,
+                    pointerEvents: 'none',
+                  }}
+                  initial={{ scale: 0.65, opacity: 0 }}
+                  animate={{
+                    scale: voiceState === 'listening'
+                      ? [1, 1 + volumeLevel * 0.22 + 0.07 + i * 0.06, 1]
+                      : [1, 1.09 + i * 0.06, 1],
+                    opacity: [0.18, 0.48, 0.18],
+                  }}
+                  exit={{ scale: 0.65, opacity: 0, transition: { duration: 0.28 } }}
+                  transition={{ duration: 1.8 + i * 0.5, repeat: Infinity, ease: 'easeInOut', delay: i * 0.3 }}
+                />
+              ))}
             </AnimatePresence>
 
-            {/* Skippy robot — animated per voice state */}
+            {/* Skippy robot — plain <img>, no Next.js Image dependency */}
             <motion.div
               onClick={orbTap}
-              style={{ position: 'relative', width: 220, height: 220, zIndex: 10, flexShrink: 0, cursor: 'pointer' }}
+              style={{ position: 'relative', zIndex: 10, width: 220, height: 220, flexShrink: 0, cursor: 'pointer' }}
               animate={
-                voiceState === 'processing'
-                  ? { scale: [1, 1.04, 1], rotate: [0, -2, 2, -2, 0] }
-                  : voiceState === 'speaking'
-                  ? { y: [0, -8, 2, -5, 0] }
+                voiceState === 'greeting' || voiceState === 'speaking'
+                  ? { y: [0, -10, 3, -6, 0] }
                   : voiceState === 'listening'
-                  ? { scale: [1, 1.06, 1] }
-                  : { y: [0, -7, 0] }
+                  ? { scale: [1, 1 + volumeLevel * 0.06 + 0.04, 1] }
+                  : voiceState === 'processing'
+                  ? { scale: [1, 1.04, 1], rotate: [0, -3, 3, -3, 0] }
+                  : { y: [0, -8, 0] }
               }
               transition={
-                voiceState === 'processing'
-                  ? { duration: 1.0, repeat: Infinity, ease: 'easeInOut' }
-                  : voiceState === 'speaking'
-                  ? { duration: 0.45, repeat: Infinity, ease: 'easeInOut' }
+                voiceState === 'greeting' || voiceState === 'speaking'
+                  ? { duration: 0.5, repeat: Infinity, ease: 'easeInOut' }
                   : voiceState === 'listening'
-                  ? { duration: 1.4, repeat: Infinity, ease: 'easeInOut' }
-                  : { duration: 3.2, repeat: Infinity, ease: 'easeInOut' }
+                  ? { duration: 1.2, repeat: Infinity, ease: 'easeInOut' }
+                  : voiceState === 'processing'
+                  ? { duration: 0.9, repeat: Infinity, ease: 'easeInOut' }
+                  : { duration: 3.0, repeat: Infinity, ease: 'easeInOut' }
               }
             >
-              <Image
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img
                 src="/img/skippyENHANCED3D-removebg.png"
                 alt="Skippy"
-                width={220}
-                height={220}
-                priority
                 draggable={false}
                 style={{
-                  userSelect: 'none',
-                  filter: voiceState === 'speaking'
-                    ? 'drop-shadow(0 0 28px rgba(16,185,129,0.65)) brightness(1.06)'
-                    : voiceState === 'listening'
-                    ? 'drop-shadow(0 0 22px rgba(41,194,230,0.75)) brightness(1.06)'
-                    : voiceState === 'processing'
-                    ? 'drop-shadow(0 0 24px rgba(139,92,246,0.7)) brightness(1.03)'
-                    : 'drop-shadow(0 0 10px rgba(41,194,230,0.25)) brightness(0.96)',
+                  width: 220, height: 220, objectFit: 'contain',
+                  userSelect: 'none', display: 'block',
+                  filter: ROBOT_FILTER[voiceState],
                   transition: 'filter 0.4s ease',
                 }}
               />
             </motion.div>
 
-            {/* Waveform bars — cyan when listening (real volume), green when speaking (synthetic) */}
+            {/* Waveform bars — cyan for listening, green for speaking */}
             <AnimatePresence>
-              {(voiceState === 'listening' || voiceState === 'speaking') && (
+              {isTalking && (
                 <motion.div
-                  initial={{ opacity: 0, y: 4 }}
+                  initial={{ opacity: 0, y: 6 }}
                   animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, y: 4 }}
-                  style={{ display: 'flex', alignItems: 'flex-end', gap: 5, height: 52, zIndex: 10 }}
+                  exit={{ opacity: 0, y: 6 }}
+                  style={{ display: 'flex', alignItems: 'flex-end', gap: 5, height: 52, zIndex: 10, flexShrink: 0 }}
                 >
-                  {bars.map((h, i) => (
+                  {bars.map((h, idx) => (
                     <div
-                      key={i}
+                      key={idx}
                       style={{
-                        width: 4,
-                        height: `${Math.max(4, h)}px`,
-                        borderRadius: 9999,
-                        background: voiceState === 'speaking'
-                          ? 'rgba(16,185,129,0.88)'
-                          : `rgba(41,194,230,${0.5 + volumeLevel * 0.5})`,
+                        width: 4, height: Math.max(4, h), borderRadius: 9999, alignSelf: 'flex-end',
+                        background: voiceState === 'listening'
+                          ? `rgba(41,194,230,${0.5 + volumeLevel * 0.5})`
+                          : 'rgba(16,185,129,0.9)',
                         transition: 'height 80ms ease',
-                        alignSelf: 'flex-end',
                       }}
                     />
                   ))}
@@ -726,28 +771,39 @@ export function VoiceMode({ onTranscript, chatBusy, autoActivate, className }: V
                 initial={{ opacity: 0, y: 8 }}
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, y: -6 }}
-                transition={{ duration: 0.22 }}
-                style={{ textAlign: 'center', pointerEvents: 'none', zIndex: 10 }}
+                transition={{ duration: 0.2 }}
+                style={{ textAlign: 'center', pointerEvents: 'none', zIndex: 10, flexShrink: 0 }}
               >
-                <p className="text-xl font-bold text-foreground/90 leading-tight">{cfg.label}</p>
-                <p className="text-xs mt-1" style={{ color: 'rgba(148,163,184,0.55)' }}>{cfg.sublabel}</p>
+                <p style={{ fontSize: 20, fontWeight: 800, color: 'rgba(216,232,248,0.92)', margin: 0, letterSpacing: '-0.02em' }}>
+                  {MAIN_LABEL[voiceState]}
+                </p>
+                <p style={{ fontSize: 12, color: 'rgba(148,163,184,0.55)', margin: '6px 0 0' }}>
+                  {SUB_LABEL[voiceState]}
+                </p>
               </motion.div>
             </AnimatePresence>
           </div>
 
           {/* ── Conversation cards ── */}
-          <div style={{ position: 'relative', zIndex: 10, width: '100%', padding: '0 20px 8px', display: 'flex', flexDirection: 'column', gap: 8, maxWidth: 448 }}>
+          <div style={{
+            position: 'relative', zIndex: 10, width: '100%', maxWidth: 460,
+            padding: '0 20px 8px', display: 'flex', flexDirection: 'column', gap: 8, flexShrink: 0,
+          }}>
             <AnimatePresence>
               {transcript && (
                 <motion.div
-                  key="transcript"
+                  key="tr"
                   initial={{ opacity: 0, y: 10, scale: 0.97 }}
                   animate={{ opacity: 1, y: 0, scale: 1 }}
                   exit={{ opacity: 0 }}
-                  className="px-4 py-3 rounded-2xl text-sm text-foreground/90 leading-relaxed"
-                  style={{ background: 'rgba(12,28,70,0.75)', border: '1px solid rgba(41,194,230,0.18)', backdropFilter: 'blur(14px)' }}
+                  style={{
+                    padding: '10px 16px', borderRadius: 18, fontSize: 14,
+                    color: 'rgba(216,232,248,0.9)', lineHeight: 1.5,
+                    background: 'rgba(12,28,70,0.75)', border: '1px solid rgba(41,194,230,0.18)',
+                    backdropFilter: 'blur(14px)',
+                  }}
                 >
-                  <span className="text-[10px] font-bold uppercase tracking-widest mr-2 opacity-50">You</span>
+                  <span style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.14em', opacity: 0.5, marginRight: 8 }}>You</span>
                   {transcript}
                 </motion.div>
               )}
@@ -755,15 +811,19 @@ export function VoiceMode({ onTranscript, chatBusy, autoActivate, className }: V
             <AnimatePresence>
               {response && voiceState !== 'processing' && (
                 <motion.div
-                  key="response"
+                  key="resp"
                   initial={{ opacity: 0, y: 10, scale: 0.97 }}
                   animate={{ opacity: 1, y: 0, scale: 1 }}
                   exit={{ opacity: 0 }}
-                  className="px-4 py-3 rounded-2xl text-sm text-foreground/90 leading-relaxed"
-                  style={{ background: 'rgba(4,24,20,0.75)', border: '1px solid rgba(16,185,129,0.2)', backdropFilter: 'blur(14px)' }}
+                  style={{
+                    padding: '10px 16px', borderRadius: 18, fontSize: 14,
+                    color: 'rgba(216,232,248,0.9)', lineHeight: 1.5,
+                    background: 'rgba(4,24,20,0.75)', border: '1px solid rgba(16,185,129,0.2)',
+                    backdropFilter: 'blur(14px)',
+                  }}
                 >
-                  <span className="text-[10px] font-bold uppercase tracking-widest mr-2" style={{ color: 'rgba(16,185,129,0.65)' }}>Skippy</span>
-                  {response.slice(0, 280)}{response.length > 280 ? '…' : ''}
+                  <span style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.14em', color: 'rgba(16,185,129,0.7)', marginRight: 8 }}>Skippy</span>
+                  {response.slice(0, 300)}{response.length > 300 ? '\u2026' : ''}
                 </motion.div>
               )}
             </AnimatePresence>
@@ -771,27 +831,25 @@ export function VoiceMode({ onTranscript, chatBusy, autoActivate, className }: V
 
           {/* ── Controls ── */}
           <div style={{
-            position: 'relative', zIndex: 10, width: '100%',
-            padding: '12px 20px 0',
-            paddingBottom: 'max(env(safe-area-inset-bottom), 28px)',
+            position: 'relative', zIndex: 10, width: '100%', flexShrink: 0,
+            padding: '12px 20px',
+            paddingBottom: 'max(env(safe-area-inset-bottom, 0px), 28px)',
             borderTop: '1px solid rgba(255,255,255,0.05)',
-            display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12,
+            display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10,
           }}>
-            <div className="flex items-center gap-3">
-              {voiceState === 'speaking' && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+              {(voiceState === 'speaking' || voiceState === 'greeting') && (
                 <button
                   onClick={() => { stopSpeaking(); startListeningRef.current() }}
-                  className="px-5 py-2.5 rounded-full text-sm font-semibold transition-all active:scale-95"
-                  style={{ background: 'rgba(16,185,129,0.12)', border: '1px solid rgba(16,185,129,0.3)', color: '#6ee7b7' }}
+                  style={{ padding: '9px 20px', borderRadius: 9999, fontSize: 13, fontWeight: 600, cursor: 'pointer', background: 'rgba(16,185,129,0.12)', border: '1px solid rgba(16,185,129,0.3)', color: '#6ee7b7' }}
                 >
-                  Skip · listen
+                  Skip &middot; listen
                 </button>
               )}
               {voiceState === 'listening' && (
                 <button
                   onClick={() => { stopListening(); setVoiceState('ready') }}
-                  className="px-5 py-2.5 rounded-full text-sm font-semibold transition-all active:scale-95"
-                  style={{ background: 'rgba(41,194,230,0.1)', border: '1px solid rgba(41,194,230,0.3)', color: '#7dd3e8' }}
+                  style={{ padding: '9px 20px', borderRadius: 9999, fontSize: 13, fontWeight: 600, cursor: 'pointer', background: 'rgba(41,194,230,0.1)', border: '1px solid rgba(41,194,230,0.3)', color: '#7dd3e8' }}
                 >
                   Done talking
                 </button>
@@ -799,38 +857,57 @@ export function VoiceMode({ onTranscript, chatBusy, autoActivate, className }: V
               {voiceState === 'ready' && (
                 <button
                   onClick={() => startListeningRef.current()}
-                  className="px-5 py-2.5 rounded-full text-sm font-semibold transition-all active:scale-95"
-                  style={{ background: 'rgba(41,194,230,0.1)', border: '1px solid rgba(41,194,230,0.25)', color: '#7dd3e8' }}
+                  style={{ padding: '9px 20px', borderRadius: 9999, fontSize: 13, fontWeight: 600, cursor: 'pointer', background: 'rgba(41,194,230,0.1)', border: '1px solid rgba(41,194,230,0.25)', color: '#7dd3e8' }}
                 >
                   Tap to speak
                 </button>
               )}
+              {voiceState === 'processing' && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: 'rgba(167,139,250,0.8)', fontSize: 13 }}>
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  Thinking&hellip;
+                </div>
+              )}
+              {voiceState === 'error' && (
+                <button
+                  onClick={() => setVoiceState('ready')}
+                  style={{ padding: '9px 20px', borderRadius: 9999, fontSize: 13, fontWeight: 600, cursor: 'pointer', background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.3)', color: '#fca5a5' }}
+                >
+                  Try again
+                </button>
+              )}
               <button
                 onClick={() => setMuted(m => !m)}
-                className="p-2.5 rounded-full transition-all active:scale-95"
                 title={muted ? 'Unmute Skippy' : "Mute Skippy's voice"}
                 style={{
+                  padding: 10, borderRadius: '50%', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
                   background: muted ? 'rgba(239,68,68,0.1)' : 'rgba(255,255,255,0.05)',
                   border: `1px solid ${muted ? 'rgba(239,68,68,0.3)' : 'rgba(255,255,255,0.1)'}`,
                   color: muted ? '#fca5a5' : 'rgba(148,163,184,0.6)',
                 }}
               >
-                {muted ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}
+                {muted ? <VolumeX style={{ width: 16, height: 16 }} /> : <Volume2 style={{ width: 16, height: 16 }} />}
               </button>
             </div>
+            {!micAllowed && (
+              <p style={{ fontSize: 11, color: 'rgba(239,68,68,0.75)', textAlign: 'center', margin: 0, lineHeight: 1.4 }}>
+                Microphone access blocked. Allow microphone in browser settings, then refresh.
+              </p>
+            )}
           </div>
         </motion.div>
       )}
     </AnimatePresence>
   )
 
+  // ── Mic button in chat toolbar ────────────────────────────────────────────
+
   return (
     <>
-      {/* ── Mic button in the chat input toolbar ── */}
       <button
         onClick={manualActivate}
         disabled={!!chatBusy}
-        title="Tap to talk · or say Skip / Skippy"
+        title="Talk to Skippy"
         className={cn(
           'relative flex items-center justify-center rounded-full transition-all duration-200 group',
           'w-10 h-10 border',
@@ -846,7 +923,7 @@ export function VoiceMode({ onTranscript, chatBusy, autoActivate, className }: V
       >
         {voiceState === 'processing'
           ? <Loader2 className="w-4 h-4 text-purple-400 animate-spin" />
-          : voiceState === 'speaking'
+          : voiceState === 'speaking' || voiceState === 'greeting'
           ? <Volume2 className="w-4 h-4 text-emerald-400" />
           : voiceState === 'listening'
           ? <Mic className="w-4 h-4 text-accent animate-pulse" />
@@ -857,10 +934,8 @@ export function VoiceMode({ onTranscript, chatBusy, autoActivate, className }: V
         )}
       </button>
 
-      {/* ── Fullscreen overlay — portaled to document.body to escape parent stacking contexts ── */}
-      {mounted && createPortal(overlayJSX, document.body)}
+      {/* Portal: renders to document.body, outside all CSS stacking contexts */}
+      {mounted && createPortal(overlayContent, document.body)}
     </>
   )
 }
-
-
