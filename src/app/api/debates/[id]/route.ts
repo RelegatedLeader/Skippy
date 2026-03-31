@@ -1,6 +1,8 @@
 import { prisma } from '@/lib/db'
 import { NextRequest } from 'next/server'
 
+export const dynamic = 'force-dynamic'
+
 export async function GET(_req: NextRequest, { params }: { params: { id: string } }) {
   const debate = await prisma.debate.findUnique({
     where: { id: params.id },

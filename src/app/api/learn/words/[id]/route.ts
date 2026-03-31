@@ -2,6 +2,8 @@ import { NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
 import { updateSM2 } from '@/lib/srs'
 
+export const dynamic = 'force-dynamic'
+
 /**
  * PATCH /api/learn/words/[id]
  * Updates SM-2 state for a single word after an exercise.

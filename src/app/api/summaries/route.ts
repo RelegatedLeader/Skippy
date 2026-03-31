@@ -3,6 +3,8 @@ import { prisma } from '@/lib/db'
 import { grok, GROK_MODEL } from '@/lib/grok'
 import { decrypt } from '@/lib/encryption'
 
+export const dynamic = 'force-dynamic'
+
 function serializeSummary(s: Record<string, unknown>) {
   return { ...s, categories: JSON.parse((s.categories as string) || '[]') }
 }

@@ -1,6 +1,8 @@
 import { NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
 
+export const dynamic = 'force-dynamic'
+
 function parseMemory(m: {
   id: string; category: string; content: string; importance: number
   confidence: number; accessCount: number; lastAccessedAt: Date | null

@@ -1,6 +1,8 @@
 import { NextResponse } from 'next/server'
 import { runMemorySelfReflection } from '@/lib/memory'
 
+export const dynamic = 'force-dynamic'
+
 export const runtime     = 'nodejs'
 export const maxDuration = 300
 

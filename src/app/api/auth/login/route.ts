@@ -2,6 +2,8 @@ import { NextResponse } from 'next/server'
 import { verifySecret, createSessionToken, getAuth } from '@/lib/auth'
 import { SESSION_COOKIE, SESSION_MAX_AGE } from '@/lib/session'
 
+export const dynamic = 'force-dynamic'
+
 export async function POST(req: Request) {
   try {
     const { username, password, accessCode } = await req.json()

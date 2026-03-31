@@ -2,6 +2,8 @@ import { NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
 import { encrypt, decrypt } from '@/lib/encryption'
 
+export const dynamic = 'force-dynamic'
+
 type SerializedNote = Record<string, unknown> & { title: string; content: string; tags: string[]; linkedNoteIds: string[] }
 
 function serialize(note: Record<string, unknown>): SerializedNote {

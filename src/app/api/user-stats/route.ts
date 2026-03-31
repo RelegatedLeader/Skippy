@@ -1,6 +1,8 @@
 import { NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
 
+export const dynamic = 'force-dynamic'
+
 function getLevel(xp: number): { level: number; name: string; nextXP: number; currentXP: number } {
   const thresholds = [0, 100, 250, 500, 1000, 2000]
   const names = ['Starter', 'Apprentice', 'Focused', 'Consistent', 'Master', 'Legend']

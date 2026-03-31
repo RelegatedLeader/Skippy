@@ -3,6 +3,8 @@ import { prisma } from '@/lib/db'
 import { HSK_WORDS } from '@/lib/hsk-data'
 import { pickExerciseType } from '@/lib/srs'
 
+export const dynamic = 'force-dynamic'
+
 const MAX_NEW_PER_SESSION = 5
 const MAX_REVIEW_PER_SESSION = 10
 
