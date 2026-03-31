@@ -3,6 +3,9 @@ import { buildSystemPrompt, extractMemoriesFromDebate } from '@/lib/memory'
 import { getAICompletion, type AIModel } from '@/lib/ai'
 import { NextRequest } from 'next/server'
 
+export const runtime = 'nodejs'
+export const maxDuration = 60
+
 // POST /api/debates/[id]/conclude — end the debate, generate summary, optionally save as note
 export async function POST(req: NextRequest, { params }: { params: { id: string } }) {
   const { saveAsNote, concededBy } = await req.json()
@@ -15,7 +18,7 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
   if (!debate) return new Response('Not found', { status: 404 })
 
   const systemPrompt = await buildSystemPrompt()
-  const model = (debate.model as AIModel) || 'grok'
+  const model = ((debate.model || 'grok').replace('-da', '')) as AIModel
 
   // Determine winner from final scores
   const lastRound = debate.rounds[debate.rounds.length - 1]

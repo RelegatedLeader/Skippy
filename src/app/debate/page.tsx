@@ -3,7 +3,7 @@
 import { useEffect, useState, useCallback } from 'react'
 import { useRouter } from 'next/navigation'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Swords, Plus, Trophy, Equal, Trash2, Clock, ChevronRight, Bot, Shield, Zap, Cpu, Menu } from 'lucide-react'
+import { Swords, Plus, Trophy, Equal, Trash2, Clock, ChevronRight, Bot, Shield, Zap, Cpu, Menu, FlameKindling, AlertCircle } from 'lucide-react'
 import { Sidebar } from '@/components/layout/Sidebar'
 import { useSidebar } from '@/components/layout/SidebarContext'
 import { cn, formatRelativeTime } from '@/lib/utils'
@@ -48,6 +48,8 @@ export default function DebatePage() {
   const [topic, setTopic] = useState('')
   const [userStance, setUserStance] = useState('')
   const [debateModel, setDebateModel] = useState<DebateModel>('grok')
+  const [devilsAdvocate, setDevilsAdvocate] = useState(false)
+  const [startError, setStartError] = useState('')
 
   const fetchDebates = useCallback(async () => {
     setLoading(true)
@@ -69,16 +71,26 @@ export default function DebatePage() {
   const startDebate = async () => {
     if (!topic.trim() || !userStance.trim()) return
     setCreating(true)
+    setStartError('')
     try {
       const res = await fetch('/api/debates', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ topic: topic.trim(), userStance: userStance.trim(), model: debateModel }),
+        body: JSON.stringify({
+          topic: topic.trim(),
+          userStance: userStance.trim(),
+          model: devilsAdvocate ? `${debateModel}-da` : debateModel,
+        }),
       })
       if (res.ok) {
         const debate = await res.json()
         router.push(`/debate/${debate.id}`)
+      } else {
+        const msg = await res.text().catch(() => '')
+        setStartError(msg || 'Something went wrong. Please try again.')
       }
+    } catch {
+      setStartError('Network error. Check your connection and try again.')
     } finally { setCreating(false) }
   }
 
@@ -207,6 +219,36 @@ export default function DebatePage() {
                       </div>
                     </div>
 
+                    {/* Devil's advocate toggle */}
+                    <button
+                      onClick={() => setDevilsAdvocate((p) => !p)}
+                      className={cn(
+                        'w-full flex items-start gap-3 px-4 py-3 rounded-xl border transition-all text-left',
+                        devilsAdvocate
+                          ? 'border-orange-500/40 bg-orange-500/10'
+                          : 'border-border bg-surface hover:border-border/80'
+                      )}
+                    >
+                      <FlameKindling className={cn('w-4 h-4 mt-0.5 flex-shrink-0', devilsAdvocate ? 'text-orange-400' : 'text-muted/50')} />
+                      <div>
+                        <div className={cn('text-xs font-bold', devilsAdvocate ? 'text-orange-300' : 'text-muted')}>
+                          Devil&apos;s Advocate Mode {devilsAdvocate ? '— ON' : ''}
+                        </div>
+                        <div className="text-[11px] text-muted/50 mt-0.5 leading-relaxed">
+                          Skippy agrees with you — then ruthlessly exposes every flaw in your reasoning. Stress-test your own conviction.
+                        </div>
+                      </div>
+                      <div className={cn(
+                        'ml-auto mt-0.5 w-8 h-4.5 rounded-full border flex-shrink-0 transition-all relative',
+                        devilsAdvocate ? 'bg-orange-500/30 border-orange-500/50' : 'bg-surface border-border'
+                      )}>
+                        <div className={cn(
+                          'absolute top-0.5 w-3 h-3 rounded-full transition-all',
+                          devilsAdvocate ? 'left-[calc(100%-14px)] bg-orange-400' : 'left-0.5 bg-muted/40'
+                        )} />
+                      </div>
+                    </button>
+
                     <div className="flex items-center gap-3 pt-1">
                       <motion.button
                         whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }}
@@ -224,11 +266,23 @@ export default function DebatePage() {
                           : <><Swords className="w-4 h-4 relative z-10" /><span className="relative z-10">Begin the Debate</span></>
                         }
                       </motion.button>
-                      <button onClick={() => { setShowForm(false); setTopic(''); setUserStance('') }}
+                      <button onClick={() => { setShowForm(false); setTopic(''); setUserStance(''); setStartError(''); setDevilsAdvocate(false) }}
                         className="text-xs text-muted/50 hover:text-muted transition-colors px-3 py-2">
                         Cancel
                       </button>
                     </div>
+
+                    {/* Error feedback */}
+                    {startError && (
+                      <motion.div
+                        initial={{ opacity: 0, y: -4 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        className="flex items-center gap-2 px-4 py-3 rounded-xl text-sm text-red-300 border border-red-500/20 bg-red-500/10"
+                      >
+                        <AlertCircle className="w-4 h-4 flex-shrink-0" />
+                        {startError}
+                      </motion.div>
+                    )}
                   </div>
                 </div>
               </motion.div>

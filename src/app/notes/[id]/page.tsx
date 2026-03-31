@@ -56,7 +56,7 @@ export default function NoteEditorPage({ params }: { params: { id: string } }) {
   const [memories, setMemories] = useState<Memory[]>([])
   const [showLinkPicker, setShowLinkPicker] = useState(false)
   const [linkSearch, setLinkSearch] = useState('')
-  const [showPanel, setShowPanel] = useState(true)
+  const [showPanel, setShowPanel] = useState(false)
   const [activeTab, setActiveTab] = useState<'context' | 'chat'>('context')
 
   // Skippy inline chat state
@@ -288,7 +288,7 @@ export default function NoteEditorPage({ params }: { params: { id: string } }) {
         className="sticky top-0 z-20 backdrop-blur-md border-b"
         style={{ background: 'rgba(6,13,26,0.92)', borderColor: `${note.color}28` }}
       >
-        <div className="px-6 py-3 flex items-center gap-4">
+        <div className="px-2 sm:px-6 py-3 flex items-center gap-1.5 sm:gap-4">
           {/* Left group */}
           <div className="flex items-center gap-3 flex-shrink-0">
             <NextLink href="/notes" className="p-2 rounded-xl text-muted hover:text-foreground transition-colors"
@@ -328,7 +328,7 @@ export default function NoteEditorPage({ params }: { params: { id: string } }) {
             </div>
 
             {/* Save indicator */}
-            <div className="flex items-center gap-1.5 text-xs" style={{ color: 'rgba(77,112,153,0.5)' }}>
+            <div className="hidden sm:flex items-center gap-1.5 text-xs" style={{ color: 'rgba(77,112,153,0.5)' }}>
               {saving ? (
                 <><Loader2 className="w-3 h-3 animate-spin" />Saving…</>
               ) : (
@@ -339,7 +339,7 @@ export default function NoteEditorPage({ params }: { params: { id: string } }) {
 
           {/* Center: editor toolbar */}
           {editor && (
-            <div className="flex items-center gap-0.5 overflow-x-auto flex-1 justify-center">
+            <div className="flex items-center gap-0.5 overflow-x-auto scrollbar-none flex-1 min-w-0 justify-center">
               {[
                 { icon: Bold,        action: () => editor.chain().focus().toggleBold().run(),               isActive: editor.isActive('bold'),                   title: 'Bold' },
                 { icon: Italic,      action: () => editor.chain().focus().toggleItalic().run(),             isActive: editor.isActive('italic'),                 title: 'Italic' },
@@ -377,7 +377,7 @@ export default function NoteEditorPage({ params }: { params: { id: string } }) {
 
             <NextLink
               href={`/debate?topic=${encodeURIComponent(note.title)}`}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-medium text-muted hover:text-foreground transition-all"
+              className="hidden sm:flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-medium text-muted hover:text-foreground transition-all"
               style={{ background: 'rgba(15,39,89,0.4)', border: '1px solid rgba(30,58,110,0.8)' }}
               onMouseEnter={e => (e.currentTarget.style.borderColor = 'rgba(41,194,230,0.3)')}
               onMouseLeave={e => (e.currentTarget.style.borderColor = 'rgba(30,58,110,0.8)')}
@@ -387,7 +387,7 @@ export default function NoteEditorPage({ params }: { params: { id: string } }) {
             </NextLink>
 
             {/* Export dropdown */}
-            <div className="relative">
+            <div className="relative hidden sm:block">
               <button
                 onClick={() => setShowExportMenu(!showExportMenu)}
                 className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-medium text-muted hover:text-foreground transition-all"
@@ -448,7 +448,7 @@ export default function NoteEditorPage({ params }: { params: { id: string } }) {
       {/* Main layout */}
       <div className="flex flex-1 overflow-hidden">
         {/* Editor area */}
-        <div className="flex-1 overflow-y-auto px-8 py-8 max-w-3xl mx-auto w-full">
+        <div className="flex-1 overflow-y-auto px-4 sm:px-8 py-5 sm:py-8 max-w-3xl mx-auto w-full">
           {/* Colored top bar */}
           <div className="h-[3px] w-16 rounded-full mb-8 opacity-70" style={{ backgroundColor: note.color }} />
 
@@ -459,7 +459,7 @@ export default function NoteEditorPage({ params }: { params: { id: string } }) {
             value={title}
             onChange={handleTitleChange}
             placeholder="Untitled"
-            className="w-full bg-transparent font-display text-4xl font-bold text-foreground placeholder:text-muted/25 outline-none mb-5 border-none"
+            className="w-full bg-transparent font-display text-2xl sm:text-4xl font-bold text-foreground placeholder:text-muted/25 outline-none mb-5 border-none"
           />
 
           {/* Tags */}
@@ -536,14 +536,25 @@ export default function NoteEditorPage({ params }: { params: { id: string } }) {
           )}
         </div>
 
-        {/* Right panel */}
-        <aside className={cn(
-          'flex-shrink-0 border-l overflow-hidden transition-all duration-300',
-          showPanel ? 'w-72' : 'w-0 border-l-0'
+        {/* Mobile backdrop when panel is open */}
+        {showPanel && (
+          <div
+            className="fixed inset-0 z-30 md:hidden"
+            style={{ background: 'rgba(0,0,0,0.55)' }}
+            onClick={() => setShowPanel(false)}
+          />
         )}
-          style={{ borderColor: 'rgba(30,58,110,0.6)', background: 'rgba(10,26,53,0.4)' }}>
+
+        {/* Right panel — fixed drawer on mobile, side panel on desktop */}
+        <aside className={cn(
+          'overflow-hidden transition-all duration-300 border-l',
+          showPanel
+            ? 'fixed top-0 right-0 bottom-0 z-40 w-80 md:static md:flex-shrink-0 md:w-72 md:z-auto'
+            : 'w-0 border-l-0'
+        )}
+          style={{ borderColor: 'rgba(30,58,110,0.6)', background: 'rgba(6,13,26,0.97)' }}>
           {showPanel && (
-            <div className="w-72 flex flex-col h-full">
+            <div className="w-80 md:w-72 flex flex-col h-full">
               {/* Tabs */}
               <div className="flex border-b flex-shrink-0" style={{ borderColor: 'rgba(30,58,110,0.6)' }}>
                 <button

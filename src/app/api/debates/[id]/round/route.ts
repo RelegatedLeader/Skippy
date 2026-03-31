@@ -5,6 +5,7 @@ import { buildSystemPrompt } from '@/lib/memory'
 import { NextRequest } from 'next/server'
 
 export const runtime = 'nodejs'
+export const maxDuration = 120
 
 export async function POST(req: NextRequest, { params }: { params: { id: string } }) {
   const { userArgument } = await req.json()
@@ -19,7 +20,8 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
 
   const roundNumber = debate.rounds.length + 1
   const systemPrompt = await buildSystemPrompt()
-  const model = debate.model || 'grok'
+  const devilsAdvocate = debate.model?.endsWith('-da') ?? false
+  const model = (debate.model || 'grok').replace('-da', '')
 
   const historyLines = debate.rounds.map((r) =>
     `Round ${r.roundNumber}:\nUser argued: ${r.userArgument}\nSkippy rebutted: ${r.aiRebuttal}\n(Confidence → User ${r.userScore}%, Skippy ${r.aiScore}%)`
@@ -36,7 +38,28 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
     },
   })
 
-  const prompt = `You are Skippy — a sharp, deeply personal AI debating the following topic with the user.
+  const prompt = devilsAdvocate
+    ? `You are Skippy. You AGREE with the user's position on "${debate.topic}".
+Your role is their most rigorous internal critic — not opposing their goal, but exposing every flaw in their reasoning, logic, assumptions, and execution plan.
+
+USER'S STANCE: ${debate.userStance}
+YOUR OPENING (your own position, agreeing with them): ${debate.aiStance}
+
+${historyLines ? `DEBATE HISTORY:\n${historyLines}\n\n` : ''}USER'S ARGUMENT IN ROUND ${roundNumber}:
+"${userArgument}"
+
+Your task:
+
+1. REBUTTAL: Find the biggest flaw, blind spot, or logical gap in HOW they're arguing — not what they believe. Attack their reasoning quality, unexamined assumptions, and execution gaps. Be specific to this person's known patterns: how they tend to rationalise decisions, where they've been overconfident before, what they typically overlook. 2-4 sentences. No fluff.
+
+2. SCORE UPDATE: Score their REASONING quality (0-100) — not whether their position is right. 50 = making reasonable arguments; 80 = thinking with rare clarity and precision; 30 = significant logical gaps or blind spots.
+
+Respond in this EXACT format (no other text, no preamble):
+REBUTTAL: [your critique here]
+USER_SCORE: [0-100]
+AI_SCORE: [0-100]
+ROUND_VERDICT: [one of: "user_stronger" | "ai_stronger" | "tied"]`
+    : `You are Skippy — a sharp, deeply personal AI debating the following topic with the user.
 
 DEBATE TOPIC: "${debate.topic}"
 YOUR POSITION: ${debate.aiStance}
