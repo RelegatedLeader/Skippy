@@ -18,8 +18,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Mic
-import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -47,7 +47,6 @@ fun SkippyWidget(
     val context        = LocalContext.current
     val voiceState     by viewModel.voiceState.collectAsState()
     val lastResponse   by viewModel.lastResponse.collectAsState()
-    val isLoading      by viewModel.isLoading.collectAsState()
     var textInput      by remember { mutableStateOf("") }
     val keyboard       = LocalSoftwareKeyboardController.current
 
@@ -223,7 +222,7 @@ fun SkippyWidget(
                             keyboard?.hide()
                         }
                     }) {
-                        Icon(Icons.Default.Send, "Send", tint = CyanPrimary)
+                        Icon(Icons.AutoMirrored.Filled.Send, "Send", tint = CyanPrimary)
                     }
                 }
             }
