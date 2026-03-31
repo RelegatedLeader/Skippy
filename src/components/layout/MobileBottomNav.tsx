@@ -2,15 +2,15 @@
 
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
-import { MessageSquare, FileText, CheckSquare, Brain, LayoutGrid } from 'lucide-react'
+import { MessageSquare, FileText, CheckSquare, Brain, LayoutGrid, Mic } from 'lucide-react'
 import { useNotifications } from '@/components/notifications/NotificationProvider'
 
 const TABS = [
-  { href: '/chat',     icon: MessageSquare, label: 'Chat'   },
-  { href: '/notes',    icon: FileText,      label: 'Notes'  },
-  { href: '/todos',    icon: CheckSquare,   label: 'Todos'  },
-  { href: '/memory',   icon: Brain,         label: 'Memory' },
-  { href: '/summaries', icon: LayoutGrid,   label: 'More'   },
+  { href: '/chat',          icon: MessageSquare, label: 'Chat'   },
+  { href: '/notes',         icon: FileText,      label: 'Notes'  },
+  { href: '/chat?voice=1',  icon: Mic,           label: 'Voice',  voice: true },
+  { href: '/todos',         icon: CheckSquare,   label: 'Todos'  },
+  { href: '/memory',        icon: Brain,         label: 'Memory' },
 ]
 
 export function MobileBottomNav() {
@@ -33,10 +33,44 @@ export function MobileBottomNav() {
         paddingBottom: 'env(safe-area-inset-bottom)',
       }}
     >
-      {TABS.map(({ href, icon: Icon, label }) => {
-        const active = pathname.startsWith(href)
+      {TABS.map(({ href, icon: Icon, label, ...rest }) => {
+        const isVoice = 'voice' in rest && (rest as { voice?: boolean }).voice
+        const active = !isVoice && pathname === href
         const showMemoryBadge = label === 'Memory' && urgentCount > 0
         const showTodoBadge = label === 'Todos' && todoBadge > 0
+
+        if (isVoice) {
+          return (
+            <Link
+              key={href}
+              href={href}
+              className="flex-1 flex flex-col items-center justify-center gap-0.5 py-1 relative min-h-[3.5rem]"
+            >
+              {/* glowing mic pill */}
+              <span
+                className="flex items-center justify-center rounded-full transition-all active:scale-90"
+                style={{
+                  width: 42,
+                  height: 42,
+                  background: 'rgba(41,194,230,0.12)',
+                  border: '1.5px solid rgba(41,194,230,0.35)',
+                  boxShadow: '0 0 14px rgba(41,194,230,0.25), 0 0 6px rgba(41,194,230,0.15)',
+                }}
+              >
+                <Icon className="w-5 h-5" style={{ color: '#29c2e6' }} />
+              </span>
+              <span className="text-[10px] font-semibold leading-none" style={{ color: '#29c2e6' }}>
+                {label}
+              </span>
+              {/* always-on pulse dot */}
+              <span
+                className="absolute top-1.5 right-[calc(50%-9px)] w-1.5 h-1.5 rounded-full animate-pulse"
+                style={{ background: '#29c2e6', boxShadow: '0 0 6px rgba(41,194,230,0.8)' }}
+              />
+            </Link>
+          )
+        }
+
         return (
           <Link
             key={href}
