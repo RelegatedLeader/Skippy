@@ -623,25 +623,29 @@ export function VoiceMode({ onTranscript, chatBusy, autoActivate, className }: V
       setWordBoundary(null)
       clearWordTimers()
 
-      // ── Neural TTS path ────────────────────────────────────────────────────
-      const tryNeuralTTS = async (): Promise<boolean> => {
+      // ── Neural TTS (en-US-GuyNeural via msedge-tts) — no fallback ─────────
+      const doNeuralTTS = async () => {
         try {
           const res = await fetch('/api/tts', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ text: clean }),
-            signal: AbortSignal.timeout(5_000),
+            signal: AbortSignal.timeout(8_000),
           })
-          if (!res.ok) return false
+          if (!res.ok) {
+            console.warn('[VoiceMode] TTS returned', res.status)
+            onEnd()
+            return
+          }
 
           const arrayBuffer = await res.arrayBuffer()
-          if (!arrayBuffer.byteLength) return false
+          if (!arrayBuffer.byteLength) { onEnd(); return }
 
           const ctx = new AudioContext()
           audioCtxRef.current = ctx
           const audioBuf = await ctx.decodeAudioData(arrayBuffer)
 
-          // Approximate word timing across total duration
+          // Word-boundary sync: distribute words evenly across audio duration
           const words = clean.split(/\s+/)
           const totalMs = audioBuf.duration * 1000
           const msPerWord = totalMs / Math.max(words.length, 1)
@@ -650,8 +654,7 @@ export function VoiceMode({ onTranscript, chatBusy, autoActivate, className }: V
           for (let i = 0; i < words.length; i++) {
             const ci = charPos
             const cl = words[i].length
-            const delay = i * msPerWord
-            timers.push(setTimeout(() => setWordBoundary({ charIndex: ci, charLength: cl }), delay))
+            timers.push(setTimeout(() => setWordBoundary({ charIndex: ci, charLength: cl }), i * msPerWord))
             charPos += words[i].length + 1
           }
           wordTimersRef.current = timers
@@ -673,62 +676,13 @@ export function VoiceMode({ onTranscript, chatBusy, autoActivate, className }: V
           }
           source.start()
           setIsNeuralVoice(true)
-          return true
-        } catch {
-          return false
+        } catch (err) {
+          console.error('[VoiceMode] TTS error:', err)
+          onEnd()
         }
       }
 
-      // ── Web Speech API fallback ────────────────────────────────────────────
-      const doWebSpeech = () => {
-        if (!('speechSynthesis' in window)) { onEnd(); return }
-        window.speechSynthesis.cancel()
-        const doSpeak = () => {
-          const utt = new SpeechSynthesisUtterance(clean)
-          utteranceRef.current = utt
-          const voice = pickMaleVoice()
-          if (voice) utt.voice = voice
-          utt.rate   = 0.88
-          utt.pitch  = 0.6
-          utt.volume = 1.0
-          utt.lang   = 'en-US'
-
-          utt.onboundary = (e: SpeechSynthesisEvent) => {
-            if (e.name === 'word' && e.charLength > 0) setWordBoundary({ charIndex: e.charIndex, charLength: e.charLength })
-          }
-          const keepAlive = setInterval(() => {
-            if (window.speechSynthesis.speaking) window.speechSynthesis.resume()
-            else clearInterval(keepAlive)
-          }, 5000)
-          utt.onend = () => {
-            clearInterval(keepAlive)
-            utteranceRef.current = null
-            setSpeakingText('')
-            setWordBoundary(null)
-            setIsNeuralVoice(false)
-            onEnd()
-          }
-          utt.onerror = (e) => {
-            clearInterval(keepAlive)
-            utteranceRef.current = null
-            setSpeakingText('')
-            setWordBoundary(null)
-            setIsNeuralVoice(false)
-            if (e.error !== 'interrupted' && e.error !== 'canceled') onEnd()
-          }
-          window.speechSynthesis.speak(utt)
-        }
-        const voices = window.speechSynthesis.getVoices()
-        if (voices.length > 0) doSpeak()
-        else {
-          let fired = false
-          const go = () => { if (fired) return; fired = true; window.speechSynthesis.removeEventListener('voiceschanged', go); doSpeak() }
-          window.speechSynthesis.addEventListener('voiceschanged', go)
-          setTimeout(go, 600)
-        }
-      }
-
-      tryNeuralTTS().then((success) => { if (!success) doWebSpeech() })
+      doNeuralTTS()
     },
     [clearWordTimers],
   )
