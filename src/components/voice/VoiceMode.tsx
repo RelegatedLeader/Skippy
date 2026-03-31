@@ -24,11 +24,11 @@ const WAKE_WORDS = [
   'ok skippy', 'ok skip', 'yo skippy', 'yo skip',
   'skipy', 'skipper',
 ]
-const SILENCE_MS         = 1500   // ms after last FINAL result → stop
-const INTERIM_SILENCE_MS = 2800   // ms after last ANY result → force-stop if we have text
+const SILENCE_MS         = 1200   // ms after last FINAL result → stop
+const INTERIM_SILENCE_MS = 2500   // ms after last ANY result → force-stop if we have final text
 const MAX_LISTEN_MS      = 45_000
-const LOOP_PAUSE_MS      = 600    // ms between Skippy finishing and listening again
-const MAX_RESTARTS       = 8      // guard against tight SR restart loops
+const LOOP_PAUSE_MS      = 400    // ms between Skippy finishing and listening again
+const MAX_ERR_RESTARTS   = 6      // guard against tight ERROR-based restart loops (not no-speech)
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -174,7 +174,7 @@ export function VoiceMode({
   const mutedRef           = useRef(false)
   const dismissingRef      = useRef(false)
   const wakeBlockRef       = useRef(false)
-  const restartCountRef    = useRef(0)
+  const errRestartCountRef = useRef(0)   // only counts error-driven restarts, NOT no-speech
   const restartWindowRef   = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const wakeRecogRef       = useRef<SpeechRecognition | null>(null)
@@ -261,36 +261,37 @@ export function VoiceMode({
 
       const voices = window.speechSynthesis.getVoices()
 
-      // ── Male voice priority: robot character needs a deep masculine voice ──
-      // Alex      = macOS default deep clear male
-      // Fred      = macOS robotic/gruff male
-      // Daniel    = iOS/iPadOS British male
-      // Mark/James = various platform males
-      // Microsoft David = Windows male
-      // Google UK English Male = Chrome male
-      // Fallback: any en-US voice that isn't explicitly female-named
+      // ── Voice priority: natural friendly male — most human-sounding first ──
+      // Tom      = macOS, warm clear American male (best free voice on Mac)
+      // Daniel   = macOS/iOS, natural British male — second best
+      // Gordon   = macOS, Scottish male (distinct but warm)
+      // Alex     = macOS older but clear American male
+      // Liam     = iOS 16+ natural American male
+      // Reed     = iOS 16+ high-quality American male
+      // Microsoft Mark/David = Windows natural males
+      // Google UK English Male = Chrome natural male
+      // Fallback: any English non-female voice
+      const femaleNames = /samantha|karen|tessa|nicky|moira|serena|victoria|susan|zira|hazel|fiona|veena|alva|alice|amelie|ava|kate|siri|allison|ava/i
       const voice =
-        voices.find(v => /\balex\b/i.test(v.name)) ||
-        voices.find(v => /\bfred\b/i.test(v.name)) ||
-        voices.find(v => /\bdaniel\b/i.test(v.name)  && v.lang.startsWith('en')) ||
-        voices.find(v => /\bmark\b/i.test(v.name)    && v.lang.startsWith('en')) ||
-        voices.find(v => /\bjames\b/i.test(v.name)   && v.lang.startsWith('en')) ||
-        voices.find(v => /\barthur\b/i.test(v.name)  && v.lang.startsWith('en')) ||
-        voices.find(v => /\bthomas\b/i.test(v.name)  && v.lang.startsWith('en')) ||
+        voices.find(v => /\btom\b/i.test(v.name)    && v.lang.startsWith('en')) ||
+        voices.find(v => /\bdaniel\b/i.test(v.name) && v.lang.startsWith('en')) ||
+        voices.find(v => /\bliam\b/i.test(v.name)   && v.lang.startsWith('en')) ||
+        voices.find(v => /\breed\b/i.test(v.name)   && v.lang.startsWith('en')) ||
+        voices.find(v => /\bgordon\b/i.test(v.name) && v.lang.startsWith('en')) ||
+        voices.find(v => /\balex\b/i.test(v.name)   && v.lang.startsWith('en')) ||
+        voices.find(v => /\bmark\b/i.test(v.name)   && v.lang.startsWith('en')) ||
+        voices.find(v => /microsoft mark/i.test(v.name)) ||
         voices.find(v => /microsoft david/i.test(v.name)) ||
         voices.find(v => /google uk english male/i.test(v.name)) ||
-        voices.find(v =>
-          v.lang === 'en-US' &&
-          !v.name.toLowerCase().includes('google') &&
-          !/samantha|karen|tessa|nicky|moira|serena|victoria|susan|zira|hazel|fiona|veena|alva|alice|amelie|ava/i.test(v.name)
-        ) ||
-        voices.find(v => v.lang === 'en-US') ||
+        voices.find(v => v.lang === 'en-US' && !femaleNames.test(v.name) && !v.name.toLowerCase().includes('google')) ||
+        voices.find(v => v.lang === 'en-US' && !femaleNames.test(v.name)) ||
+        voices.find(v => v.lang.startsWith('en') && !femaleNames.test(v.name)) ||
         voices.find(v => v.lang.startsWith('en')) ||
         null
 
       if (voice) utt.voice = voice
-      utt.rate   = 0.95  // slightly deliberate — suits the robot character
-      utt.pitch  = 0.82  // lower = more masculine
+      utt.rate   = 1.0   // natural conversational speed
+      utt.pitch  = 0.9   // slightly warm/low but not robotic
       utt.volume = 1.0
       utt.lang   = 'en-US'
 
@@ -364,7 +365,10 @@ export function VoiceMode({
       })
     }
 
+    let liveResponse = ''
     const onChunk = (chunk: string) => {
+      liveResponse += chunk
+      setResponse(liveResponse)  // ← update display live so text matches what's being spoken
       ttsBuffer += chunk
       const { sentences, rest } = pullSentences(ttsBuffer)
       ttsBuffer = rest
@@ -376,7 +380,7 @@ export function VoiceMode({
 
     try {
       const fullResp = await onTranscriptRef.current(text, onChunk)
-      setResponse(fullResp)
+      setResponse(fullResp)  // final authoritative value
       playChime('done')
       streamDone = true
 
@@ -443,17 +447,9 @@ export function VoiceMode({
     }
     if (dismissingRef.current) return
 
-    // ── Guard against tight restart loops ──
-    restartCountRef.current++
-    if (restartWindowRef.current) clearTimeout(restartWindowRef.current)
-    restartWindowRef.current = setTimeout(() => { restartCountRef.current = 0 }, 4000)
-    if (restartCountRef.current > MAX_RESTARTS) {
-      loopTimerRef.current = setTimeout(() => {
-        restartCountRef.current = 0
-        if (!dismissingRef.current && openRef.current) startListeningRef.current()
-      }, 3000)
-      return
-    }
+    // ── Guard against tight ERROR-based restart loops only ──
+    // Normal no-speech restarts are expected and must NOT count here
+    // This counter is only incremented from the error path below
 
     stopVolumeAnalysis()
     if (silenceTimerRef.current)  { clearTimeout(silenceTimerRef.current);  silenceTimerRef.current  = null }
@@ -484,8 +480,9 @@ export function VoiceMode({
 
       // Any result resets the interim silence watchdog
       if (interimTimerRef.current) clearTimeout(interimTimerRef.current)
+      // Only force-stop if we actually have final confirmed text — not just interim
       interimTimerRef.current = setTimeout(() => {
-        if (finalTextRef.current.trim()) {
+        if (finalTextRef.current.trim().length > 2) {
           try { recog.stop() } catch {}
         }
       }, INTERIM_SILENCE_MS)
@@ -516,12 +513,12 @@ export function VoiceMode({
 
       const text = finalTextRef.current.trim()
 
-      // No speech detected — restart listening promptly, don't go idle
+      // No speech detected — restart immediately, never go idle
       if (!text || !openRef.current || dismissingRef.current) {
         if (openRef.current && !dismissingRef.current) {
           loopTimerRef.current = setTimeout(() => {
             if (!dismissingRef.current && openRef.current) startListeningRef.current()
-          }, 400)
+          }, 150)  // restart fast — no perceptible gap
         }
         return
       }
@@ -530,21 +527,36 @@ export function VoiceMode({
     }
 
     recog.onerror = (e: SpeechRecognitionErrorEvent) => {
-      // Only hard-stop on explicit permission denial — all other errors let onend restart
       if (e.error === 'not-allowed') {
         setMicAllowed(false)
         setVoiceState('error')
+        return
       }
+      // Track error-driven restarts to detect genuine crash loops
+      if (e.error !== 'no-speech' && e.error !== 'aborted') {
+        errRestartCountRef.current++
+        if (restartWindowRef.current) clearTimeout(restartWindowRef.current)
+        restartWindowRef.current = setTimeout(() => { errRestartCountRef.current = 0 }, 6000)
+        if (errRestartCountRef.current > MAX_ERR_RESTARTS) {
+          errRestartCountRef.current = 0
+          loopTimerRef.current = setTimeout(() => {
+            if (!dismissingRef.current && openRef.current) startListeningRef.current()
+          }, 3000)
+        }
+      }
+      // All other errors (no-speech, aborted, network) → let onend restart gracefully
     }
 
     listenRecogRef.current = recog
-    try { recog.start() } catch (err) { console.warn('SR start failed:', err) }
 
-    // Volume visualiser (best-effort)
-    navigator.mediaDevices
-      ?.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } })
-      .then(s => { streamRef.current = s; startVolumeAnalysis(s) })
-      .catch(() => { /* not fatal */ })
+    // Request mic + start SR together — don't wait for one before the other
+    Promise.resolve(
+      navigator.mediaDevices
+        ?.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } })
+        .then(s => { streamRef.current = s; startVolumeAnalysis(s) })
+        .catch(() => { /* volume viz optional */ })
+    )
+    try { recog.start() } catch (err) { console.warn('SR start failed:', err) }
 
     // Only a max-time hard stop — no premature cutoff
     maxTimerRef.current = setTimeout(() => { try { recog.stop() } catch {} }, MAX_LISTEN_MS)
@@ -658,6 +670,7 @@ export function VoiceMode({
       if (maxTimerRef.current)      clearTimeout(maxTimerRef.current)
       if (loopTimerRef.current)     clearTimeout(loopTimerRef.current)
       if (restartWindowRef.current) clearTimeout(restartWindowRef.current)
+      errRestartCountRef.current = 0
     }
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
