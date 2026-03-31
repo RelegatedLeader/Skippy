@@ -542,6 +542,8 @@ export function VoiceMode({ onTranscript, chatBusy, autoActivate, className }: V
   const animFrameRef   = useRef<number | null>(null)
   const loopTimerRef   = useRef<ReturnType<typeof setTimeout> | null>(null)
   const wordTimersRef  = useRef<ReturnType<typeof setTimeout>[]>([])
+  // Pre-fetch cache: sentence text → Promise<AudioBuffer|null>
+  const preFetchRef    = useRef<Map<string, Promise<AudioBuffer | null>>>(new Map())
 
   const onTranscriptRef  = useRef(onTranscript)
   const startRef         = useRef<() => void>(() => {})
@@ -599,6 +601,44 @@ export function VoiceMode({ onTranscript, chatBusy, autoActivate, className }: V
     wordTimersRef.current = []
   }, [])
 
+  // ── Persistent AudioContext — created once on first user gesture ─────────────
+  // Browsers suspend AudioContext created after async operations. By creating
+  // it eagerly and calling resume() before each play we guarantee audio works.
+  const getAudioCtx = useCallback((): AudioContext => {
+    if (!audioCtxRef.current || audioCtxRef.current.state === 'closed') {
+      audioCtxRef.current = new AudioContext()
+    }
+    return audioCtxRef.current
+  }, [])
+
+  // ── Pre-fetch TTS audio buffer ───────────────────────────────────────────────
+  // Called as soon as a sentence is known so the AudioBuffer is ready by the
+  // time the previous sentence finishes playing → zero inter-sentence gap.
+  const preFetchTTS = useCallback((text: string): Promise<AudioBuffer | null> => {
+    const cache = preFetchRef.current
+    if (cache.has(text)) return cache.get(text)!
+    const p = (async (): Promise<AudioBuffer | null> => {
+      try {
+        const res = await fetch('/api/tts', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text }),
+          signal: AbortSignal.timeout(9_000),
+        })
+        if (!res.ok) return null
+        const arr = await res.arrayBuffer()
+        if (!arr.byteLength) return null
+        const ctx = getAudioCtx()
+        await ctx.resume()
+        return await ctx.decodeAudioData(arr)
+      } catch { return null }
+    })()
+    cache.set(text, p)
+    // Evict after 60 s to avoid stale refs
+    p.then(() => setTimeout(() => cache.delete(text), 60_000))
+    return p
+  }, [getAudioCtx])
+
   // ── Neural TTS via /api/tts, Web Speech API fallback ────────────────────────
   //
   // Tries /api/tts (kokoro-js, high-quality am_puck voice) first.
@@ -623,27 +663,22 @@ export function VoiceMode({ onTranscript, chatBusy, autoActivate, className }: V
       setWordBoundary(null)
       clearWordTimers()
 
-      // ── Neural TTS (en-US-GuyNeural via msedge-tts) — no fallback ─────────
+      // ── Neural TTS (en-US-GuyNeural via msedge-tts) ─────────────────────
+      // Uses pre-fetched buffer if already available (zero-gap playback).
       const doNeuralTTS = async () => {
         try {
-          const res = await fetch('/api/tts', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ text: clean }),
-            signal: AbortSignal.timeout(8_000),
-          })
-          if (!res.ok) {
-            console.warn('[VoiceMode] TTS returned', res.status)
+          // preFetchTTS may already have the buffer ready — await its promise
+          const audioBuf = await preFetchTTS(clean)
+          if (!audioBuf) {
+            console.warn('[VoiceMode] TTS buffer null for:', clean.slice(0, 40))
             onEnd()
             return
           }
 
-          const arrayBuffer = await res.arrayBuffer()
-          if (!arrayBuffer.byteLength) { onEnd(); return }
-
-          const ctx = new AudioContext()
-          audioCtxRef.current = ctx
-          const audioBuf = await ctx.decodeAudioData(arrayBuffer)
+          const ctx = getAudioCtx()
+          // CRITICAL: resume before playing — browser autoplay policy suspends
+          // AudioContext created outside a user-gesture stack frame.
+          await ctx.resume()
 
           // Word-boundary sync: distribute words evenly across audio duration
           const words = clean.split(/\s+/)
@@ -669,8 +704,6 @@ export function VoiceMode({ onTranscript, chatBusy, autoActivate, className }: V
             setSpeakingText('')
             setWordBoundary(null)
             audioNodeRef.current = null
-            audioCtxRef.current?.close().catch(() => {})
-            audioCtxRef.current = null
             setIsNeuralVoice(false)
             onEnd()
           }
@@ -684,17 +717,15 @@ export function VoiceMode({ onTranscript, chatBusy, autoActivate, className }: V
 
       doNeuralTTS()
     },
-    [clearWordTimers],
+    [clearWordTimers, preFetchTTS, getAudioCtx],
   )
 
   const stopSpeaking = useCallback(() => {
     clearWordTimers()
-    // Stop neural audio
-    audioNodeRef.current?.stop()
+    // Stop neural audio node (but keep AudioContext alive for reuse)
+    try { audioNodeRef.current?.stop() } catch {}
     audioNodeRef.current = null
-    audioCtxRef.current?.close().catch(() => {})
-    audioCtxRef.current = null
-    // Stop Web Speech
+    // Stop Web Speech (safety)
     window.speechSynthesis?.cancel()
     utteranceRef.current = null
     setSpeakingText('')
@@ -763,7 +794,13 @@ export function VoiceMode({ onTranscript, chatBusy, autoActivate, className }: V
         ttsBuffer += chunk
         const { sentences, rest } = pullSentences(ttsBuffer)
         ttsBuffer = rest
-        if (sentences.length > 0) { ttsQueue.push(...sentences); drive() }
+        if (sentences.length > 0) {
+          // Pre-fetch TTS for ALL new sentences immediately so audio is
+          // ready to play the moment the previous sentence finishes.
+          sentences.forEach((s) => preFetchTTS(s))
+          ttsQueue.push(...sentences)
+          drive()
+        }
       }
 
       setLog((prev) => [...prev, { id: 'u' + Date.now(), role: 'user', text }])
@@ -781,7 +818,10 @@ export function VoiceMode({ onTranscript, chatBusy, autoActivate, className }: V
         }
 
         const leftover = ttsBuffer.trim()
-        if (leftover.length > 4) ttsQueue.push(leftover)
+        if (leftover.length > 4) {
+          preFetchTTS(leftover)
+          ttsQueue.push(leftover)
+        }
         ttsBuffer = ''
 
         if (mutedRef.current || !fullResp) {
@@ -801,7 +841,7 @@ export function VoiceMode({ onTranscript, chatBusy, autoActivate, className }: V
         chime('error')
       }
     },
-    [speak, setPhaseSync],
+    [speak, setPhaseSync, preFetchTTS],
   )
 
   useEffect(() => { processRef.current = processText }, [processText])
