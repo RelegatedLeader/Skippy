@@ -19,11 +19,6 @@ interface VoiceModeProps {
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-const WAKE_WORDS = [
-  'skippy', 'skip', 'hey skippy', 'hey skip',
-  'ok skippy', 'ok skip', 'yo skippy', 'yo skip',
-  'skipy', 'skipper',
-]
 const SILENCE_MS         = 850    // ms after last FINAL result → stop
 const INTERIM_SILENCE_MS = 2200   // ms after last ANY result → force-stop if we have final text
 const MAX_LISTEN_MS      = 45_000
@@ -139,7 +134,7 @@ const ROBOT_FILTER: Record<VoiceState, string> = {
 
 const MAIN_LABEL: Record<VoiceState, string> = {
   greeting:   'Skippy',
-  ready:      "I'm here",
+  ready:      'Listen Mode',
   listening:  "I'm listening\u2026",
   processing: 'Thinking\u2026',
   speaking:   'Skippy',
@@ -148,10 +143,10 @@ const MAIN_LABEL: Record<VoiceState, string> = {
 
 const SUB_LABEL: Record<VoiceState, string> = {
   greeting:   'Tap to interrupt \u00b7 start talking',
-  ready:      'Tap Skippy to speak \u00b7 or type below',
-  listening:  'Listening \u00b7 tap robot to finish early',
+  ready:      'Space or tap Skippy to speak \u00b7 or type below',
+  listening:  'Listening \u00b7 tap robot or Space to finish',
   processing: 'Working on it',
-  speaking:   'Tap to interrupt \u00b7 start talking',
+  speaking:   'Tap or Space to interrupt & talk',
   error:      'Tap to try again',
 }
 
@@ -174,6 +169,7 @@ export function VoiceMode({
   const [volumeLevel, setVolumeLevel] = useState(0)
   const [tick, setTick]               = useState(0)
   const [typeInput, setTypeInput]     = useState('')
+  const [sessionLog, setSessionLog]   = useState<Array<{id: string; role: 'user'|'skippy'; text: string}>>([])  // conversation history
 
   // ── Refs ──────────────────────────────────────────────────────────────────
 
@@ -181,13 +177,11 @@ export function VoiceMode({
   const voiceStateRef      = useRef<VoiceState>('ready')
   const mutedRef           = useRef(false)
   const dismissingRef      = useRef(false)
-  const wakeBlockRef       = useRef(false)
   const errRestartCountRef = useRef(0)   // only counts error-driven restarts, NOT no-speech
   const restartWindowRef   = useRef<ReturnType<typeof setTimeout> | null>(null)
   const processingRef      = useRef(false) // prevents concurrent processText calls
   const generationRef      = useRef(0)     // incremented each processText call — stale closures bail out
 
-  const wakeRecogRef       = useRef<SpeechRecognition | null>(null)
   const listenRecogRef     = useRef<SpeechRecognition | null>(null)
   const utteranceRef       = useRef<SpeechSynthesisUtterance | null>(null)
   const streamRef          = useRef<MediaStream | null>(null)
@@ -203,6 +197,7 @@ export function VoiceMode({
   const speakGreetingRef   = useRef<() => void>(() => {})
   const greetingRef        = useRef(greetingLine())
   const typeInputRef       = useRef<HTMLInputElement>(null)
+  const sessionLogRef      = useRef<HTMLDivElement>(null)
 
   // Sync refs
   useEffect(() => { openRef.current         = open },           [open])
@@ -412,12 +407,16 @@ export function VoiceMode({
       }
     }
 
+    // Add user message to session log before AI call
+    setSessionLog(prev => [...prev, { id: `u${Date.now()}`, role: 'user', text }])
+
     try {
       const fullResp = await onTranscriptRef.current(text, onChunk)
       if (gen !== generationRef.current) return  // interrupted while awaiting AI response
       setResponse(fullResp)
       playChime('done')
       streamDone = true
+      if (fullResp) setSessionLog(prev => [...prev, { id: `s${Date.now()}`, role: 'skippy', text: fullResp }])
 
       const leftover = ttsBuffer.trim()
       if (leftover.length > 4) ttsQueue.push(leftover)
@@ -488,9 +487,6 @@ export function VoiceMode({
       listenRecogRef.current = null
     }
 
-    wakeBlockRef.current = true
-    try { wakeRecogRef.current?.abort() } catch {}
-
     finalTextRef.current = ''
     setVoiceState('listening')
     setTranscript('')
@@ -536,7 +532,6 @@ export function VoiceMode({
       stopVolumeAnalysis()
       if (silenceTimerRef.current)  { clearTimeout(silenceTimerRef.current);  silenceTimerRef.current  = null }
       if (interimTimerRef.current)  { clearTimeout(interimTimerRef.current);  interimTimerRef.current  = null }
-      wakeBlockRef.current   = false
       listenRecogRef.current = null
 
       const text = finalTextRef.current.trim()
@@ -614,6 +609,33 @@ export function VoiceMode({
 
   useEffect(() => { speakGreetingRef.current = speakGreeting }, [speakGreeting])
 
+  // ── Space-bar push-to-talk (when overlay is open) ─────────────────────────
+
+  useEffect(() => {
+    if (!open) return
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.code !== 'Space') return
+      const target = e.target as HTMLElement
+      // Don't intercept space in input/textarea
+      if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA') return
+      e.preventDefault()
+      const state = voiceStateRef.current
+      if      (state === 'ready')                                  startListeningRef.current()
+      else if (state === 'listening')                              { try { listenRecogRef.current?.stop() } catch {} }
+      else if (state === 'speaking' || state === 'greeting')       { stopSpeaking(); startListeningRef.current() }
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [open, stopSpeaking])
+
+  // ── Auto-scroll session log ───────────────────────────────────────────────
+
+  useEffect(() => {
+    if (sessionLogRef.current) {
+      sessionLogRef.current.scrollTop = sessionLogRef.current.scrollHeight
+    }
+  }, [sessionLog])
+
   // ── Type-to-speak ─────────────────────────────────────────────────────────
 
   const submitTyped = useCallback((e?: React.FormEvent) => {
@@ -627,48 +649,10 @@ export function VoiceMode({
     processText(text)
   }, [typeInput, stopListening, stopSpeaking, processText])
 
-  // ── Wake-word listener ────────────────────────────────────────────────────
-
-  const startWakeListener = useCallback(() => {
-    if (!('SpeechRecognition' in window || 'webkitSpeechRecognition' in window)) return
-    if (wakeRecogRef.current) return
-
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const SR: typeof SpeechRecognition = (window as any).SpeechRecognition ?? (window as any).webkitSpeechRecognition
-    const recog = new SR()
-    recog.continuous = true; recog.interimResults = true; recog.lang = 'en-US'
-    let buf = ''
-
-    recog.onresult = (event) => {
-      if (wakeBlockRef.current || openRef.current) return
-      const word = event.results[event.results.length - 1][0].transcript.toLowerCase().trim()
-      buf = (buf + ' ' + word).split(' ').slice(-6).join(' ')
-      if (WAKE_WORDS.some(w => buf.includes(w))) {
-        buf = ''
-        setOpen(true)
-        playChime('wake')
-        setTimeout(() => speakGreetingRef.current(), 300)
-      }
-    }
-
-    recog.onerror = (e: SpeechRecognitionErrorEvent) => {
-      if (e.error === 'not-allowed') setMicAllowed(false)
-    }
-
-    recog.onend = () => {
-      wakeRecogRef.current = null
-      if (!wakeBlockRef.current) setTimeout(() => startWakeListener(), 400)
-    }
-
-    wakeRecogRef.current = recog
-    try { recog.start() } catch { wakeRecogRef.current = null }
-  }, []) // eslint-disable-line react-hooks/exhaustive-deps
-
   // ── Dismiss ───────────────────────────────────────────────────────────────
 
   const dismiss = useCallback(() => {
     dismissingRef.current  = true
-    wakeBlockRef.current   = false
     processingRef.current  = false
     stopListening()
     stopSpeaking()
@@ -678,20 +662,15 @@ export function VoiceMode({
     setResponse('')
     setCurrentSentence('')
     setTypeInput('')
+    setSessionLog([])
     setTimeout(() => { dismissingRef.current = false }, 1200)
-    setTimeout(() => {
-      if (wakeRecogRef.current) { try { wakeRecogRef.current.start() } catch {} }
-    }, 1600)
   }, [stopListening, stopSpeaking])
 
   // ── Mount / unmount ───────────────────────────────────────────────────────
 
   useEffect(() => {
-    startWakeListener()
     return () => {
       dismissingRef.current = true
-      wakeBlockRef.current  = true
-      try { wakeRecogRef.current?.abort() }   catch {}; wakeRecogRef.current   = null
       try { listenRecogRef.current?.abort() } catch {}; listenRecogRef.current = null
       stopSpeaking()
       stopVolumeAnalysis()
@@ -833,8 +812,8 @@ export function VoiceMode({
             {/* Ambient glow */}
             <motion.div
               style={{
-                position: 'absolute', width: 300, height: 300, borderRadius: '50%',
-                background: GLOW[voiceState], filter: 'blur(72px)', pointerEvents: 'none',
+                position: 'absolute', width: 220, height: 220, borderRadius: '50%',
+                background: GLOW[voiceState], filter: 'blur(60px)', pointerEvents: 'none',
               }}
               animate={{ scale: [1, 1.18, 1], opacity: [0.65, 1, 0.65] }}
               transition={{ duration: 3.6, repeat: Infinity, ease: 'easeInOut' }}
@@ -847,7 +826,7 @@ export function VoiceMode({
                   key={i}
                   style={{
                     position: 'absolute',
-                    width: 220 + i * 58, height: 220 + i * 58,
+                    width: 165 + i * 44, height: 165 + i * 44,
                     borderRadius: '50%',
                     border: `1.5px solid ${RING_COLOR[voiceState]}`,
                     pointerEvents: 'none',
@@ -865,18 +844,18 @@ export function VoiceMode({
               ))}
             </AnimatePresence>
 
-            {/* Skippy robot — plain <img>, no Next.js Image */}
+            {/* Skippy robot */}
             <motion.div
               onClick={orbTap}
-              style={{ position: 'relative', zIndex: 10, width: 200, height: 200, flexShrink: 0, cursor: 'pointer' }}
+              style={{ position: 'relative', zIndex: 10, width: 148, height: 148, flexShrink: 0, cursor: 'pointer' }}
               animate={
                 voiceState === 'greeting' || voiceState === 'speaking'
-                  ? { y: [0, -10, 3, -6, 0] }
+                  ? { y: [0, -8, 2, -5, 0] }
                   : voiceState === 'listening'
                   ? { scale: [1, 1 + volumeLevel * 0.06 + 0.04, 1] }
                   : voiceState === 'processing'
                   ? { scale: [1, 1.04, 1], rotate: [0, -3, 3, -3, 0] }
-                  : { y: [0, -8, 0] }
+                  : { y: [0, -6, 0] }
               }
               transition={
                 voiceState === 'greeting' || voiceState === 'speaking'
@@ -894,7 +873,7 @@ export function VoiceMode({
                 alt="Skippy"
                 draggable={false}
                 style={{
-                  width: 200, height: 200, objectFit: 'contain',
+                  width: 148, height: 148, objectFit: 'contain',
                   userSelect: 'none', display: 'block',
                   filter: ROBOT_FILTER[voiceState],
                   transition: 'filter 0.4s ease',
@@ -947,52 +926,111 @@ export function VoiceMode({
             </AnimatePresence>
           </div>
 
-          {/* ── Conversation cards ── */}
-          <div style={{
-            position: 'relative', zIndex: 10, width: '100%', maxWidth: 460,
-            padding: '0 20px 6px', display: 'flex', flexDirection: 'column', gap: 8, flexShrink: 0,
-          }}>
-            <AnimatePresence>
-              {transcript && (
+          {/* ── Session log ── */}
+          {/* Scrollable conversation history for this Listen Mode session */}
+          <div
+            ref={sessionLogRef}
+            style={{
+              position: 'relative', zIndex: 10, width: '100%', maxWidth: 480,
+              padding: '0 16px 4px',
+              maxHeight: 230, minHeight: 0, overflowY: 'auto',
+              display: 'flex', flexDirection: 'column', gap: 6,
+              flexShrink: 0,
+              scrollbarWidth: 'none',
+            }}
+          >
+            <AnimatePresence mode="popLayout" initial={false}>
+              {sessionLog.map(entry => (
                 <motion.div
-                  key="tr"
+                  key={entry.id}
                   initial={{ opacity: 0, y: 10, scale: 0.97 }}
                   animate={{ opacity: 1, y: 0, scale: 1 }}
-                  exit={{ opacity: 0 }}
-                  style={{
-                    padding: '10px 16px', borderRadius: 18, fontSize: 14,
-                    color: 'rgba(216,232,248,0.9)', lineHeight: 1.5,
-                    background: 'rgba(12,28,70,0.75)', border: '1px solid rgba(41,194,230,0.18)',
-                    backdropFilter: 'blur(14px)',
-                  }}
+                  exit={{ opacity: 0, scale: 0.95 }}
+                  transition={{ duration: 0.2 }}
+                  style={{ display: 'flex', justifyContent: entry.role === 'user' ? 'flex-end' : 'flex-start' }}
                 >
-                  <span style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.14em', opacity: 0.5, marginRight: 8 }}>You</span>
-                  {transcript}
+                  <div style={{
+                    maxWidth: '84%',
+                    padding: '7px 12px',
+                    borderRadius: entry.role === 'user' ? '14px 14px 4px 14px' : '14px 14px 14px 4px',
+                    fontSize: 13, lineHeight: 1.45,
+                    color: 'rgba(216,232,248,0.9)',
+                    background: entry.role === 'user' ? 'rgba(12,28,70,0.82)' : 'rgba(4,22,18,0.82)',
+                    border: entry.role === 'user'
+                      ? '1px solid rgba(41,194,230,0.2)'
+                      : '1px solid rgba(16,185,129,0.2)',
+                    backdropFilter: 'blur(12px)',
+                  }}>
+                    <div style={{
+                      fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.16em',
+                      marginBottom: 3,
+                      color: entry.role === 'user' ? 'rgba(41,194,230,0.55)' : 'rgba(16,185,129,0.6)',
+                    }}>
+                      {entry.role === 'user' ? 'You' : 'Skippy'}
+                    </div>
+                    {entry.text.slice(0, 220)}{entry.text.length > 220 ? '\u2026' : ''}
+                  </div>
                 </motion.div>
-              )}
+              ))}
             </AnimatePresence>
+
+            {/* Live transcript while listening */}
             <AnimatePresence>
-              {/* Show current sentence while speaking (text stays in sync with voice),
-                  or show full response when done speaking */}
-              {(currentSentence || (response && voiceState === 'ready')) && (
+              {voiceState === 'listening' && transcript && (
                 <motion.div
-                  key="resp"
-                  initial={{ opacity: 0, y: 10, scale: 0.97 }}
-                  animate={{ opacity: 1, y: 0, scale: 1 }}
+                  key="live-tr"
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
                   exit={{ opacity: 0 }}
-                  style={{
-                    padding: '10px 16px', borderRadius: 18, fontSize: 14,
-                    color: 'rgba(216,232,248,0.9)', lineHeight: 1.5,
-                    background: 'rgba(4,24,20,0.75)', border: '1px solid rgba(16,185,129,0.2)',
-                    backdropFilter: 'blur(14px)',
-                  }}
+                  style={{ display: 'flex', justifyContent: 'flex-end' }}
                 >
-                  <span style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.14em', color: 'rgba(16,185,129,0.7)', marginRight: 8 }}>Skippy</span>
-                  {currentSentence || (response.slice(0, 300) + (response.length > 300 ? '\u2026' : ''))}
+                  <div style={{
+                    maxWidth: '84%', padding: '7px 12px',
+                    borderRadius: '14px 14px 4px 14px',
+                    fontSize: 13, lineHeight: 1.45,
+                    color: 'rgba(41,194,230,0.7)',
+                    background: 'rgba(12,28,70,0.55)',
+                    border: '1px dashed rgba(41,194,230,0.25)',
+                  }}>
+                    <div style={{ fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.16em', marginBottom: 3, color: 'rgba(41,194,230,0.4)' }}>You</div>
+                    {transcript}
+                  </div>
                 </motion.div>
               )}
             </AnimatePresence>
           </div>
+
+          {/* Live sentence being spoken — stays in sync with Skippy's voice */}
+          <AnimatePresence>
+            {currentSentence && (
+              <motion.div
+                key="cur-sentence"
+                initial={{ opacity: 0, y: 4 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0 }}
+                style={{
+                  position: 'relative', zIndex: 10, width: '100%', maxWidth: 480,
+                  padding: '0 16px 4px', flexShrink: 0,
+                }}
+              >
+                <div style={{
+                  display: 'flex', alignItems: 'flex-start', gap: 8,
+                  padding: '8px 14px', borderRadius: '14px 14px 14px 4px',
+                  fontSize: 13, lineHeight: 1.45,
+                  color: 'rgba(110,231,183,0.95)',
+                  background: 'rgba(16,185,129,0.07)',
+                  border: '1px solid rgba(16,185,129,0.3)',
+                  backdropFilter: 'blur(12px)',
+                }}>
+                  <span style={{
+                    width: 6, height: 6, borderRadius: '50%', background: '#10b981',
+                    flexShrink: 0, marginTop: 5, animation: 'pulse 1.2s ease-in-out infinite',
+                  }} />
+                  <span>{currentSentence}</span>
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
 
           {/* ── Type-to-speak input ── */}
           <form
@@ -1106,37 +1144,56 @@ export function VoiceMode({
     </AnimatePresence>
   )
 
-  // ── Mic button in chat toolbar ────────────────────────────────────────────
+  // ── Listen Mode trigger button ────────────────────────────────────────────
 
   return (
     <>
       <button
         onClick={manualActivate}
         disabled={!!chatBusy}
-        title="Talk to Skippy"
+        title={open ? 'Exit Listen Mode' : 'Enter Listen Mode — voice chat with Skippy'}
         className={cn(
-          'relative flex items-center justify-center rounded-full transition-all duration-200 group',
-          'w-10 h-10 border',
+          'relative flex items-center gap-1.5 px-3 py-2 rounded-full transition-all duration-200 group border',
           chatBusy
             ? 'opacity-30 cursor-not-allowed border-border'
-            : 'border-accent/40 hover:border-accent/80 hover:bg-accent/10 active:scale-95 cursor-pointer',
+            : open
+            ? 'border-emerald-500/50 bg-emerald-500/10 hover:bg-emerald-500/15 active:scale-95 cursor-pointer'
+            : 'border-accent/35 bg-accent/5 hover:border-accent/70 hover:bg-accent/10 active:scale-95 cursor-pointer',
           className,
         )}
-        style={voiceState === 'listening' ? {
-          boxShadow:   `0 0 ${14 + volumeLevel * 24}px rgba(41,194,230,${0.4 + volumeLevel * 0.5})`,
-          borderColor: `rgba(41,194,230,${0.65 + volumeLevel * 0.35})`,
+        style={voiceState === 'listening' && open ? {
+          boxShadow:   `0 0 ${12 + volumeLevel * 20}px rgba(41,194,230,${0.35 + volumeLevel * 0.45})`,
+          borderColor: `rgba(41,194,230,${0.55 + volumeLevel * 0.35})`,
         } : {}}
       >
-        {voiceState === 'processing'
-          ? <Loader2 className="w-4 h-4 text-purple-400 animate-spin" />
+        {voiceState === 'processing' && open
+          ? <Loader2 className="w-3.5 h-3.5 text-purple-400 animate-spin flex-shrink-0" />
           : voiceState === 'speaking' || voiceState === 'greeting'
-          ? <Volume2 className="w-4 h-4 text-emerald-400" />
-          : voiceState === 'listening'
-          ? <Mic className="w-4 h-4 text-accent animate-pulse" />
-          : <Mic className="w-4 h-4 text-muted group-hover:text-accent transition-colors" />
+          ? <Volume2 className="w-3.5 h-3.5 text-emerald-400 flex-shrink-0" />
+          : voiceState === 'listening' && open
+          ? <Mic className="w-3.5 h-3.5 text-accent animate-pulse flex-shrink-0" />
+          : <Mic className="w-3.5 h-3.5 text-muted group-hover:text-accent transition-colors flex-shrink-0" />
         }
-        {micAllowed && !open && (
-          <span className="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-accent/70 animate-pulse" />
+        <span className={cn(
+          'text-xs font-semibold transition-colors',
+          open && (voiceState === 'speaking' || voiceState === 'greeting') ? 'text-emerald-400'
+          : open && voiceState === 'listening' ? 'text-accent'
+          : open && voiceState === 'processing' ? 'text-purple-400'
+          : open ? 'text-emerald-300/80'
+          : 'text-muted/70 group-hover:text-accent',
+        )}>
+          {open ? 'Listening' : 'Listen'}
+        </span>
+        {/* Session exchange count badge */}
+        {sessionLog.filter(e => e.role === 'user').length > 0 && open && (
+          <span style={{
+            fontSize: 9, fontWeight: 700, lineHeight: 1,
+            padding: '1px 5px', borderRadius: 9999,
+            background: 'rgba(16,185,129,0.2)', color: 'rgba(110,231,183,0.8)',
+            border: '1px solid rgba(16,185,129,0.3)',
+          }}>
+            {sessionLog.filter(e => e.role === 'user').length}
+          </span>
         )}
       </button>
 
