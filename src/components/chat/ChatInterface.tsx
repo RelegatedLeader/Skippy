@@ -3,7 +3,6 @@
 import { useEffect, useRef, useCallback, useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import Image from 'next/image'
-import { useSearchParams } from 'next/navigation'
 import { Zap, Brain, FileText, TrendingUp, Cpu, AlertTriangle, Swords, X, Sparkles, Menu, BookOpen, GraduationCap, CheckSquare, Bell } from 'lucide-react'
 import { nanoid } from 'nanoid'
 import { useChatStore, type AIModel } from '@/store/chat'
@@ -42,8 +41,12 @@ export function ChatInterface({ conversationId, onConversationCreated, onToggleS
     selectedModel, setSelectedModel,
   } = useChatStore()
 
-  const searchParams = useSearchParams()
-  const autoVoice = searchParams?.get('voice') === '1'
+  const [autoVoice, setAutoVoice] = useState(false)
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      setAutoVoice(new URLSearchParams(window.location.search).get('voice') === '1')
+    }
+  }, [])
 
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const abortControllerRef = useRef<AbortController | null>(null)
