@@ -630,7 +630,7 @@ export function VoiceMode({ onTranscript, chatBusy, autoActivate, className }: V
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ text: clean }),
-            signal: AbortSignal.timeout(12_000),
+            signal: AbortSignal.timeout(5_000),
           })
           if (!res.ok) return false
 
@@ -688,8 +688,8 @@ export function VoiceMode({ onTranscript, chatBusy, autoActivate, className }: V
           utteranceRef.current = utt
           const voice = pickMaleVoice()
           if (voice) utt.voice = voice
-          utt.rate   = 1.05
-          utt.pitch  = 0.72
+          utt.rate   = 0.88
+          utt.pitch  = 0.6
           utt.volume = 1.0
           utt.lang   = 'en-US'
 
