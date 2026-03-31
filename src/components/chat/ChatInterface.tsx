@@ -8,6 +8,7 @@ import { nanoid } from 'nanoid'
 import { useChatStore, type AIModel } from '@/store/chat'
 import { MessageBubble } from './MessageBubble'
 import { ChatInput } from './ChatInput'
+import { VoiceMode } from '@/components/voice/VoiceMode'
 import { useNotifications } from '@/components/notifications/NotificationProvider'
 import { cn } from '@/lib/utils'
 import Link from 'next/link'
@@ -230,6 +231,88 @@ export function ChatInterface({ conversationId, onConversationCreated, onToggleS
      setStreamingContent, setMessages, onConversationCreated, addConversation, updateConversationTitle,
      refreshReminders, refreshTodos]
   )
+
+  /**
+   * Voice entry point — sends transcript through the same pipeline as text
+   * but returns the accumulated AI response as a string for TTS.
+   */
+  const sendMessageAndReturn = useCallback(async (text: string): Promise<string> => {
+    return new Promise((resolve) => {
+      let convId = currentConvId
+
+      const doSend = async () => {
+        if (!convId) {
+          try {
+            const res = await fetch('/api/conversations', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ title: 'New Chat' }),
+            })
+            if (!res.ok) { resolve(''); return }
+            const newConv = await res.json()
+            convId = newConv.id
+            setCurrentConvId(convId)
+            justCreatedIdRef.current = convId
+            onConversationCreated(convId!)
+            addConversation(newConv)
+          } catch { resolve(''); return }
+        }
+
+        const userMsg = { id: nanoid(), role: 'user' as const, content: text, createdAt: new Date() }
+        addMessage(userMsg)
+        setLoading(true)
+        setStreaming(true)
+        setStreamingContent('')
+
+        const allMessages = [...useChatStore.getState().messages.slice(0, -1)].concat([userMsg])
+          .map(m => ({ role: m.role, content: m.content }))
+        const streamingId = nanoid()
+        addMessage({ id: streamingId, role: 'assistant', content: '', createdAt: new Date() })
+
+        try {
+          const res = await fetch('/api/chat', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              messages: allMessages,
+              conversationId: convId,
+              model: selectedModel,
+              timezoneOffsetMinutes: new Date().getTimezoneOffset(),
+            }),
+          })
+          if (!res.ok || !res.body) { resolve(''); return }
+
+          const reader = res.body.getReader()
+          const decoder = new TextDecoder()
+          let accumulated = ''
+          while (true) {
+            const { done, value } = await reader.read()
+            if (done) break
+            accumulated += decoder.decode(value, { stream: true })
+            setStreamingContent(accumulated)
+          }
+
+          const finalMessages = useChatStore.getState().messages.map((m) =>
+            m.id === streamingId ? { ...m, content: accumulated } : m
+          )
+          setMessages(finalMessages)
+          setStreamingContent('')
+          refreshReminders()
+          refreshTodos()
+          resolve(accumulated)
+        } catch {
+          resolve('')
+        } finally {
+          setLoading(false)
+          setStreaming(false)
+          setStreamingContent('')
+        }
+      }
+
+      doSend()
+    })
+  }, [currentConvId, selectedModel, addMessage, setLoading, setStreaming, setStreamingContent,
+      setMessages, onConversationCreated, addConversation, refreshReminders, refreshTodos])
 
   const displayMessages = messages.map((m) =>
     m.role === 'assistant' && m.content === '' && isStreaming
@@ -560,8 +643,15 @@ export function ChatInterface({ conversationId, onConversationCreated, onToggleS
             </motion.div>
           )}
         </AnimatePresence>
-        <div className="max-w-3xl mx-auto md:pr-16">
-          <ChatInput onSend={sendMessage} isLoading={isLoading} />
+        <div className="max-w-3xl mx-auto md:pr-16 relative">
+          {/* VoiceMode mic button lives inside the input row */}
+          <div className="absolute right-3 top-1/2 -translate-y-1/2 z-10">
+            <VoiceMode
+              onTranscript={sendMessageAndReturn}
+              chatBusy={isLoading}
+            />
+          </div>
+          <ChatInput onSend={sendMessage} isLoading={isLoading} voiceActive={false} />
         </div>
       </div>
     </div>

@@ -199,6 +199,11 @@ body.sidebar-open {
 /* legacy alias */
 .btn-gold { @apply btn-cyan; }
 
+/* ── Glow utility ── */
+.shadow-glow-cyan-sm {
+  box-shadow: 0 0 18px rgba(41,194,230,0.45), 0 2px 8px rgba(0,0,0,0.3);
+}
+
 /* ── Animations ── */
 @keyframes fadeIn {
   from { opacity: 0; transform: translateY(8px); }

@@ -9,6 +9,7 @@ interface ChatInputProps {
   onSend: (message: string) => void
   isLoading: boolean
   disabled?: boolean
+  voiceActive?: boolean  // reserved for VoiceMode integration
 }
 
 export function ChatInput({ onSend, isLoading, disabled }: ChatInputProps) {
@@ -85,8 +86,8 @@ export function ChatInput({ onSend, isLoading, disabled }: ChatInputProps) {
 
             <button
               type="button" disabled
-              className="p-2 rounded-xl text-muted/30 cursor-not-allowed"
-              title="Voice input (coming soon)"
+              className="p-2 rounded-xl text-muted/20 cursor-not-allowed opacity-0 pointer-events-none"
+              aria-hidden="true"
             >
               <Mic className="w-4 h-4" />
             </button>
