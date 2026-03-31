@@ -243,7 +243,7 @@ export function ChatInterface({ conversationId, onConversationCreated, onToggleS
    * Voice entry point — sends transcript through the same pipeline as text
    * but returns the accumulated AI response as a string for TTS.
    */
-  const sendMessageAndReturn = useCallback(async (text: string, onChunk?: (chunk: string) => void): Promise<string> => {
+  const sendMessageAndReturn = useCallback(async (text: string, onChunk?: (chunk: string) => void, forceModel?: string): Promise<string> => {
     return new Promise((resolve) => {
       let convId = currentConvId
 
@@ -283,7 +283,7 @@ export function ChatInterface({ conversationId, onConversationCreated, onToggleS
             body: JSON.stringify({
               messages: allMessages,
               conversationId: convId,
-              model: selectedModel,
+              model: forceModel ?? selectedModel,
               timezoneOffsetMinutes: new Date().getTimezoneOffset(),
             }),
           })
