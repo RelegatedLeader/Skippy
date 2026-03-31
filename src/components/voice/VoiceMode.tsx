@@ -24,10 +24,10 @@ const WAKE_WORDS = [
   'ok skippy', 'ok skip', 'yo skippy', 'yo skip',
   'skipy', 'skipper',
 ]
-const SILENCE_MS         = 1200   // ms after last FINAL result → stop
-const INTERIM_SILENCE_MS = 2500   // ms after last ANY result → force-stop if we have final text
+const SILENCE_MS         = 850    // ms after last FINAL result → stop
+const INTERIM_SILENCE_MS = 2200   // ms after last ANY result → force-stop if we have final text
 const MAX_LISTEN_MS      = 45_000
-const LOOP_PAUSE_MS      = 400    // ms between Skippy finishing and listening again
+const LOOP_PAUSE_MS      = 150    // ms between Skippy finishing and listening again
 const MAX_ERR_RESTARTS   = 6      // guard against tight ERROR-based restart loops (not no-speech)
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -81,13 +81,20 @@ function pullSentences(buf: string): { sentences: string[]; rest: string } {
   let m: RegExpExecArray | null
   while ((m = re.exec(buf)) !== null) {
     const s = m[0].trim()
-    if (s.length > 5) sentences.push(s)
+    if (s.length > 3) sentences.push(s)
     last = re.lastIndex
   }
-  // Chunk on comma-pause at 120+ chars so TTS starts before full sentence ends
-  if (sentences.length === 0 && buf.length > 120) {
-    const ci = buf.lastIndexOf(',')
-    if (ci > 60) return { sentences: [buf.slice(0, ci + 1).trim()], rest: buf.slice(ci + 1) }
+  if (sentences.length === 0) {
+    // Chunk at comma-pause (≥90 chars) to start TTS before the full sentence arrives
+    if (buf.length > 90) {
+      const ci = buf.lastIndexOf(',')
+      if (ci > 45) return { sentences: [buf.slice(0, ci + 1).trim()], rest: buf.slice(ci + 1) }
+    }
+    // Last resort: chunk at word boundary once buffer reaches 75 chars
+    if (buf.length > 75) {
+      const si = buf.lastIndexOf(' ', 75)
+      if (si > 40) return { sentences: [buf.slice(0, si).trim()], rest: buf.slice(si + 1) }
+    }
   }
   return { sentences, rest: buf.slice(last) }
 }
@@ -178,6 +185,7 @@ export function VoiceMode({
   const errRestartCountRef = useRef(0)   // only counts error-driven restarts, NOT no-speech
   const restartWindowRef   = useRef<ReturnType<typeof setTimeout> | null>(null)
   const processingRef      = useRef(false) // prevents concurrent processText calls
+  const generationRef      = useRef(0)     // incremented each processText call — stale closures bail out
 
   const wakeRecogRef       = useRef<SpeechRecognition | null>(null)
   const listenRecogRef     = useRef<SpeechRecognition | null>(null)
@@ -292,7 +300,7 @@ export function VoiceMode({
         null
 
       if (voice) utt.voice = voice
-      utt.rate   = 1.0   // natural conversational speed
+      utt.rate   = 1.1   // slightly faster — natural conversational pace
       utt.pitch  = 0.9   // slightly warm/low but not robotic
       utt.volume = 1.0
       utt.lang   = 'en-US'
@@ -334,6 +342,10 @@ export function VoiceMode({
   }, [])
 
   const stopSpeaking = useCallback(() => {
+    // Reset processingRef so the next processText call isn't silently dropped.
+    // Critical for interruption: user taps orb while Skippy speaks → stopSpeaking()
+    // → processingRef.current was still true → new call was ignored. Now it won't be.
+    processingRef.current = false
     window.speechSynthesis?.cancel()
     utteranceRef.current = null
   }, [])
@@ -344,18 +356,21 @@ export function VoiceMode({
 
   const processText = useCallback(async (text: string) => {
     if (!text.trim() || dismissingRef.current || !openRef.current) return
-    if (processingRef.current) return  // prevent concurrent double-calls
+    // Increment generation — any previous processText closure will see its gen is stale
+    // and will silently bail out of driveQueue / finishUp / onChunk without fighting this call.
+    const gen = ++generationRef.current
     processingRef.current = true
     setVoiceState('processing')
     setCurrentSentence('')
 
-    let ttsBuffer         = ''
+    let ttsBuffer          = ''
     const ttsQueue: string[] = []
-    let ttsActive         = false
-    let streamDone        = false
-    let anyStreamingSpeech = false  // tracks whether streaming TTS ever fired
+    let ttsActive          = false
+    let streamDone         = false
+    let anyStreamingSpeech = false
 
     const finishUp = () => {
+      if (gen !== generationRef.current) return  // stale — a newer call took over
       processingRef.current = false
       setCurrentSentence('')
       if (!dismissingRef.current && openRef.current) {
@@ -367,25 +382,27 @@ export function VoiceMode({
     }
 
     const driveQueue = () => {
+      if (gen !== generationRef.current) return  // stale — bail, don't touch synth
       if (ttsActive || ttsQueue.length === 0 || mutedRef.current || !openRef.current) return
       ttsActive = true
       anyStreamingSpeech = true
       const sentence = ttsQueue.shift()!
-      setCurrentSentence(sentence)   // show ONLY the sentence being spoken right now
+      setCurrentSentence(sentence)
       setVoiceState('speaking')
       speak(sentence, () => {
         ttsActive = false
+        if (gen !== generationRef.current) return  // interrupted mid-sentence
         setCurrentSentence('')
         if (ttsQueue.length > 0) {
           driveQueue()
         } else if (streamDone) {
           finishUp()
         }
-        // else: stream still arriving — next onChunk call will driveQueue again
       })
     }
 
     const onChunk = (chunk: string) => {
+      if (gen !== generationRef.current) return  // stale
       ttsBuffer += chunk
       const { sentences, rest } = pullSentences(ttsBuffer)
       ttsBuffer = rest
@@ -397,11 +414,11 @@ export function VoiceMode({
 
     try {
       const fullResp = await onTranscriptRef.current(text, onChunk)
+      if (gen !== generationRef.current) return  // interrupted while awaiting AI response
       setResponse(fullResp)
       playChime('done')
       streamDone = true
 
-      // Flush any leftover partial sentence
       const leftover = ttsBuffer.trim()
       if (leftover.length > 4) ttsQueue.push(leftover)
       ttsBuffer = ''
@@ -409,18 +426,15 @@ export function VoiceMode({
       if (mutedRef.current || !fullResp) {
         finishUp()
       } else if (anyStreamingSpeech) {
-        // Streaming already spoke the content — don't speak again
-        // If TTS is still active, its onEnd chain calls finishUp via driveQueue
-        // If TTS finished already (fast voice, slow stream), manually finish
         if (!ttsActive && ttsQueue.length === 0) finishUp()
         else if (!ttsActive && ttsQueue.length > 0) driveQueue()
-        // else: ttsActive — driveQueue's onEnd handles it
+        // else ttsActive — driveQueue onEnd will call finishUp
       } else {
-        // No streaming at all (non-streaming API fallback) — speak full response once
         setVoiceState('speaking')
         speak(fullResp, finishUp)
       }
     } catch {
+      if (gen !== generationRef.current) return
       processingRef.current = false
       setCurrentSentence('')
       setVoiceState('error')
