@@ -7,18 +7,27 @@ function parseMemory(m: {
   decayScore: number; emotionalValence: number | null
   sourceType: string | null; sourceId: string | null; sourceLabel: string | null
   createdAt: Date; updatedAt: Date; tags: string
+  healthScore: number; contradicts: string; linkedIds: string
+  needsReview: boolean; reflectionNote: string | null; isArchived: boolean
 }) {
-  return { ...m, tags: JSON.parse(m.tags || '[]') as string[] }
+  return {
+    ...m,
+    tags:       JSON.parse(m.tags       || '[]') as string[],
+    contradicts: JSON.parse(m.contradicts || '[]') as string[],
+    linkedIds:   JSON.parse(m.linkedIds   || '[]') as string[],
+  }
 }
 
 export async function GET(req: Request) {
   try {
     const { searchParams } = new URL(req.url)
-    const q = searchParams.get('q')?.toLowerCase().trim()
-    const category = searchParams.get('category')?.toLowerCase().trim()
-    const source = searchParams.get('source')?.toLowerCase().trim()
+    const q               = searchParams.get('q')?.toLowerCase().trim()
+    const category        = searchParams.get('category')?.toLowerCase().trim()
+    const source          = searchParams.get('source')?.toLowerCase().trim()
+    const includeArchived = searchParams.get('includeArchived') === 'true'
 
     const memories = await prisma.memory.findMany({
+      where: { isArchived: includeArchived ? undefined : false },
       orderBy: [{ importance: 'desc' }, { updatedAt: 'desc' }],
     })
 

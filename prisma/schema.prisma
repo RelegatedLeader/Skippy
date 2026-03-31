@@ -42,6 +42,27 @@ model Memory {
   createdAt      DateTime  @default(now())
   updatedAt      DateTime  @updatedAt
   tags           String    @default("[]") // JSON array stored as string
+  // ── Self-improvement fields ──────────────────────────────────────────────────
+  healthScore    Float     @default(1.0)  // composite: importance×decay×confidence×accessBoost
+  contradicts    String    @default("[]") // JSON array of memory IDs this contradicts
+  linkedIds      String    @default("[]") // JSON array of semantically related memory IDs
+  needsReview    Boolean   @default(false) // flagged by self-reflection for human/AI review
+  reflectionNote String?                  // AI's internal note about this memory
+  isArchived     Boolean   @default(false) // soft-deleted by decay/archival engine
+}
+
+// Audit log for every self-reflection run
+model MemoryReflection {
+  id                  String   @id @default(cuid())
+  runAt               DateTime @default(now())
+  memoriesReviewed    Int      @default(0)
+  contradictionsFound Int      @default(0)
+  memoriesUpdated     Int      @default(0)
+  memoriesArchived    Int      @default(0)
+  newMemoriesCreated  Int      @default(0)
+  insights            String?  // AI's synthesis briefing
+  gaps                String?  // JSON array of identified knowledge gaps
+  triggeredBy         String   @default("cron") // "cron" | "manual" | "consolidate"
 }
 
 model Reminder {

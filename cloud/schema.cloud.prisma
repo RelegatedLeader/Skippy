@@ -42,6 +42,25 @@ model Memory {
   createdAt      DateTime  @default(now())
   updatedAt      DateTime  @updatedAt
   tags           String    @default("[]")
+  healthScore    Float     @default(1.0)
+  contradicts    String    @default("[]")
+  linkedIds      String    @default("[]")
+  needsReview    Boolean   @default(false)
+  reflectionNote String?
+  isArchived     Boolean   @default(false)
+}
+
+model MemoryReflection {
+  id                  String   @id @default(cuid())
+  runAt               DateTime @default(now())
+  memoriesReviewed    Int      @default(0)
+  contradictionsFound Int      @default(0)
+  memoriesUpdated     Int      @default(0)
+  memoriesArchived    Int      @default(0)
+  newMemoriesCreated  Int      @default(0)
+  insights            String?
+  gaps                String?
+  triggeredBy         String   @default("cron")
 }
 
 model Reminder {

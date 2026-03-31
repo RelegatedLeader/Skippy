@@ -13,6 +13,14 @@
     {
       "path": "/api/cron/nudge",
       "schedule": "0 19 * * *"
+    },
+    {
+      "path": "/api/cron/memory-reflect",
+      "schedule": "0 3 * * *"
+    },
+    {
+      "path": "/api/cron/memory-consolidate",
+      "schedule": "0 4 * * 0"
     }
   ]
 }

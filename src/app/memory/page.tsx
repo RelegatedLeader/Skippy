@@ -9,7 +9,8 @@ import {
   Brain, Trash2, Star, ArrowLeft, Bot, RefreshCw, Search,
   Bell, Sparkles, CheckCircle2, Circle, Plus, X, Calendar,
   ChevronDown, ChevronUp, Menu, ListTodo, Clock, Zap,
-  Shield, TrendingUp, Filter,
+  Shield, TrendingUp, Filter, Wand2, AlertTriangle, Activity,
+  BarChart2, Layers,
 } from 'lucide-react'
 import { cn, getCategoryColor, getCategoryIcon, formatRelativeTime, ALL_MEMORY_CATEGORIES } from '@/lib/utils'
 import { Sidebar } from '@/components/layout/Sidebar'
@@ -33,6 +34,37 @@ interface Memory {
   sourceLabel: string | null
   createdAt: string
   updatedAt: string
+  // Self-improvement fields
+  healthScore: number
+  contradicts: string[]
+  linkedIds: string[]
+  needsReview: boolean
+  reflectionNote: string | null
+  isArchived: boolean
+}
+
+interface MemoryReflection {
+  id: string
+  runAt: string
+  memoriesReviewed: number
+  contradictionsFound: number
+  memoriesUpdated: number
+  memoriesArchived: number
+  newMemoriesCreated: number
+  insights: string | null
+  gaps: string[]
+  triggeredBy: string
+}
+
+interface HealthData {
+  totalMemories: number
+  archivedMemories: number
+  needsReview: number
+  synthesized: number
+  healthDistribution: { healthy: number; moderate: number; weak: number }
+  categoryHealth: Array<{ category: string; count: number; avgHealth: number; avgImportance: number; avgConfidence: number }>
+  lastReflection: MemoryReflection | null
+  recentReflections: MemoryReflection[]
 }
 
 interface Reminder {
@@ -130,7 +162,8 @@ function formatTodoDue(dueDate: string): string {
 // ─── Memory strength score ────────────────────────────────────────────────────
 
 function memoryStrength(mem: Memory): number {
-  // 0-100 composite: importance (40%), confidence (35%), decay (25%)
+  // Use server-computed healthScore when present (importance×decay×confidence×access)
+  if (mem.healthScore > 0) return Math.round(mem.healthScore * 100)
   return Math.round(
     (mem.importance / 10) * 40 +
     mem.confidence * 35 +
@@ -140,13 +173,14 @@ function memoryStrength(mem: Memory): number {
 
 // ─── Main page ────────────────────────────────────────────────────────────────
 
-type Tab = 'memories' | 'todos' | 'reminders' | 'ask'
+type Tab = 'memories' | 'todos' | 'reminders' | 'ask' | 'system'
 
 export default function MemoryPage() {
   const { toggle } = useSidebar()
   const [data, setData] = useState<MemoryData | null>(null)
   const [reminders, setReminders] = useState<Reminder[]>([])
   const [todos, setTodos] = useState<Todo[]>([])
+  const [healthData, setHealthData] = useState<HealthData | null>(null)
   const [loading, setLoading] = useState(true)
   const [remindersLoading, setRemindersLoading] = useState(true)
   const [todosLoading, setTodosLoading] = useState(true)
@@ -182,11 +216,17 @@ export default function MemoryPage() {
     } finally { setTodosLoading(false) }
   }, [])
 
+  const fetchHealth = useCallback(async () => {
+    const res = await fetch('/api/memories/health')
+    if (res.ok) setHealthData(await res.json())
+  }, [])
+
   useEffect(() => {
     fetchMemories()
     fetchReminders()
     fetchTodos()
-  }, [fetchMemories, fetchReminders, fetchTodos])
+    fetchHealth()
+  }, [fetchMemories, fetchReminders, fetchTodos, fetchHealth])
 
   const handleDeleteMemory = async (id: string) => {
     await fetch(`/api/memories?id=${id}`, { method: 'DELETE' })
@@ -258,6 +298,7 @@ export default function MemoryPage() {
     { key: 'todos', label: 'Todos', icon: <ListTodo className="w-3.5 h-3.5" />, badge: pendingTodos || undefined, badgeUrgent: urgentTodos > 0 },
     { key: 'reminders', label: 'Reminders', icon: <Bell className="w-3.5 h-3.5" />, badge: pendingReminders || undefined },
     { key: 'ask', label: 'Ask Skippy', icon: <Sparkles className="w-3.5 h-3.5" /> },
+    { key: 'system', label: 'System', icon: <Activity className="w-3.5 h-3.5" />, badge: healthData?.needsReview || undefined, badgeUrgent: (healthData?.needsReview || 0) > 0 },
   ]
 
   const totalTracked = (data?.total || 0) + todos.length + reminders.length
@@ -354,6 +395,15 @@ export default function MemoryPage() {
             {activeTab === 'ask' && (
               <motion.div key="ask" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }}>
                 <AskTab />
+              </motion.div>
+            )}
+            {activeTab === 'system' && (
+              <motion.div key="system" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }}>
+                <SystemHealthTab
+                  health={healthData}
+                  onReflect={async () => { await fetchHealth(); await fetchMemories() }}
+                  onConsolidate={async () => { await fetchHealth(); await fetchMemories() }}
+                />
               </motion.div>
             )}
           </AnimatePresence>
@@ -591,6 +641,12 @@ function MemoryCard({ memory, onDelete, isDeleting, compact = false }: {
                 memory.emotionalValence > 0.3 ? 'bg-emerald-500/10 text-emerald-400' : memory.emotionalValence < -0.3 ? 'bg-red-500/10 text-red-400' : 'hidden'
               )}>
                 {memory.emotionalValence > 0.3 ? '↑' : '↓'}
+              </span>
+            )}
+            {memory.needsReview && (
+              <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-amber-500/10 text-amber-400 font-medium flex items-center gap-0.5 border border-amber-500/20">
+                <AlertTriangle className="w-2.5 h-2.5" />
+                review
               </span>
             )}
           </div>
@@ -1020,6 +1076,280 @@ function AddReminderForm({ onAdd, onClose }: { onAdd: (content: string, dueDate:
         </button>
       </div>
     </motion.form>
+  )
+}
+
+// ─── System health tab ────────────────────────────────────────────────────────
+
+type ReflectionResult = {
+  ok: boolean
+  memoriesReviewed?: number
+  contradictionsFound?: number
+  memoriesUpdated?: number
+  memoriesArchived?: number
+  newMemoriesCreated?: number
+  insights?: string
+  gaps?: string[]
+}
+
+function SystemHealthTab({
+  health,
+  onReflect,
+  onConsolidate,
+}: {
+  health: HealthData | null
+  onReflect: () => Promise<void>
+  onConsolidate: () => Promise<void>
+}) {
+  const [reflecting, setReflecting]     = useState(false)
+  const [consolidating, setConsolidating] = useState(false)
+  const [lastResult, setLastResult]     = useState<ReflectionResult | null>(null)
+  const [resultType, setResultType]     = useState<'reflect' | 'consolidate' | null>(null)
+
+  const handleReflect = async () => {
+    setReflecting(true)
+    setLastResult(null)
+    try {
+      const res  = await fetch('/api/memories/reflect', { method: 'POST' })
+      const data = await res.json() as ReflectionResult
+      setLastResult(data)
+      setResultType('reflect')
+      await onReflect()
+    } finally { setReflecting(false) }
+  }
+
+  const handleConsolidate = async () => {
+    setConsolidating(true)
+    setLastResult(null)
+    try {
+      const res  = await fetch('/api/memories/consolidate', { method: 'POST' })
+      const data = await res.json() as ReflectionResult
+      setLastResult(data)
+      setResultType('consolidate')
+      await onConsolidate()
+    } finally { setConsolidating(false) }
+  }
+
+  const total = health
+    ? health.healthDistribution.healthy + health.healthDistribution.moderate + health.healthDistribution.weak
+    : 0
+
+  const healthPct = total > 0 ? {
+    healthy:  Math.round((health!.healthDistribution.healthy  / total) * 100),
+    moderate: Math.round((health!.healthDistribution.moderate / total) * 100),
+    weak:     Math.round((health!.healthDistribution.weak     / total) * 100),
+  } : { healthy: 0, moderate: 0, weak: 0 }
+
+  const lastReflection = health?.lastReflection
+
+  return (
+    <div className="space-y-8 max-w-3xl">
+
+      {/* ── Stat grid ─────────────────────────────────────────────── */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        {[
+          { label: 'Active Memories', value: health?.totalMemories ?? '—', color: '#e8b84b', icon: <Brain className="w-4 h-4" /> },
+          { label: 'Needs Review',    value: health?.needsReview   ?? '—', color: '#f97316', icon: <AlertTriangle className="w-4 h-4" />, alert: (health?.needsReview || 0) > 0 },
+          { label: 'Synthesized',     value: health?.synthesized   ?? '—', color: '#8b5cf6', icon: <Layers className="w-4 h-4" /> },
+          { label: 'Archived',        value: health?.archivedMemories ?? '—', color: '#64748b', icon: <Shield className="w-4 h-4" /> },
+        ].map(s => (
+          <motion.div key={s.label} whileHover={{ y: -2 }}
+            className={cn(
+              'p-4 rounded-xl bg-surface border transition-all',
+              s.alert ? 'border-orange-500/30 bg-orange-500/5' : 'border-border'
+            )}>
+            <div className="flex items-center justify-between mb-2">
+              <span style={{ color: s.color }}>{s.icon}</span>
+              {s.alert && <span className="w-2 h-2 rounded-full bg-orange-400 animate-pulse" />}
+            </div>
+            <div className="text-2xl font-black" style={{ color: s.color }}>{s.value}</div>
+            <div className="text-[11px] text-muted mt-0.5">{s.label}</div>
+          </motion.div>
+        ))}
+      </div>
+
+      {/* ── Health distribution bar ──────────────────────────────── */}
+      {total > 0 && (
+        <div className="p-5 bg-surface border border-border rounded-xl">
+          <div className="flex items-center gap-2 mb-4">
+            <BarChart2 className="w-4 h-4 text-accent" />
+            <span className="text-sm font-bold text-foreground">Memory Health Distribution</span>
+            <span className="text-xs text-muted/50 ml-auto">{total} active</span>
+          </div>
+          <div className="h-3 rounded-full overflow-hidden flex gap-0.5 mb-3">
+            {healthPct.healthy  > 0 && <div className="h-full rounded-l-full bg-emerald-500 transition-all" style={{ width: `${healthPct.healthy}%` }} />}
+            {healthPct.moderate > 0 && <div className="h-full bg-amber-400 transition-all"   style={{ width: `${healthPct.moderate}%` }} />}
+            {healthPct.weak     > 0 && <div className="h-full rounded-r-full bg-red-500 transition-all"    style={{ width: `${healthPct.weak}%` }} />}
+          </div>
+          <div className="flex items-center gap-4 text-xs">
+            <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full bg-emerald-500" /><span className="text-emerald-400 font-medium">{healthPct.healthy}%</span><span className="text-muted">healthy</span></span>
+            <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full bg-amber-400" /><span className="text-amber-400 font-medium">{healthPct.moderate}%</span><span className="text-muted">moderate</span></span>
+            <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full bg-red-500" /><span className="text-red-400 font-medium">{healthPct.weak}%</span><span className="text-muted">weak</span></span>
+          </div>
+        </div>
+      )}
+
+      {/* ── Category health table ────────────────────────────────── */}
+      {(health?.categoryHealth || []).length > 0 && (
+        <div className="p-5 bg-surface border border-border rounded-xl">
+          <div className="flex items-center gap-2 mb-4">
+            <TrendingUp className="w-4 h-4 text-accent" />
+            <span className="text-sm font-bold text-foreground">Per-Category Health</span>
+          </div>
+          <div className="space-y-2">
+            {health!.categoryHealth.map(c => {
+              const color = getCategoryColor(c.category)
+              const icon  = getCategoryIcon(c.category)
+              const pct   = Math.round(c.avgHealth * 100)
+              return (
+                <div key={c.category} className="flex items-center gap-3">
+                  <span className="text-sm w-4 shrink-0">{icon}</span>
+                  <span className="text-xs text-muted/80 capitalize w-20 shrink-0">{c.category}</span>
+                  <div className="flex-1 h-1.5 rounded-full bg-surface-2 overflow-hidden">
+                    <div className="h-full rounded-full transition-all"
+                      style={{ width: `${pct}%`, backgroundColor: pct >= 60 ? '#10b981' : pct >= 30 ? '#f59e0b' : '#ef4444' }} />
+                  </div>
+                  <span className="text-[10px] text-muted/50 w-8 text-right shrink-0">{pct}%</span>
+                  <span className="text-[10px] font-bold shrink-0" style={{ color }}>{c.count}</span>
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* ── Last reflection summary ──────────────────────────────── */}
+      {lastReflection && (
+        <div className="p-5 bg-surface border border-accent/20 rounded-xl">
+          <div className="flex items-center gap-2 mb-4">
+            <Wand2 className="w-4 h-4 text-accent" />
+            <span className="text-sm font-bold text-foreground">Last Self-Reflection</span>
+            <span className="text-xs text-muted/50 ml-auto">
+              {new Date(lastReflection.runAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+              {' · '}
+              <span className="capitalize">{lastReflection.triggeredBy}</span>
+            </span>
+          </div>
+          <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 mb-4">
+            {[
+              { label: 'Reviewed',       value: lastReflection.memoriesReviewed,    color: '#e8b84b' },
+              { label: 'Contradictions', value: lastReflection.contradictionsFound, color: '#ef4444' },
+              { label: 'Updated',        value: lastReflection.memoriesUpdated,     color: '#3b82f6' },
+              { label: 'Synthesized',    value: lastReflection.newMemoriesCreated,  color: '#8b5cf6' },
+              { label: 'Archived',       value: lastReflection.memoriesArchived,    color: '#64748b' },
+            ].map(s => (
+              <div key={s.label} className="text-center p-2 rounded-lg bg-background/50 border border-border">
+                <div className="text-lg font-black" style={{ color: s.color }}>{s.value}</div>
+                <div className="text-[9px] text-muted">{s.label}</div>
+              </div>
+            ))}
+          </div>
+          {lastReflection.insights && (
+            <div className="p-3 bg-accent/5 border border-accent/15 rounded-lg">
+              <p className="text-[11px] font-bold text-accent/80 uppercase tracking-wider mb-1.5">Skippy&apos;s Internal Briefing</p>
+              <p className="text-sm text-foreground/80 leading-relaxed italic">&ldquo;{lastReflection.insights}&rdquo;</p>
+            </div>
+          )}
+          {lastReflection.gaps.length > 0 && (
+            <div className="mt-4">
+              <p className="text-[11px] font-bold text-muted/60 uppercase tracking-wider mb-2">Knowledge Gaps Identified</p>
+              <div className="space-y-1.5">
+                {lastReflection.gaps.map((gap, i) => (
+                  <div key={i} className="flex items-start gap-2 text-sm text-foreground/70">
+                    <span className="text-accent/50 mt-0.5 shrink-0">›</span>
+                    {gap}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ── Live run result ──────────────────────────────────────── */}
+      {lastResult && lastResult.ok && (
+        <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}
+          className="p-5 bg-emerald-500/5 border border-emerald-500/20 rounded-xl">
+          <div className="flex items-center gap-2 mb-3">
+            <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+            <span className="text-sm font-bold text-emerald-400">
+              {resultType === 'reflect' ? 'Reflection Complete' : 'Consolidation Complete'}
+            </span>
+          </div>
+          {resultType === 'reflect' && (
+            <div className="text-sm text-foreground/80 space-y-1">
+              <p>• Reviewed <strong>{lastResult.memoriesReviewed}</strong> memories</p>
+              {(lastResult.contradictionsFound || 0) > 0 && <p>• Found <strong>{lastResult.contradictionsFound}</strong> contradiction{lastResult.contradictionsFound !== 1 ? 's' : ''} (flagged for review)</p>}
+              {(lastResult.memoriesUpdated || 0) > 0 && <p>• Updated <strong>{lastResult.memoriesUpdated}</strong> memories</p>}
+              {(lastResult.newMemoriesCreated || 0) > 0 && <p>• Created <strong>{lastResult.newMemoriesCreated}</strong> synthesis memor{lastResult.newMemoriesCreated !== 1 ? 'ies' : 'y'}</p>}
+              {(lastResult.memoriesArchived || 0) > 0 && <p>• Archived <strong>{lastResult.memoriesArchived}</strong> unhealthy memor{lastResult.memoriesArchived !== 1 ? 'ies' : 'y'}</p>}
+              {lastResult.insights && <p className="mt-2 p-2 bg-accent/5 rounded text-xs italic border border-accent/10">&ldquo;{lastResult.insights}&rdquo;</p>}
+              {lastResult.gaps && lastResult.gaps.length > 0 && (
+                <div className="mt-2">
+                  <p className="text-xs text-muted/60 mb-1">Gaps identified:</p>
+                  {lastResult.gaps.map((g, i) => <p key={i} className="text-xs text-foreground/60">› {g}</p>)}
+                </div>
+              )}
+            </div>
+          )}
+        </motion.div>
+      )}
+
+      {/* ── Action buttons ───────────────────────────────────────── */}
+      <div className="flex flex-col sm:flex-row gap-3">
+        <motion.button
+          whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }}
+          onClick={handleReflect}
+          disabled={reflecting || consolidating}
+          className={cn(
+            'flex-1 flex items-center justify-center gap-2.5 px-5 py-3.5 rounded-xl text-sm font-bold transition-all border',
+            reflecting
+              ? 'bg-accent/10 border-accent/30 text-accent cursor-wait'
+              : 'btn-gold relative border-transparent'
+          )}
+        >
+          {reflecting ? (
+            <>
+              <RefreshCw className="w-4 h-4 animate-spin" />
+              <span className="relative z-10">Auditing memory bank…</span>
+            </>
+          ) : (
+            <>
+              <Wand2 className="w-4 h-4 relative z-10" />
+              <span className="relative z-10">Run Self-Reflection</span>
+            </>
+          )}
+        </motion.button>
+
+        <motion.button
+          whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }}
+          onClick={handleConsolidate}
+          disabled={reflecting || consolidating}
+          className={cn(
+            'flex-1 flex items-center justify-center gap-2.5 px-5 py-3.5 rounded-xl text-sm font-bold transition-all border',
+            consolidating
+              ? 'bg-accent/10 border-accent/30 text-accent cursor-wait'
+              : 'bg-surface border-border hover:border-accent/40 hover:bg-accent/5 text-foreground'
+          )}
+        >
+          {consolidating ? (
+            <>
+              <RefreshCw className="w-4 h-4 animate-spin" />
+              Consolidating + Compressing…
+            </>
+          ) : (
+            <>
+              <Zap className="w-4 h-4" />
+              Consolidate + Compress
+            </>
+          )}
+        </motion.button>
+      </div>
+
+      <p className="text-xs text-muted/40 text-center leading-relaxed">
+        Self-Reflection runs daily at 3 AM UTC · Consolidation runs weekly on Sunday at 4 AM UTC
+      </p>
+    </div>
   )
 }
 

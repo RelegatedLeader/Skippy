@@ -101,6 +101,57 @@ function deduplicateCandidates<T extends { category: string; content: string }>(
   return result
 }
 
+// ─── Memory health + topic intelligence ───────────────────────────────────────
+
+/**
+ * Composite health score (0–1) for a single memory.
+ * Weights: importance 35%, decay 30%, confidence 25%, access frequency 10%.
+ */
+export function computeHealthScore(m: {
+  importance: number; decayScore: number; confidence: number; accessCount: number
+}): number {
+  const accessBoost = Math.min(2.0, 1 + Math.log10(m.accessCount + 1))
+  return Math.min(1.0,
+    (m.importance / 10) * 0.35 +
+    m.decayScore         * 0.30 +
+    m.confidence         * 0.25 +
+    (accessBoost / 2)    * 0.10
+  )
+}
+
+/**
+ * Returns per-category importance boost multipliers based on the current
+ * conversation topic. Used by getRelevantMemories to surface relevant categories.
+ */
+function detectTopicCategoryBoost(query: string): Record<string, number> {
+  if (!query.trim()) return {}
+  const q = query.toLowerCase()
+  const boost: Record<string, number> = {}
+  if (/gym|workout|exercise|fitness|health|sick|doctor|diet|sleep|weight|calories|training|running|steps/.test(q))
+    { boost.health = 1.8; boost.routine = 0.6 }
+  if (/money|finance|budget|spend|cost|pay|salary|income|debt|save|invest|bank|credit/.test(q))
+    { boost.finance = 1.8 }
+  if (/family|friend|partner|girlfriend|boyfriend|wife|husband|sister|brother|mom|dad|relationship|dating|parents/.test(q))
+    { boost.relationship = 1.8 }
+  if (/work|job|career|project|task|deadline|meeting|boss|client|startup|business|office|company/.test(q))
+    { boost.project = 1.2; boost.context = 0.6; boost.goal = 0.5 }
+  if (/believe|think|opinion|values|ethics|politics|religion|philosophy|principles/.test(q))
+    { boost.belief = 1.8; boost.identity = 0.7 }
+  if (/learn|study|skill|practice|improve|course|language|chinese|mandarin|code|programming/.test(q))
+    { boost.skill = 1.5 }
+  if (/feel|emotion|mood|sad|happy|stressed|anxious|excited|depressed|overwhelmed/.test(q))
+    { boost.mood = 1.8; boost.pattern = 0.7 }
+  if (/habit|routine|schedule|daily|morning|night|every|wake|sleep|meal|ritual/.test(q))
+    { boost.routine = 1.5; boost.health = 0.4 }
+  if (/myself|identity|personality|character|who i am|life philosophy/.test(q))
+    { boost.identity = 1.8; boost.belief = 0.6; boost.pattern = 0.6 }
+  if (/goal|aspire|dream|plan|future|want to|trying to|aiming|target/.test(q))
+    { boost.goal = 1.5; boost.project = 0.5 }
+  if (/event|birthday|anniversary|trip|travel|vacation|appointment/.test(q))
+    { boost.event = 1.8 }
+  return boost
+}
+
 // ─── Date helpers ─────────────────────────────────────────────────────────────
 
 export function formatDueDate(dueDate: Date | string): string {
@@ -753,35 +804,73 @@ Return ONLY valid JSON: {"title": "...", "content": "markdown note content", "ta
 // ─── Memory retrieval ─────────────────────────────────────────────────────────
 
 export async function getRelevantMemories(query: string, limit = 50): Promise<string> {
-  const memories = await prisma.memory.findMany({
+  // Pull a wide pool so JS scoring can find the truly relevant — not just highest importance
+  const pool = await prisma.memory.findMany({
+    where: { isArchived: false },
     orderBy: [{ importance: 'desc' }, { updatedAt: 'desc' }],
-    take: limit,
+    take: 300,
+  })
+  if (pool.length === 0) return ''
+
+  // Score every memory against the current query
+  const queryWords = query.toLowerCase().split(/\W+/).filter(w => w.length >= 3)
+  const catBoosts  = detectTopicCategoryBoost(query)
+
+  type ScoredMemory = typeof pool[number] & { _score: number }
+  const scored: ScoredMemory[] = pool.map(m => {
+    // Base: importance × decay × confidence × access frequency
+    const accessBoost = Math.min(2.0, 1 + Math.log10(m.accessCount + 1))
+    const base = (m.importance / 10) * m.decayScore * m.confidence * accessBoost
+
+    // Keyword relevance: fraction of query words that hit the content (max 2.5× boost)
+    let relevance = 0
+    if (queryWords.length > 0) {
+      const content = m.content.toLowerCase()
+      const hits    = queryWords.filter(qw => content.includes(qw)).length
+      relevance     = (hits / queryWords.length) * 2.5
+    }
+
+    // Category affinity from topic detection
+    const catBoost = catBoosts[m.category] || 0
+
+    // Recency signal: fades linearly over 180 days
+    const ageDays  = (Date.now() - new Date(m.updatedAt).getTime()) / 86_400_000
+    const recency  = Math.max(0, 1 - ageDays / 180) * 0.4
+
+    // Soft penalty for memories flagged for review
+    const reviewPenalty = m.needsReview ? 0.6 : 1.0
+
+    return { ...m, _score: (base + relevance + catBoost + recency) * reviewPenalty }
   })
 
-  if (memories.length === 0) return ''
+  scored.sort((a, b) => b._score - a._score)
+  const top = scored.slice(0, limit)
 
-  // Track which memories were surfaced (batch update to avoid N+1)
+  // Track access (fire-and-forget, non-critical)
   const now = new Date()
   prisma.memory.updateMany({
-    where: { id: { in: memories.map(m => m.id) } },
+    where: { id: { in: top.map(m => m.id) } },
     data: { accessCount: { increment: 1 }, lastAccessedAt: now },
-  }).catch(() => { /* non-critical */ })
+  }).catch(() => {})
 
-  // Group by category for a structured prompt
-  const grouped = memories.reduce((acc, m) => {
-    if (!acc[m.category]) acc[m.category] = []
-    acc[m.category].push(m)
-    return acc
-  }, {} as Record<string, typeof memories>)
+  // Group by category, strongest category first
+  const grouped: Record<string, ScoredMemory[]> = {}
+  for (const m of top) {
+    if (!grouped[m.category]) grouped[m.category] = []
+    grouped[m.category].push(m)
+  }
+  const catOrder = Object.entries(grouped)
+    .sort((a, b) => (b[1][0]?._score || 0) - (a[1][0]?._score || 0))
 
   const lines: string[] = []
-  for (const [cat, mems] of Object.entries(grouped)) {
+  for (const [cat, mems] of catOrder) {
     lines.push(`[${cat.toUpperCase()}]`)
     for (const m of mems) {
-      const date = m.createdAt.toISOString().slice(0, 10)
-      const source = m.sourceLabel ? ` ← "${m.sourceLabel}"` : ''
-      const conf = m.confidence < 0.6 ? ' (uncertain)' : ''
-      lines.push(`  • (${date}) ${m.content}${source}${conf}`)
+      const date    = m.createdAt.toISOString().slice(0, 10)
+      const source  = m.sourceLabel ? ` ← "${m.sourceLabel}"` : ''
+      const conf    = m.confidence < 0.6 ? ' (uncertain)' : ''
+      const review  = m.needsReview ? ' ⚠' : ''
+      lines.push(`  • (${date}) ${m.content}${source}${conf}${review}`)
     }
   }
   return lines.join('\n')
@@ -875,10 +964,339 @@ export async function consolidateMemories(): Promise<{ merged: number; decayed: 
       await prisma.memory.update({ where: { id: m.id }, data: { decayScore: newDecay } })
       decayed++
     }
+
+    // 3. Recompute health scores for every active memory
+    await updateAllHealthScores().catch(() => {})
+
   } catch (e) {
     console.error('Memory consolidation error:', e)
   }
   return { merged, decayed }
+}
+
+// ─── Memory health engine ─────────────────────────────────────────────────────
+
+/** Recompute and persist healthScore for every non-archived memory in batches. */
+async function updateAllHealthScores(): Promise<void> {
+  const memories = await prisma.memory.findMany({
+    where: { isArchived: false },
+    select: { id: true, importance: true, decayScore: true, confidence: true, accessCount: true },
+  })
+  const BATCH = 50
+  for (let i = 0; i < memories.length; i += BATCH) {
+    const batch = memories.slice(i, i + BATCH)
+    await Promise.all(batch.map(m =>
+      prisma.memory.update({ where: { id: m.id }, data: { healthScore: computeHealthScore(m) } })
+    ))
+  }
+}
+
+/** Soft-archive memories whose health dropped below the threshold (spares manual entries). */
+async function archiveUnhealthyMemories(): Promise<number> {
+  const dying = await prisma.memory.findMany({
+    where: { isArchived: false, healthScore: { lt: 0.05 }, sourceType: { not: 'manual' } },
+    select: { id: true },
+  })
+  if (dying.length === 0) return 0
+  await prisma.memory.updateMany({
+    where: { id: { in: dying.map(m => m.id) } },
+    data: { isArchived: true },
+  })
+  return dying.length
+}
+
+// ─── Self-reflection engine ───────────────────────────────────────────────────
+
+/**
+ * SKIPPY'S INTERNAL MEMORY AUDITOR.
+ *
+ * Autonomously reviews the entire memory bank, detects contradictions and stale
+ * data, synthesises new high-order insights, rebalances importance/confidence
+ * scores, identifies knowledge gaps, then archives dead memories.
+ *
+ * Designed to run on a schedule (daily) or on-demand from the Memory Vault page.
+ */
+export async function runMemorySelfReflection(triggeredBy = 'manual'): Promise<{
+  memoriesReviewed: number
+  contradictionsFound: number
+  memoriesUpdated: number
+  memoriesArchived: number
+  newMemoriesCreated: number
+  insights: string
+  gaps: string[]
+}> {
+  const result = {
+    memoriesReviewed:    0,
+    contradictionsFound: 0,
+    memoriesUpdated:     0,
+    memoriesArchived:    0,
+    newMemoriesCreated:  0,
+    insights:            '',
+    gaps:                [] as string[],
+  }
+
+  try {
+    const [allMemories, recentSummaries] = await Promise.all([
+      prisma.memory.findMany({
+        where: { isArchived: false },
+        orderBy: [{ importance: 'desc' }, { createdAt: 'asc' }],
+      }),
+      prisma.conversation.findMany({
+        where: { summary: { not: null } },
+        orderBy: { updatedAt: 'desc' },
+        take: 5,
+        select: { summary: true, updatedAt: true },
+      }),
+    ])
+
+    result.memoriesReviewed = allMemories.length
+    if (allMemories.length === 0) return result
+
+    // Send top 200 by importance — keeps the prompt manageable at scale
+    const topMemories = allMemories.slice(0, 200)
+    const memoryDump  = topMemories.map(m =>
+      `[${m.id}] (${m.category}, imp:${m.importance}, conf:${Math.round(m.confidence * 100)}%, age:${Math.round((Date.now() - new Date(m.createdAt).getTime()) / 86_400_000)}d) ${m.content}`
+    ).join('\n')
+
+    const ctxSummaries = recentSummaries
+      .map(s => `[${s.updatedAt.toISOString().slice(0, 10)}] ${s.summary}`)
+      .join('\n')
+
+    const auditRaw = await callAI([
+      {
+        role: 'system',
+        content: `You are SKIPPY's internal Memory Auditor — an autonomous AI subsystem that reviews and improves the memory bank.
+
+Your task: audit memories about the user, find problems, synthesise deeper insights, and return precise correction instructions.
+
+AUDIT TASKS:
+1. CONTRADICTIONS — Find pairs that directly contradict each other (e.g. "loves coffee" vs "doesn't drink caffeine"). Only flag clear, direct contradictions.
+2. STALE — Identify memories likely outdated by newer information or age (e.g. "currently job hunting" from 90+ days ago). Only flag when confident.
+3. SYNTHESIS — Write 3-8 NEW high-value memories that synthesise what the individual memories REALLY reveal about this person. Focus on:
+   • Behavioral patterns only visible across multiple memories
+   • Core drives and values that keep recurring
+   • Tensions or blind spots apparent only at the aggregate level
+   • The current life chapter: what phase is this person in right now?
+   These MUST be original — not paraphrases of existing memories.
+4. UPDATES — Suggest importance/confidence corrections for clearly mis-rated memories.
+5. GAPS — Name 4-6 important things you DON'T know that a close personal AI should. Make them specific and actionable (things Skippy can ask naturally in conversation).
+6. INSIGHTS — Write a concise 4-6 sentence internal briefing: who is this person at their core, what drives them, what is their current life state, what tensions should Skippy always hold in mind?
+
+RULES:
+• Only reference memory IDs that appear in the dump below.
+• Synthesis memories must be genuinely novel — not repetitions.
+• Be forensic. A single memory means little; patterns across 20 are gold.
+• Be honest about uncertainty (lower confidence = inferred not stated).
+• Return ONLY valid JSON.
+
+JSON schema:
+{
+  "contradictions": [{"id1": "...", "id2": "...", "reason": "..."}],
+  "stale": [{"id": "...", "reason": "..."}],
+  "synthesis": [{"category": "...", "content": "...", "importance": 1-10, "confidence": 0.1-1.0, "tags": [...]}],
+  "updates": [{"id": "...", "importance": 1-10, "confidence": 0.1-1.0}],
+  "gaps": ["...", "..."],
+  "insights": "..."
+}`,
+      },
+      {
+        role: 'user',
+        content: `MEMORY BANK (${topMemories.length} of ${allMemories.length} total):\n${memoryDump}\n\nRECENT CONVERSATION SUMMARIES:\n${ctxSummaries || 'Not yet available.'}\n\nAudit. Return ONLY valid JSON.`,
+      },
+    ], { json: true, temperature: 0.2, max_tokens: 3500 })
+
+    let audit: {
+      contradictions?: Array<{ id1: string; id2: string; reason: string }>
+      stale?: Array<{ id: string; reason: string }>
+      synthesis?: Array<{ category?: string; content?: string; importance?: number; confidence?: number; tags?: string[] }>
+      updates?: Array<{ id: string; importance?: number; confidence?: number }>
+      gaps?: string[]
+      insights?: string
+    }
+    try { audit = JSON.parse(auditRaw) } catch { audit = {} }
+
+    // ── Apply contradictions ───────────────────────────────────────────────
+    for (const { id1, id2, reason } of (audit.contradictions || [])) {
+      try {
+        const [m1, m2] = await Promise.all([
+          prisma.memory.findUnique({ where: { id: id1 } }),
+          prisma.memory.findUnique({ where: { id: id2 } }),
+        ])
+        if (m1 && m2) {
+          await Promise.all([
+            prisma.memory.update({ where: { id: id1 }, data: {
+              needsReview: true,
+              contradicts: JSON.stringify(Array.from(new Set([...(JSON.parse(m1.contradicts || '[]') as string[]), id2]))),
+              reflectionNote: `Contradicts: "${m2.content.slice(0, 100)}" — ${reason}`,
+            }}),
+            prisma.memory.update({ where: { id: id2 }, data: {
+              needsReview: true,
+              contradicts: JSON.stringify(Array.from(new Set([...(JSON.parse(m2.contradicts || '[]') as string[]), id1]))),
+              reflectionNote: `Contradicts: "${m1.content.slice(0, 100)}" — ${reason}`,
+            }}),
+          ])
+          result.contradictionsFound++
+        }
+      } catch { /* skip invalid IDs */ }
+    }
+
+    // ── Apply stale flags ──────────────────────────────────────────────────
+    for (const { id, reason } of (audit.stale || [])) {
+      try {
+        const m = allMemories.find(x => x.id === id)
+        if (m) {
+          await prisma.memory.update({ where: { id }, data: {
+            importance:     Math.max(1, m.importance - 2),
+            confidence:     Math.max(0.1, m.confidence - 0.15),
+            needsReview:    true,
+            reflectionNote: `Possibly stale: ${reason}`,
+          }})
+          result.memoriesUpdated++
+        }
+      } catch { /* skip */ }
+    }
+
+    // ── Create synthesis memories ──────────────────────────────────────────
+    const existingPool = allMemories.map(m => ({ category: m.category, content: m.content }))
+    for (const s of (audit.synthesis || [])) {
+      if (!s.content?.trim()) continue
+      const tags = Array.isArray(s.tags) ? s.tags : []
+      const unique = deduplicateCandidates(
+        [{ category: s.category || 'pattern', content: s.content, importance: s.importance || 7, confidence: s.confidence || 0.8, tags, emotionalValence: null }],
+        existingPool
+      )
+      if (unique.length === 0) continue // deduplicated away — skip
+      try {
+        await prisma.memory.create({ data: {
+          category:      s.category || 'pattern',
+          content:       s.content.trim().slice(0, 500),
+          importance:    Math.min(10, Math.max(1, s.importance || 7)),
+          confidence:    Math.min(1,  Math.max(0.1, s.confidence || 0.8)),
+          tags:          JSON.stringify(['synthesis', 'reflection', ...tags]),
+          sourceType:    'reflection',
+          sourceLabel:   `Self-audit ${new Date().toISOString().slice(0, 10)}`,
+        }})
+        existingPool.push({ category: s.category || 'pattern', content: s.content })
+        result.newMemoriesCreated++
+      } catch { /* skip */ }
+    }
+
+    // ── Apply importance/confidence updates ────────────────────────────────
+    for (const { id, importance, confidence } of (audit.updates || [])) {
+      try {
+        const updates: Record<string, unknown> = {}
+        if (importance !== undefined) updates.importance = Math.min(10, Math.max(1, importance))
+        if (confidence !== undefined) updates.confidence = Math.min(1,  Math.max(0.1, confidence))
+        if (Object.keys(updates).length > 0) {
+          await prisma.memory.update({ where: { id }, data: updates })
+          result.memoriesUpdated++
+        }
+      } catch { /* skip invalid IDs */ }
+    }
+
+    result.gaps    = (audit.gaps    || []).slice(0, 10).filter((g): g is string => typeof g === 'string')
+    result.insights = typeof audit.insights === 'string' ? audit.insights : ''
+
+    // ── Health recompute + archive dead memories ───────────────────────────
+    await updateAllHealthScores()
+    result.memoriesArchived += await archiveUnhealthyMemories()
+
+    // ── Persist reflection log ─────────────────────────────────────────────
+    await prisma.memoryReflection.create({ data: {
+      memoriesReviewed:    result.memoriesReviewed,
+      contradictionsFound: result.contradictionsFound,
+      memoriesUpdated:     result.memoriesUpdated,
+      memoriesArchived:    result.memoriesArchived,
+      newMemoriesCreated:  result.newMemoriesCreated,
+      insights:            result.insights,
+      gaps:                JSON.stringify(result.gaps),
+      triggeredBy,
+    }})
+
+  } catch (e) {
+    console.error('[MemoryReflection] Error:', e)
+  }
+
+  return result
+}
+
+// ─── Memory compressor ────────────────────────────────────────────────────────
+
+/**
+ * AI-powered cluster compression.
+ * Takes a dense category (10+ entries) and synthesises it into 3-6 richer, more
+ * comprehensive memories — then archives the originals that were fully absorbed.
+ * Keeps the bank lean without losing information.
+ */
+export async function compressMemoryCluster(category: string): Promise<{ compressed: number; created: number }> {
+  const memories = await prisma.memory.findMany({
+    where: { category, isArchived: false },
+    orderBy: { importance: 'desc' },
+  })
+  if (memories.length < 10) return { compressed: 0, created: 0 }
+
+  const dump = memories.map(m =>
+    `[${m.id}] (imp:${m.importance}, src:${m.sourceType || '?'}) ${m.content}`
+  ).join('\n')
+
+  let created = 0
+  const toArchive = new Set<string>()
+
+  try {
+    const raw = await callAI([
+      {
+        role: 'system',
+        content: `You compress a personal AI memory category into fewer, higher-quality entries.
+You receive ${memories.length} memories in the "${category}" category.
+Synthesise them into 3-6 rich, comprehensive memories — each one capturing MORE than any single original.
+For each synthesis, include the IDs of originals it FULLY replaces (all their information is preserved).
+Only replace non-critical originals; manual/high-importance entries can stay.
+Return ONLY valid JSON: {"synthesis": [{"content": "...", "importance": 1-10, "confidence": 0.1-1.0, "tags": [...], "replaces": ["id1", "id2"]}]}`,
+      },
+      { role: 'user', content: dump + '\n\nCompress. Return ONLY valid JSON.' },
+    ], { json: true, temperature: 0.25, max_tokens: 1500 })
+
+    const parsed = JSON.parse(raw) as { synthesis?: Array<{ content?: string; importance?: number; confidence?: number; tags?: unknown; replaces?: string[] }> }
+    const existingPool = memories.map(m => ({ category, content: m.content }))
+
+    for (const s of (parsed.synthesis || [])) {
+      if (!s.content?.trim()) continue
+      const tags   = Array.isArray(s.tags) ? s.tags as string[] : []
+      const unique = deduplicateCandidates(
+        [{ category, content: s.content, importance: s.importance || 7, confidence: s.confidence || 0.85, tags, emotionalValence: null }],
+        existingPool
+      )
+      if (unique.length === 0) continue
+
+      await prisma.memory.create({ data: {
+        category,
+        content:     s.content.trim().slice(0, 500),
+        importance:  Math.min(10, Math.max(1, s.importance || 7)),
+        confidence:  Math.min(1,  Math.max(0.1, s.confidence || 0.85)),
+        tags:        JSON.stringify(['compressed', 'synthesis', ...tags]),
+        sourceType:  'reflection',
+        sourceLabel: `Compressed ${new Date().toISOString().slice(0, 10)}`,
+      }})
+      existingPool.push({ category, content: s.content })
+      created++
+
+      for (const id of (s.replaces || [])) {
+        const m = memories.find(x => x.id === id)
+        if (m && m.sourceType !== 'manual' && m.importance < 9) toArchive.add(id)
+      }
+    }
+  } catch (e) {
+    console.error(`[compressMemoryCluster:${category}]`, e)
+  }
+
+  if (toArchive.size > 0) {
+    await prisma.memory.updateMany({
+      where: { id: { in: Array.from(toArchive) } },
+      data: { isArchived: true },
+    })
+  }
+
+  return { compressed: toArchive.size, created }
 }
 
 // ─── User profile ─────────────────────────────────────────────────────────────
@@ -895,7 +1313,7 @@ export async function getUserProfile() {
 
 // ─── System prompt ────────────────────────────────────────────────────────────
 
-export async function buildSystemPrompt(tzOffsetMinutes = 0): Promise<string> {
+export async function buildSystemPrompt(tzOffsetMinutes = 0, recentUserMessages: string[] = []): Promise<string> {
   // Compute the user's local date/time (server runs UTC on Vercel)
   const serverNow = new Date()
   const localNow = new Date(serverNow.getTime() - tzOffsetMinutes * 60 * 1000)
@@ -942,13 +1360,18 @@ export async function buildSystemPrompt(tzOffsetMinutes = 0): Promise<string> {
     return `${dueLocal.toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' })}${timeLabel}`
   }
 
+  // Build a context query from recent user messages — used for relevance-scored memory retrieval
+  // and smart note loading (fewer notes when the conversation isn't note-related)
+  const _contextQuery = recentUserMessages.slice(-2).join(' ')
+  const _noteRelated  = /note|wrote|saved|journal|log|record|wrote down/i.test(_contextQuery)
+
   const [memories, profile, allNotes, recentDebates, pendingReminders, recentConversations, pendingTodos, langProgress, learnedWordsList] = await Promise.all([
-    getRelevantMemories('', 50),
+    getRelevantMemories(_contextQuery, 50),
     getUserProfile(),
-    // Fetch all notes — pinned first, then most recent
+    // Smart note loading: full 30 when the conversation references notes; 15 otherwise
     prisma.note.findMany({
       orderBy: [{ pinned: 'desc' }, { updatedAt: 'desc' }],
-      take: 30,
+      take: _noteRelated ? 30 : 15,
       select: { title: true, content: true, tags: true, encrypted: true, pinned: true, updatedAt: true },
     }),
     prisma.debate.findMany({
