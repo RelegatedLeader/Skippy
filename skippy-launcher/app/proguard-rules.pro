@@ -1,0 +1,3 @@
+-keep class com.skippy.launcher.** { *; }
+-dontwarn okhttp3.**
+-dontwarn okio.**

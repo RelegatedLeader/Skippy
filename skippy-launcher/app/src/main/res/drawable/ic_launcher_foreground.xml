@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- Skippy lightning bolt in cyan -->
+    <path
+        android:fillColor="#29C2E6"
+        android:pathData="M64,18 L40,56 H58 L44,90 L84,48 H64 Z" />
+</vector>
