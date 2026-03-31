@@ -58,32 +58,58 @@ function detectDataIntent(text: string): DataIntent {
 // Voice selection (Web Speech API fallback)
 // ─────────────────────────────────────────────────────────────────────────────
 
-function pickMaleVoice(): SpeechSynthesisVoice | null {
-  const voices = window.speechSynthesis.getVoices()
+// Takes a pre-loaded voices array so mobile callers don't hit the
+// getVoices() race condition (voices load async on iOS/Android).
+function pickMaleVoice(voices: SpeechSynthesisVoice[]): SpeechSynthesisVoice | null {
   if (!voices.length) return null
   const FEMALE =
-    /\b(samantha|karen|tessa|nicky|moira|victoria|zira|hazel|fiona|alice|kate|siri|allison|zoe|heather|claire|emma|joanna|kendra|kimberly|salli|amy|bella|olivia|aria|jenny|ana|michelle|monica|nora|susan|serena|google us english)\b/i
+    /\b(samantha|karen|tessa|nicky|moira|victoria|zira|hazel|fiona|alice|kate|siri|allison|zoe|heather|claire|emma|joanna|kendra|kimberly|salli|amy|bella|olivia|aria|jenny|ana|michelle|monica|nora|susan|serena|google us english|ava|evelyn|rosa|sandy|shelley|mei-jia|damayanti|female|woman)\b/i
+  const en = voices.filter((v) => v.lang.startsWith('en'))
+
+  // Priority list — enhanced/neural voices first, then standard male voices.
+  // Covers iOS (Aaron, Tom, Daniel, Rishi, Reed), Android (Google UK English Male),
+  // macOS (Alex, Bruce), and Windows (Microsoft Mark etc.).
   const PRIORITIES: RegExp[] = [
-    /\btom\b/i,
-    /\baaron\b/i,
-    /\bdaniel\b/i,
-    /\bliam\b/i,
-    /\breed\b/i,
-    /\bzac\b/i,
+    // Enhanced (neural quality) on iOS 16+
+    /aaron.*enhanced/i,
+    /tom.*enhanced/i,
+    /daniel.*enhanced/i,
+    /rishi.*enhanced/i,
+    /reed.*enhanced/i,
+    // Android neural
     /google uk english male/i,
+    // Standard male voices in rough quality order
+    /\baaron\b/i,
+    /\btom\b/i,
+    /\bdaniel\b/i,
+    /\brishi\b/i,   // Indian-accent iOS voice, surprisingly natural
+    /\breed\b/i,
+    /\bliam\b/i,
+    /\bzac\b/i,
+    /\bfred\b/i,
+    /\bjunior\b/i,
+    /\barthur\b/i,
+    /\boliver\b/i,
+    /\bryan\b/i,
+    /\bmatthew\b/i,
+    /\balex\b/i,
+    /\bmark\b/i,
+    /\bdavid\b/i,
+    /\bjames\b/i,
+    /\bbruce\b/i,
     /microsoft (mark|david|james|ryan)/i,
-    /\b(mark|david|james|oliver|ryan|bruce|fred|matthew|arthur|alex)\b/i,
   ]
+
   for (const pat of PRIORITIES) {
-    const v = voices.find((v) => pat.test(v.name) && v.lang.startsWith('en'))
+    const v = en.find((v) => pat.test(v.name) && !FEMALE.test(v.name))
     if (v) return v
   }
+
   return (
-    voices.find((v) => /\bmale\b/i.test(v.name) && v.lang.startsWith('en')) ??
-    voices.find((v) => v.lang === 'en-US' && !FEMALE.test(v.name)) ??
-    voices.find((v) => v.lang.startsWith('en') && !FEMALE.test(v.name)) ??
-    voices.find((v) => v.lang.startsWith('en')) ??
-    null
+    en.find((v) => /\bmale\b/i.test(v.name)) ??
+    en.find((v) => v.lang === 'en-US' && !FEMALE.test(v.name)) ??
+    en.find((v) => !FEMALE.test(v.name)) ??
+    en[0] ?? null
   )
 }
 
@@ -552,6 +578,9 @@ export function VoiceMode({ onTranscript, chatBusy, autoActivate, className }: V
   const orbTapRef        = useRef<() => void>(() => {})
   const greetingRef      = useRef(makeGreeting())
   const logRef           = useRef<HTMLDivElement>(null)
+  // Voices ref — populated on mount + voiceschanged so mobile callers always
+  // have a fresh list when the Web Speech fallback fires.
+  const voicesRef        = useRef<SpeechSynthesisVoice[]>([])
 
   useEffect(() => { openRef.current = open }, [open])
   useEffect(() => { mutedRef.current = muted }, [muted])
@@ -560,6 +589,17 @@ export function VoiceMode({ onTranscript, chatBusy, autoActivate, className }: V
   const setPhaseSync = useCallback((p: Phase) => { phaseRef.current = p; setPhase(p) }, [])
 
   useEffect(() => setMounted(true), [])
+
+  // ── Pre-load speech synthesis voices (async on iOS/Android) ─────────────────
+  useEffect(() => {
+    const load = () => {
+      const v = window.speechSynthesis?.getVoices() ?? []
+      if (v.length) voicesRef.current = v
+    }
+    load()
+    window.speechSynthesis?.addEventListener('voiceschanged', load)
+    return () => window.speechSynthesis?.removeEventListener('voiceschanged', load)
+  }, [])
 
   // ── Create persistent Audio element on mount (mobile unlock requires reuse) ─
   useEffect(() => {
@@ -631,7 +671,7 @@ export function VoiceMode({ onTranscript, chatBusy, autoActivate, className }: V
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ text }),
-          signal: AbortSignal.timeout(9_000),
+          signal: AbortSignal.timeout(5_000),
         })
         if (!res.ok) { console.warn('[TTS] server returned', res.status); return null }
         const blob = await res.blob()
@@ -679,16 +719,18 @@ export function VoiceMode({ onTranscript, chatBusy, autoActivate, className }: V
         // Get pre-fetched Blob URL (or fetch now if not ready)
         const blobUrl = await preFetchTTS(clean)
         if (!blobUrl) {
-          // Neural TTS failed — fall back to Web Speech API so the user
-          // always hears Skippy rather than silence.
+          // Neural TTS failed — fall back to Web Speech API so Skippy
+          // always speaks rather than going silent.
           console.warn('[VoiceMode] Neural TTS unavailable, falling back to Web Speech for:', clean.slice(0, 40))
           try {
             window.speechSynthesis?.cancel()
             const utt = new SpeechSynthesisUtterance(clean)
-            const voice = pickMaleVoice()
+            // voicesRef is pre-populated via voiceschanged — fixes iOS/Android
+            // race condition where getVoices() returns [] on first call.
+            const voice = pickMaleVoice(voicesRef.current)
             if (voice) utt.voice = voice
-            utt.rate  = 0.92
-            utt.pitch = 0.88
+            utt.rate   = 0.88   // slightly slower = warmer, less robotic
+            utt.pitch  = 0.82   // lower pitch = more masculine
             utt.volume = 1
             utt.onend   = () => { setSpeakingText(''); onEnd() }
             utt.onerror = () => { setSpeakingText(''); onEnd() }
