@@ -19,11 +19,32 @@ interface VoiceModeProps {
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-const SILENCE_MS         = 850    // ms after last FINAL result → stop
-const INTERIM_SILENCE_MS = 2200   // ms after last ANY result → force-stop if we have final text
+const SILENCE_MS         = 750    // ms after last FINAL result → stop
+const INTERIM_SILENCE_MS = 1800   // ms after last ANY result → force-stop if we have final text
 const MAX_LISTEN_MS      = 45_000
-const LOOP_PAUSE_MS      = 150    // ms between Skippy finishing and listening again
+const LOOP_PAUSE_MS      = 120    // ms between Skippy finishing and listening again
 const MAX_ERR_RESTARTS   = 6      // guard against tight ERROR-based restart loops (not no-speech)
+
+// ─── Voice helpers ─────────────────────────────────────────────────────────
+
+// Chrome's default voice "Google US English" is female but doesn’t contain a female name,
+// so it slips past name-based filters. Checking the voice name explicitly prevents this.
+function isDefinitelyFemale(v: SpeechSynthesisVoice): boolean {
+  const n = v.name.toLowerCase()
+  return (
+    /\bfemale\b/.test(n) ||
+    n === 'google us english' ||
+    /\b(samantha|karen|tessa|nicky|moira|serena|victoria|susan|zira|hazel|fiona|veena|alva|alice|amelie|kate|siri|allison|zoe|heather|claire|emma|joanna|kendra|kimberly|ivy|salli|lisa|amy|bella|olivia|aria|jenny|ana|michelle|monica|nora)\b/.test(n)
+  )
+}
+
+function isKnownMale(v: SpeechSynthesisVoice): boolean {
+  const n = v.name.toLowerCase()
+  return (
+    /\bmale\b/.test(n) ||
+    /\b(tom|daniel|liam|reed|gordon|alex|mark|david|james|oliver|ryan|bruce|fred|ralph|junior|aaron|arthur|eddy|rocko|matthew|benjamin)\b/.test(n)
+  )
+}
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -80,15 +101,15 @@ function pullSentences(buf: string): { sentences: string[]; rest: string } {
     last = re.lastIndex
   }
   if (sentences.length === 0) {
-    // Chunk at comma-pause (≥90 chars) to start TTS before the full sentence arrives
-    if (buf.length > 90) {
+    // Chunk at comma-pause (≥65 chars) to start TTS quicker
+    if (buf.length > 65) {
       const ci = buf.lastIndexOf(',')
-      if (ci > 45) return { sentences: [buf.slice(0, ci + 1).trim()], rest: buf.slice(ci + 1) }
+      if (ci > 35) return { sentences: [buf.slice(0, ci + 1).trim()], rest: buf.slice(ci + 1) }
     }
-    // Last resort: chunk at word boundary once buffer reaches 75 chars
-    if (buf.length > 75) {
-      const si = buf.lastIndexOf(' ', 75)
-      if (si > 40) return { sentences: [buf.slice(0, si).trim()], rest: buf.slice(si + 1) }
+    // Chunk at word boundary once buffer reaches 50 chars — speak first words ASAP
+    if (buf.length > 50) {
+      const si = buf.lastIndexOf(' ', 50)
+      if (si > 25) return { sentences: [buf.slice(0, si).trim()], rest: buf.slice(si + 1) }
     }
   }
   return { sentences, rest: buf.slice(last) }
@@ -181,6 +202,7 @@ export function VoiceMode({
   const restartWindowRef   = useRef<ReturnType<typeof setTimeout> | null>(null)
   const processingRef      = useRef(false) // prevents concurrent processText calls
   const generationRef      = useRef(0)     // incremented each processText call — stale closures bail out
+  const typingRef          = useRef(false) // true when type-input has focus — mic pauses while typing
 
   const listenRecogRef     = useRef<SpeechRecognition | null>(null)
   const utteranceRef       = useRef<SpeechSynthesisUtterance | null>(null)
@@ -266,37 +288,32 @@ export function VoiceMode({
 
       const voices = window.speechSynthesis.getVoices()
 
-      // ── Voice priority: natural friendly male — most human-sounding first ──
-      // Tom      = macOS, warm clear American male (best free voice on Mac)
-      // Daniel   = macOS/iOS, natural British male — second best
-      // Gordon   = macOS, Scottish male (distinct but warm)
-      // Alex     = macOS older but clear American male
-      // Liam     = iOS 16+ natural American male
-      // Reed     = iOS 16+ high-quality American male
-      // Microsoft Mark/David = Windows natural males
-      // Google UK English Male = Chrome natural male
-      // Fallback: any English non-female voice
-      const femaleNames = /samantha|karen|tessa|nicky|moira|serena|victoria|susan|zira|hazel|fiona|veena|alva|alice|amelie|ava|kate|siri|allison|ava/i
+      // ── Voice selection: force a male voice always ───────────────────────────
+      // Priority (highest to lowest quality on each platform):
+      //   macOS/iOS: Tom → Daniel → Liam → Reed → Gordon → Alex
+      //   Chrome:    Google UK English Male → Microsoft Mark/David → any male-named
+      //   Last effort: any English voice that isn't definitively female
       const voice =
         voices.find(v => /\btom\b/i.test(v.name)    && v.lang.startsWith('en')) ||
         voices.find(v => /\bdaniel\b/i.test(v.name) && v.lang.startsWith('en')) ||
         voices.find(v => /\bliam\b/i.test(v.name)   && v.lang.startsWith('en')) ||
         voices.find(v => /\breed\b/i.test(v.name)   && v.lang.startsWith('en')) ||
+        voices.find(v => /google uk english male/i.test(v.name)) ||
+        voices.find(v => /microsoft (mark|david|james|ryan)/i.test(v.name)) ||
+        voices.find(v => isKnownMale(v) && v.lang.startsWith('en-US')) ||
+        voices.find(v => isKnownMale(v) && v.lang.startsWith('en')) ||
         voices.find(v => /\bgordon\b/i.test(v.name) && v.lang.startsWith('en')) ||
         voices.find(v => /\balex\b/i.test(v.name)   && v.lang.startsWith('en')) ||
-        voices.find(v => /\bmark\b/i.test(v.name)   && v.lang.startsWith('en')) ||
-        voices.find(v => /microsoft mark/i.test(v.name)) ||
-        voices.find(v => /microsoft david/i.test(v.name)) ||
-        voices.find(v => /google uk english male/i.test(v.name)) ||
-        voices.find(v => v.lang === 'en-US' && !femaleNames.test(v.name) && !v.name.toLowerCase().includes('google')) ||
-        voices.find(v => v.lang === 'en-US' && !femaleNames.test(v.name)) ||
-        voices.find(v => v.lang.startsWith('en') && !femaleNames.test(v.name)) ||
+        // Avoid Google US English (female default in Chrome) — use only if nothing else found
+        voices.find(v => v.lang === 'en-US' && !isDefinitelyFemale(v) && !v.name.toLowerCase().includes('google')) ||
+        voices.find(v => v.lang.startsWith('en') && !isDefinitelyFemale(v)) ||
         voices.find(v => v.lang.startsWith('en')) ||
         null
 
       if (voice) utt.voice = voice
-      utt.rate   = 1.1   // slightly faster — natural conversational pace
-      utt.pitch  = 0.9   // slightly warm/low but not robotic
+      // pitch 0.7 ensures a masculine tone even if the browser provides a neutral/female voice
+      utt.rate   = 1.05  // natural conversational pace
+      utt.pitch  = 0.7   // deep enough to always sound male
       utt.volume = 1.0
       utt.lang   = 'en-US'
 
@@ -370,9 +387,12 @@ export function VoiceMode({
       setCurrentSentence('')
       if (!dismissingRef.current && openRef.current) {
         setVoiceState('ready')
-        loopTimerRef.current = setTimeout(() => {
-          if (!dismissingRef.current && openRef.current) startListeningRef.current()
-        }, LOOP_PAUSE_MS)
+        // Don't auto-restart mic if user is actively typing
+        if (!typingRef.current) {
+          loopTimerRef.current = setTimeout(() => {
+            if (!dismissingRef.current && openRef.current && !typingRef.current) startListeningRef.current()
+          }, LOOP_PAUSE_MS)
+        }
       }
     }
 
@@ -473,6 +493,8 @@ export function VoiceMode({
       return
     }
     if (dismissingRef.current) return
+    // Don't start mic while user has the text input focused
+    if (typingRef.current) return
 
     // ── Guard against tight ERROR-based restart loops only ──
     // Normal no-speech restarts are expected and must NOT count here
@@ -1046,6 +1068,23 @@ export function VoiceMode({
               type="text"
               value={typeInput}
               onChange={e => setTypeInput(e.target.value)}
+              onFocus={() => {
+                // Pause the voice loop while user is typing — prevents mic picking
+                // up keystrokes or ambient noise and creating duplicate messages
+                typingRef.current = true
+                stopListening()
+              }}
+              onBlur={() => {
+                typingRef.current = false
+                // Resume listening when user leaves the input (if nothing is processing)
+                if (openRef.current && !dismissingRef.current && !processingRef.current) {
+                  setTimeout(() => {
+                    if (!typingRef.current && openRef.current && !dismissingRef.current && !processingRef.current) {
+                      startListeningRef.current()
+                    }
+                  }, 200)
+                }
+              }}
               placeholder="Type to Skippy\u2026"
               disabled={voiceState === 'processing'}
               style={{
