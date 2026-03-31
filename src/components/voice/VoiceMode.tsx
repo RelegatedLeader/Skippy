@@ -3,7 +3,7 @@
 import { useEffect, useRef, useCallback, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Mic, X, Loader2, Volume2, VolumeX } from 'lucide-react'
+import { Mic, X, Loader2, Volume2, VolumeX, Send } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -24,9 +24,11 @@ const WAKE_WORDS = [
   'ok skippy', 'ok skip', 'yo skippy', 'yo skip',
   'skipy', 'skipper',
 ]
-const SILENCE_MS    = 2000
-const MAX_LISTEN_MS = 45_000
-const LOOP_PAUSE_MS = 1200
+const SILENCE_MS         = 1500   // ms after last FINAL result → stop
+const INTERIM_SILENCE_MS = 2800   // ms after last ANY result → force-stop if we have text
+const MAX_LISTEN_MS      = 45_000
+const LOOP_PAUSE_MS      = 600    // ms between Skippy finishing and listening again
+const MAX_RESTARTS       = 8      // guard against tight SR restart loops
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -36,16 +38,15 @@ function greetingLine(): string {
   if (h < 12) return "Good morning! What can I help you with?"
   if (h < 17) return "Hey! What can I do for you?"
   if (h < 21) return "Good evening! What do you need?"
-  return "Hey, still up? I'm here."
+  return "Hey, still up. What do you need?"
 }
 
 function playChime(type: 'wake' | 'done' | 'error') {
   try {
-    const ctx = new AudioContext()
-    const osc = ctx.createOscillator()
+    const ctx  = new AudioContext()
+    const osc  = ctx.createOscillator()
     const gain = ctx.createGain()
-    osc.connect(gain)
-    gain.connect(ctx.destination)
+    osc.connect(gain); gain.connect(ctx.destination)
     if (type === 'wake') {
       osc.type = 'sine'
       osc.frequency.setValueAtTime(440, ctx.currentTime)
@@ -69,6 +70,26 @@ function playChime(type: 'wake' | 'done' | 'error') {
     }
     setTimeout(() => ctx.close(), 900)
   } catch { /* AudioContext may be blocked */ }
+}
+
+// ─── Sentence splitter for streaming TTS ─────────────────────────────────────
+
+function pullSentences(buf: string): { sentences: string[]; rest: string } {
+  const re = /[^.!?\n]*[.!?\n]+\s*/g
+  const sentences: string[] = []
+  let last = 0
+  let m: RegExpExecArray | null
+  while ((m = re.exec(buf)) !== null) {
+    const s = m[0].trim()
+    if (s.length > 5) sentences.push(s)
+    last = re.lastIndex
+  }
+  // Chunk on comma-pause at 120+ chars so TTS starts before full sentence ends
+  if (sentences.length === 0 && buf.length > 120) {
+    const ci = buf.lastIndexOf(',')
+    if (ci > 60) return { sentences: [buf.slice(0, ci + 1).trim()], rest: buf.slice(ci + 1) }
+  }
+  return { sentences, rest: buf.slice(last) }
 }
 
 // ─── Per-state config ─────────────────────────────────────────────────────────
@@ -120,11 +141,11 @@ const MAIN_LABEL: Record<VoiceState, string> = {
 
 const SUB_LABEL: Record<VoiceState, string> = {
   greeting:   'Tap to interrupt \u00b7 start talking',
-  ready:      'Tap Skippy \u00b7 or say "Skip"',
-  listening:  'Take your time',
+  ready:      'Tap Skippy to speak \u00b7 or type below',
+  listening:  'Listening \u00b7 tap robot to finish early',
   processing: 'Working on it',
-  speaking:   'Tap to interrupt',
-  error:      'Something went wrong \u00b7 tap to retry',
+  speaking:   'Tap to interrupt \u00b7 start talking',
+  error:      'Tap to try again',
 }
 
 // ─── Component ────────────────────────────────────────────────────────────────
@@ -144,39 +165,44 @@ export function VoiceMode({
   const [micAllowed, setMicAllowed]   = useState(true)
   const [volumeLevel, setVolumeLevel] = useState(0)
   const [tick, setTick]               = useState(0)
+  const [typeInput, setTypeInput]     = useState('')
 
   // ── Refs ──────────────────────────────────────────────────────────────────
 
-  const openRef           = useRef(false)
-  const voiceStateRef     = useRef<VoiceState>('ready')
-  const mutedRef          = useRef(false)
-  const dismissingRef     = useRef(false)
-  const wakeBlockRef      = useRef(false)
+  const openRef            = useRef(false)
+  const voiceStateRef      = useRef<VoiceState>('ready')
+  const mutedRef           = useRef(false)
+  const dismissingRef      = useRef(false)
+  const wakeBlockRef       = useRef(false)
+  const restartCountRef    = useRef(0)
+  const restartWindowRef   = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  const wakeRecogRef      = useRef<SpeechRecognition | null>(null)
-  const listenRecogRef    = useRef<SpeechRecognition | null>(null)
-  const utteranceRef      = useRef<SpeechSynthesisUtterance | null>(null)
-  const streamRef         = useRef<MediaStream | null>(null)
-  const animFrameRef      = useRef<number | null>(null)
-  const silenceTimerRef   = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const maxTimerRef       = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const loopTimerRef      = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const finalTextRef      = useRef('')
-  const onTranscriptRef   = useRef(onTranscript)
-  const startListeningRef = useRef<() => void>(() => {})
-  const speakGreetingRef  = useRef<() => void>(() => {})
-  const greetingRef       = useRef(greetingLine())
+  const wakeRecogRef       = useRef<SpeechRecognition | null>(null)
+  const listenRecogRef     = useRef<SpeechRecognition | null>(null)
+  const utteranceRef       = useRef<SpeechSynthesisUtterance | null>(null)
+  const streamRef          = useRef<MediaStream | null>(null)
+  const animFrameRef       = useRef<number | null>(null)
+  const silenceTimerRef    = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const interimTimerRef    = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const maxTimerRef        = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const loopTimerRef       = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const finalTextRef       = useRef('')
+  const onTranscriptRef    = useRef(onTranscript)
+  const startListeningRef  = useRef<() => void>(() => {})
+  const processTextRef     = useRef<(t: string) => void>(() => {})
+  const speakGreetingRef   = useRef<() => void>(() => {})
+  const greetingRef        = useRef(greetingLine())
+  const typeInputRef       = useRef<HTMLInputElement>(null)
 
   // Sync refs
-  useEffect(() => { openRef.current       = open },              [open])
-  useEffect(() => { voiceStateRef.current = voiceState },        [voiceState])
-  useEffect(() => { mutedRef.current      = muted },             [muted])
-  useEffect(() => { onTranscriptRef.current = onTranscript },    [onTranscript])
+  useEffect(() => { openRef.current         = open },           [open])
+  useEffect(() => { voiceStateRef.current   = voiceState },     [voiceState])
+  useEffect(() => { mutedRef.current        = muted },          [muted])
+  useEffect(() => { onTranscriptRef.current = onTranscript },   [onTranscript])
 
-  // Mount flag for portal (avoids SSR mismatch)
   useEffect(() => setMounted(true), [])
 
-  // Waveform animation tick (80ms = ~12fps is plenty)
+  // Waveform tick ~12fps
   useEffect(() => {
     const id = setInterval(() => setTick(t => t + 1), 80)
     return () => clearInterval(id)
@@ -185,10 +211,7 @@ export function VoiceMode({
   // ── Volume visualiser ─────────────────────────────────────────────────────
 
   const stopVolumeAnalysis = useCallback(() => {
-    if (animFrameRef.current) {
-      cancelAnimationFrame(animFrameRef.current)
-      animFrameRef.current = null
-    }
+    if (animFrameRef.current) { cancelAnimationFrame(animFrameRef.current); animFrameRef.current = null }
     setVolumeLevel(0)
     streamRef.current?.getTracks().forEach(t => t.stop())
     streamRef.current = null
@@ -205,18 +228,15 @@ export function VoiceMode({
         if (voiceStateRef.current !== 'listening') return
         const d = new Uint8Array(analyser.frequencyBinCount)
         analyser.getByteFrequencyData(d)
-        const avg = d.reduce((a, b) => a + b, 0) / d.length
-        setVolumeLevel(Math.min(1, avg / 65))
+        setVolumeLevel(Math.min(1, d.reduce((a, b) => a + b, 0) / d.length / 65))
         animFrameRef.current = requestAnimationFrame(frame)
       }
       animFrameRef.current = requestAnimationFrame(frame)
-    } catch { /* volume viz optional */ }
+    } catch { /* optional */ }
   }, [])
 
   // ── TTS ───────────────────────────────────────────────────────────────────
-  // iOS CRITICAL: speechSynthesis.speak() must be called synchronously within
-  // a click/touch handler. speakGreeting() is called directly inside manualActivate()
-  // which is a button onClick — no awaits before it. This is the gesture context.
+  // iOS CRITICAL: speak() must be called synchronously inside a click handler.
 
   const speak = useCallback((text: string, onEnd: () => void) => {
     if (!('speechSynthesis' in window)) { onEnd(); return }
@@ -240,54 +260,63 @@ export function VoiceMode({
       utteranceRef.current = utt
 
       const voices = window.speechSynthesis.getVoices()
-      // Prefer warm natural voices; avoid robotic Google TTS
+
+      // ── Male voice priority: robot character needs a deep masculine voice ──
+      // Alex      = macOS default deep clear male
+      // Fred      = macOS robotic/gruff male
+      // Daniel    = iOS/iPadOS British male
+      // Mark/James = various platform males
+      // Microsoft David = Windows male
+      // Google UK English Male = Chrome male
+      // Fallback: any en-US voice that isn't explicitly female-named
       const voice =
-        voices.find(v => /samantha/i.test(v.name)) ||
-        voices.find(v => /karen|tessa|nicky|moira|serena/i.test(v.name) && v.lang.startsWith('en')) ||
-        voices.find(v => v.lang === 'en-US' && !v.name.toLowerCase().includes('google')) ||
+        voices.find(v => /\balex\b/i.test(v.name)) ||
+        voices.find(v => /\bfred\b/i.test(v.name)) ||
+        voices.find(v => /\bdaniel\b/i.test(v.name)  && v.lang.startsWith('en')) ||
+        voices.find(v => /\bmark\b/i.test(v.name)    && v.lang.startsWith('en')) ||
+        voices.find(v => /\bjames\b/i.test(v.name)   && v.lang.startsWith('en')) ||
+        voices.find(v => /\barthur\b/i.test(v.name)  && v.lang.startsWith('en')) ||
+        voices.find(v => /\bthomas\b/i.test(v.name)  && v.lang.startsWith('en')) ||
+        voices.find(v => /microsoft david/i.test(v.name)) ||
+        voices.find(v => /google uk english male/i.test(v.name)) ||
+        voices.find(v =>
+          v.lang === 'en-US' &&
+          !v.name.toLowerCase().includes('google') &&
+          !/samantha|karen|tessa|nicky|moira|serena|victoria|susan|zira|hazel|fiona|veena|alva|alice|amelie|ava/i.test(v.name)
+        ) ||
         voices.find(v => v.lang === 'en-US') ||
         voices.find(v => v.lang.startsWith('en')) ||
         null
 
       if (voice) utt.voice = voice
-      utt.rate   = 1.05
-      utt.pitch  = 0.95
+      utt.rate   = 0.95  // slightly deliberate — suits the robot character
+      utt.pitch  = 0.82  // lower = more masculine
       utt.volume = 1.0
       utt.lang   = 'en-US'
 
-      // iOS Safari pauses synthesis silently after ~30s – resume() keeps it going
+      // iOS Safari silently pauses synthesis — keep it going
       const keepAlive = setInterval(() => {
-        if (window.speechSynthesis.speaking) {
-          window.speechSynthesis.resume()
-        } else {
-          clearInterval(keepAlive)
-        }
+        if (window.speechSynthesis.speaking) window.speechSynthesis.resume()
+        else clearInterval(keepAlive)
       }, 5000)
 
-      utt.onend = () => {
-        clearInterval(keepAlive)
-        utteranceRef.current = null
-        onEnd()
-      }
+      utt.onend   = () => { clearInterval(keepAlive); utteranceRef.current = null; onEnd() }
       utt.onerror = (e) => {
         console.warn('TTS error:', e.error)
-        clearInterval(keepAlive)
-        utteranceRef.current = null
-        onEnd()
+        clearInterval(keepAlive); utteranceRef.current = null; onEnd()
       }
 
       window.speechSynthesis.speak(utt)
     }
 
-    // Voices are loaded async on first page load
+    // Voices load async on first page load
     const voices = window.speechSynthesis.getVoices()
     if (voices.length > 0) {
       doSpeak()
     } else {
       let fired = false
       const go = () => {
-        if (fired) return
-        fired = true
+        if (fired) return; fired = true
         window.speechSynthesis.removeEventListener('voiceschanged', go)
         doSpeak()
       }
@@ -301,12 +330,101 @@ export function VoiceMode({
     utteranceRef.current = null
   }, [])
 
+  // ── Process text → AI → streaming TTS ────────────────────────────────────
+  // Shared by both voice recognition and type-to-speak.
+  // Speaks sentences as they arrive in the stream — no waiting for the full response.
+
+  const processText = useCallback(async (text: string) => {
+    if (!text.trim() || dismissingRef.current || !openRef.current) return
+    setVoiceState('processing')
+
+    let ttsBuffer  = ''
+    const ttsQueue: string[] = []
+    let ttsActive  = false
+    let streamDone = false
+
+    const driveQueue = () => {
+      if (ttsActive || ttsQueue.length === 0 || mutedRef.current || !openRef.current) return
+      ttsActive = true
+      setVoiceState('speaking')
+      const sentence = ttsQueue.shift()!
+      speak(sentence, () => {
+        ttsActive = false
+        if (ttsQueue.length > 0) {
+          driveQueue()
+        } else if (streamDone) {
+          if (!dismissingRef.current && openRef.current) {
+            setVoiceState('ready')
+            loopTimerRef.current = setTimeout(() => {
+              if (!dismissingRef.current && openRef.current) startListeningRef.current()
+            }, LOOP_PAUSE_MS)
+          }
+        }
+        // else: waiting for more stream chunks → driveQueue called again by onChunk
+      })
+    }
+
+    const onChunk = (chunk: string) => {
+      ttsBuffer += chunk
+      const { sentences, rest } = pullSentences(ttsBuffer)
+      ttsBuffer = rest
+      if (sentences.length > 0) {
+        ttsQueue.push(...sentences)
+        driveQueue()
+      }
+    }
+
+    try {
+      const fullResp = await onTranscriptRef.current(text, onChunk)
+      setResponse(fullResp)
+      playChime('done')
+      streamDone = true
+
+      // Flush any leftover partial sentence
+      const leftover = ttsBuffer.trim()
+      if (leftover.length > 4) ttsQueue.push(leftover)
+      ttsBuffer = ''
+
+      if (mutedRef.current || !fullResp) {
+        setVoiceState('ready')
+        loopTimerRef.current = setTimeout(() => {
+          if (!dismissingRef.current && openRef.current) startListeningRef.current()
+        }, LOOP_PAUSE_MS)
+      } else if (!ttsActive && ttsQueue.length === 0) {
+        // No streaming happened (non-streaming API) — speak full response now
+        setVoiceState('speaking')
+        speak(fullResp, () => {
+          if (dismissingRef.current || !openRef.current) return
+          setVoiceState('ready')
+          loopTimerRef.current = setTimeout(() => {
+            if (!dismissingRef.current && openRef.current) startListeningRef.current()
+          }, LOOP_PAUSE_MS)
+        })
+      } else if (!ttsActive && ttsQueue.length > 0) {
+        driveQueue()
+      }
+      // else: ttsActive — its onEnd callback handles finishing
+    } catch {
+      setVoiceState('error')
+      playChime('error')
+      setTimeout(() => {
+        if (openRef.current && !dismissingRef.current) {
+          setVoiceState('ready')
+          loopTimerRef.current = setTimeout(() => startListeningRef.current(), 800)
+        }
+      }, 2000)
+    }
+  }, [speak])
+
+  useEffect(() => { processTextRef.current = processText }, [processText])
+
   // ── Stop listening ────────────────────────────────────────────────────────
 
   const stopListening = useCallback(() => {
-    if (silenceTimerRef.current) { clearTimeout(silenceTimerRef.current); silenceTimerRef.current = null }
-    if (maxTimerRef.current)     { clearTimeout(maxTimerRef.current);     maxTimerRef.current = null }
-    if (loopTimerRef.current)    { clearTimeout(loopTimerRef.current);    loopTimerRef.current = null }
+    if (silenceTimerRef.current)  { clearTimeout(silenceTimerRef.current);  silenceTimerRef.current  = null }
+    if (interimTimerRef.current)  { clearTimeout(interimTimerRef.current);  interimTimerRef.current  = null }
+    if (maxTimerRef.current)      { clearTimeout(maxTimerRef.current);      maxTimerRef.current      = null }
+    if (loopTimerRef.current)     { clearTimeout(loopTimerRef.current);     loopTimerRef.current     = null }
     stopVolumeAnalysis()
     if (listenRecogRef.current) {
       listenRecogRef.current.onend = null
@@ -325,7 +443,21 @@ export function VoiceMode({
     }
     if (dismissingRef.current) return
 
+    // ── Guard against tight restart loops ──
+    restartCountRef.current++
+    if (restartWindowRef.current) clearTimeout(restartWindowRef.current)
+    restartWindowRef.current = setTimeout(() => { restartCountRef.current = 0 }, 4000)
+    if (restartCountRef.current > MAX_RESTARTS) {
+      loopTimerRef.current = setTimeout(() => {
+        restartCountRef.current = 0
+        if (!dismissingRef.current && openRef.current) startListeningRef.current()
+      }, 3000)
+      return
+    }
+
     stopVolumeAnalysis()
+    if (silenceTimerRef.current)  { clearTimeout(silenceTimerRef.current);  silenceTimerRef.current  = null }
+    if (interimTimerRef.current)  { clearTimeout(interimTimerRef.current);  interimTimerRef.current  = null }
     if (listenRecogRef.current) {
       listenRecogRef.current.onend = null
       try { listenRecogRef.current.stop() } catch {}
@@ -345,15 +477,25 @@ export function VoiceMode({
     recog.continuous      = true
     recog.interimResults  = true
     recog.lang            = 'en-US'
-    recog.maxAlternatives = 1
+    recog.maxAlternatives = 3
 
     recog.onresult = (event) => {
       if (!openRef.current) return
+
+      // Any result resets the interim silence watchdog
+      if (interimTimerRef.current) clearTimeout(interimTimerRef.current)
+      interimTimerRef.current = setTimeout(() => {
+        if (finalTextRef.current.trim()) {
+          try { recog.stop() } catch {}
+        }
+      }, INTERIM_SILENCE_MS)
+
       let interim = ''
       for (let i = event.resultIndex; i < event.results.length; i++) {
         const r = event.results[i]
         if (r.isFinal) {
           finalTextRef.current += ' ' + r[0].transcript
+          // Reset silence countdown on each final word
           if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current)
           silenceTimerRef.current = setTimeout(() => {
             try { recog.stop() } catch {}
@@ -365,14 +507,16 @@ export function VoiceMode({
       setTranscript((finalTextRef.current + (interim ? ' ' + interim : '')).trim())
     }
 
-    recog.onend = async () => {
+    recog.onend = () => {
       stopVolumeAnalysis()
+      if (silenceTimerRef.current)  { clearTimeout(silenceTimerRef.current);  silenceTimerRef.current  = null }
+      if (interimTimerRef.current)  { clearTimeout(interimTimerRef.current);  interimTimerRef.current  = null }
       wakeBlockRef.current   = false
       listenRecogRef.current = null
 
       const text = finalTextRef.current.trim()
 
-      // No speech — keep trying rather than going idle
+      // No speech detected — restart listening promptly, don't go idle
       if (!text || !openRef.current || dismissingRef.current) {
         if (openRef.current && !dismissingRef.current) {
           loopTimerRef.current = setTimeout(() => {
@@ -382,131 +526,34 @@ export function VoiceMode({
         return
       }
 
-      setVoiceState('processing')
-
-      // ── Streaming TTS: speak sentences as chunks arrive ────────────────
-      let ttsBuffer  = ''
-      const ttsQueue: string[] = []
-      let ttsActive  = false
-      let streamDone = false
-
-      const pullSentences = (buf: string): { sentences: string[]; rest: string } => {
-        const re = /[^.!?\n]*[.!?\n]+\s*/g
-        const sentences: string[] = []
-        let m, last = 0
-        while ((m = re.exec(buf)) !== null) {
-          const s = m[0].trim()
-          if (s.length > 5) sentences.push(s)
-          last = re.lastIndex
-        }
-        // also chunk on long comma-pauses so speech starts sooner
-        if (sentences.length === 0 && buf.length > 140) {
-          const ci = buf.lastIndexOf(',')
-          if (ci > 80) return { sentences: [buf.slice(0, ci + 1).trim()], rest: buf.slice(ci + 1) }
-        }
-        return { sentences, rest: buf.slice(last) }
-      }
-
-      const driveQueue = () => {
-        if (ttsActive || ttsQueue.length === 0 || mutedRef.current || !openRef.current) return
-        ttsActive = true
-        setVoiceState('speaking')
-        const sentence = ttsQueue.shift()!
-        speak(sentence, () => {
-          ttsActive = false
-          if (ttsQueue.length > 0) {
-            driveQueue()
-          } else if (streamDone) {
-            if (!dismissingRef.current && openRef.current) {
-              setVoiceState('ready')
-              loopTimerRef.current = setTimeout(() => {
-                if (!dismissingRef.current && openRef.current) startListeningRef.current()
-              }, LOOP_PAUSE_MS)
-            }
-          }
-          // else: waiting for more chunks
-        })
-      }
-
-      const onChunk = (chunk: string) => {
-        ttsBuffer += chunk
-        const { sentences, rest } = pullSentences(ttsBuffer)
-        ttsBuffer = rest
-        if (sentences.length > 0) {
-          ttsQueue.push(...sentences)
-          driveQueue()
-        }
-      }
-
-      try {
-        const fullResp = await onTranscriptRef.current(text, onChunk)
-        setResponse(fullResp)
-        playChime('done')
-        streamDone = true
-
-        // Flush any remaining partial sentence
-        const leftover = ttsBuffer.trim()
-        if (leftover.length > 4) ttsQueue.push(leftover)
-        ttsBuffer = ''
-
-        if (mutedRef.current || !fullResp) {
-          setVoiceState('ready')
-          loopTimerRef.current = setTimeout(() => {
-            if (!dismissingRef.current && openRef.current) startListeningRef.current()
-          }, LOOP_PAUSE_MS)
-        } else if (!ttsActive && ttsQueue.length === 0) {
-          // onChunk was never called (no streaming) — speak the full response now
-          setVoiceState('speaking')
-          speak(fullResp, () => {
-            if (dismissingRef.current || !openRef.current) return
-            setVoiceState('ready')
-            loopTimerRef.current = setTimeout(() => {
-              if (!dismissingRef.current && openRef.current) startListeningRef.current()
-            }, LOOP_PAUSE_MS)
-          })
-        } else if (!ttsActive && ttsQueue.length > 0) {
-          driveQueue()
-        }
-        // else: ttsActive — its onEnd callback handles finishing
-      } catch {
-        setVoiceState('error')
-        playChime('error')
-        setTimeout(() => {
-          if (openRef.current && !dismissingRef.current) {
-            setVoiceState('ready')
-            loopTimerRef.current = setTimeout(() => startListeningRef.current(), 600)
-          }
-        }, 2500)
-      }
+      processTextRef.current(text)
     }
 
     recog.onerror = (e: SpeechRecognitionErrorEvent) => {
-      // Only block on explicit permission denial; everything else onend handles
+      // Only hard-stop on explicit permission denial — all other errors let onend restart
       if (e.error === 'not-allowed') {
         setMicAllowed(false)
         setVoiceState('error')
       }
-      // no-speech / network / aborted → let onend restart gracefully
     }
 
     listenRecogRef.current = recog
     try { recog.start() } catch (err) { console.warn('SR start failed:', err) }
 
-    // Volume analysis (best-effort)
+    // Volume visualiser (best-effort)
     navigator.mediaDevices
       ?.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } })
       .then(s => { streamRef.current = s; startVolumeAnalysis(s) })
       .catch(() => { /* not fatal */ })
 
-    // Only max-time hard stop — no premature 7-second cutoff
+    // Only a max-time hard stop — no premature cutoff
     maxTimerRef.current = setTimeout(() => { try { recog.stop() } catch {} }, MAX_LISTEN_MS)
-  }, [speak, stopVolumeAnalysis, startVolumeAnalysis])
+  }, [stopVolumeAnalysis, startVolumeAnalysis])
 
   useEffect(() => { startListeningRef.current = startListening }, [startListening])
 
   // ── Speak greeting ────────────────────────────────────────────────────────
-  // Called synchronously from button click handler — iOS TTS gesture context OK.
-  // After greeting finishes, automatically starts listening.
+  // Called synchronously in click handler — iOS TTS gesture context is preserved.
 
   const speakGreeting = useCallback(() => {
     if (mutedRef.current) {
@@ -521,11 +568,24 @@ export function VoiceMode({
       setVoiceState('ready')
       setTimeout(() => {
         if (!dismissingRef.current && openRef.current) startListeningRef.current()
-      }, 500)
+      }, 400)
     })
   }, [speak])
 
   useEffect(() => { speakGreetingRef.current = speakGreeting }, [speakGreeting])
+
+  // ── Type-to-speak ─────────────────────────────────────────────────────────
+
+  const submitTyped = useCallback((e?: React.FormEvent) => {
+    e?.preventDefault()
+    const text = typeInput.trim()
+    if (!text || dismissingRef.current) return
+    stopListening()
+    stopSpeaking()
+    setTranscript(text)
+    setTypeInput('')
+    processText(text)
+  }, [typeInput, stopListening, stopSpeaking, processText])
 
   // ── Wake-word listener ────────────────────────────────────────────────────
 
@@ -575,6 +635,7 @@ export function VoiceMode({
     setVoiceState('ready')
     setTranscript('')
     setResponse('')
+    setTypeInput('')
     setTimeout(() => { dismissingRef.current = false }, 1200)
     setTimeout(() => {
       if (wakeRecogRef.current) { try { wakeRecogRef.current.start() } catch {} }
@@ -592,9 +653,11 @@ export function VoiceMode({
       try { listenRecogRef.current?.abort() } catch {}; listenRecogRef.current = null
       stopSpeaking()
       stopVolumeAnalysis()
-      if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current)
-      if (maxTimerRef.current)     clearTimeout(maxTimerRef.current)
-      if (loopTimerRef.current)    clearTimeout(loopTimerRef.current)
+      if (silenceTimerRef.current)  clearTimeout(silenceTimerRef.current)
+      if (interimTimerRef.current)  clearTimeout(interimTimerRef.current)
+      if (maxTimerRef.current)      clearTimeout(maxTimerRef.current)
+      if (loopTimerRef.current)     clearTimeout(loopTimerRef.current)
+      if (restartWindowRef.current) clearTimeout(restartWindowRef.current)
     }
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -613,8 +676,7 @@ export function VoiceMode({
   }, [autoActivate]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Manual activate ───────────────────────────────────────────────────────
-  // speakGreeting() is called SYNCHRONOUSLY in this click handler.
-  // This is the iOS gesture context — TTS will work without popup blocking.
+  // speakGreeting() called SYNCHRONOUSLY — iOS TTS gesture context preserved.
 
   const manualActivate = useCallback(() => {
     if (chatBusy) return
@@ -632,7 +694,7 @@ export function VoiceMode({
     speakGreeting()
   }, [chatBusy, open, voiceState, stopSpeaking, dismiss, speakGreeting])
 
-  // ── Orb / robot tap ───────────────────────────────────────────────────────
+  // ── Robot tap ─────────────────────────────────────────────────────────────
 
   const orbTap = useCallback(() => {
     if (voiceState === 'ready')
@@ -657,10 +719,6 @@ export function VoiceMode({
   })
 
   // ── Portal overlay ────────────────────────────────────────────────────────
-  // Renders to document.body to fully escape the backdropFilter stacking context
-  // in ChatInterface. Uses explicit top/left/right/bottom (not `inset`) for
-  // maximum iOS Safari compatibility. Does NOT set overflow:hidden on html/body
-  // as that breaks position:fixed on iOS Safari.
 
   const overlayContent = (
     <AnimatePresence>
@@ -677,13 +735,11 @@ export function VoiceMode({
             width: '100%', height: '100%',
             zIndex: 2147483647,
             background: BG[voiceState],
-            display: 'flex',
-            flexDirection: 'column',
-            alignItems: 'center',
-            overflow: 'hidden',
+            display: 'flex', flexDirection: 'column',
+            alignItems: 'center', overflow: 'hidden',
           }}
         >
-          {/* Subtle dot grid backdrop */}
+          {/* Dot grid */}
           <div style={{
             position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, pointerEvents: 'none',
             backgroundImage: 'radial-gradient(circle, rgba(41,194,230,0.055) 1px, transparent 1px)',
@@ -710,9 +766,6 @@ export function VoiceMode({
               <p style={{ fontWeight: 900, fontSize: 22, color: 'rgba(216,232,248,0.92)', margin: '3px 0 0', letterSpacing: '-0.02em' }}>
                 Skippy
               </p>
-              <p style={{ fontSize: 10, color: 'rgba(100,116,139,0.5)', margin: '2px 0 0' }}>
-                Voice processed locally &middot; nothing leaves your device
-              </p>
             </div>
             <button
               onClick={dismiss}
@@ -732,26 +785,26 @@ export function VoiceMode({
             flex: 1, position: 'relative',
             display: 'flex', flexDirection: 'column',
             alignItems: 'center', justifyContent: 'center',
-            width: '100%', gap: 18, minHeight: 0,
+            width: '100%', gap: 14, minHeight: 0,
           }}>
-            {/* Ambient glow ball */}
+            {/* Ambient glow */}
             <motion.div
               style={{
-                position: 'absolute', width: 320, height: 320, borderRadius: '50%',
+                position: 'absolute', width: 300, height: 300, borderRadius: '50%',
                 background: GLOW[voiceState], filter: 'blur(72px)', pointerEvents: 'none',
               }}
               animate={{ scale: [1, 1.18, 1], opacity: [0.65, 1, 0.65] }}
               transition={{ duration: 3.6, repeat: Infinity, ease: 'easeInOut' }}
             />
 
-            {/* Pulsing rings while active */}
+            {/* Pulsing rings */}
             <AnimatePresence>
               {isTalking && [0, 1, 2].map(i => (
                 <motion.div
                   key={i}
                   style={{
                     position: 'absolute',
-                    width: 230 + i * 62, height: 230 + i * 62,
+                    width: 220 + i * 58, height: 220 + i * 58,
                     borderRadius: '50%',
                     border: `1.5px solid ${RING_COLOR[voiceState]}`,
                     pointerEvents: 'none',
@@ -769,10 +822,10 @@ export function VoiceMode({
               ))}
             </AnimatePresence>
 
-            {/* Skippy robot — plain <img>, no Next.js Image dependency */}
+            {/* Skippy robot — plain <img>, no Next.js Image */}
             <motion.div
               onClick={orbTap}
-              style={{ position: 'relative', zIndex: 10, width: 220, height: 220, flexShrink: 0, cursor: 'pointer' }}
+              style={{ position: 'relative', zIndex: 10, width: 200, height: 200, flexShrink: 0, cursor: 'pointer' }}
               animate={
                 voiceState === 'greeting' || voiceState === 'speaking'
                   ? { y: [0, -10, 3, -6, 0] }
@@ -798,7 +851,7 @@ export function VoiceMode({
                 alt="Skippy"
                 draggable={false}
                 style={{
-                  width: 220, height: 220, objectFit: 'contain',
+                  width: 200, height: 200, objectFit: 'contain',
                   userSelect: 'none', display: 'block',
                   filter: ROBOT_FILTER[voiceState],
                   transition: 'filter 0.4s ease',
@@ -806,14 +859,14 @@ export function VoiceMode({
               />
             </motion.div>
 
-            {/* Waveform bars — cyan for listening, green for speaking */}
+            {/* Waveform bars */}
             <AnimatePresence>
               {isTalking && (
                 <motion.div
                   initial={{ opacity: 0, y: 6 }}
                   animate={{ opacity: 1, y: 0 }}
                   exit={{ opacity: 0, y: 6 }}
-                  style={{ display: 'flex', alignItems: 'flex-end', gap: 5, height: 52, zIndex: 10, flexShrink: 0 }}
+                  style={{ display: 'flex', alignItems: 'flex-end', gap: 5, height: 48, zIndex: 10, flexShrink: 0 }}
                 >
                   {bars.map((h, idx) => (
                     <div
@@ -854,7 +907,7 @@ export function VoiceMode({
           {/* ── Conversation cards ── */}
           <div style={{
             position: 'relative', zIndex: 10, width: '100%', maxWidth: 460,
-            padding: '0 20px 8px', display: 'flex', flexDirection: 'column', gap: 8, flexShrink: 0,
+            padding: '0 20px 6px', display: 'flex', flexDirection: 'column', gap: 8, flexShrink: 0,
           }}>
             <AnimatePresence>
               {transcript && (
@@ -896,11 +949,51 @@ export function VoiceMode({
             </AnimatePresence>
           </div>
 
-          {/* ── Controls ── */}
+          {/* ── Type-to-speak input ── */}
+          <form
+            onSubmit={submitTyped}
+            style={{
+              position: 'relative', zIndex: 10, width: '100%', maxWidth: 460,
+              padding: '0 20px 10px', flexShrink: 0,
+              display: 'flex', gap: 8, alignItems: 'center',
+            }}
+          >
+            <input
+              ref={typeInputRef}
+              type="text"
+              value={typeInput}
+              onChange={e => setTypeInput(e.target.value)}
+              placeholder="Type to Skippy\u2026"
+              disabled={voiceState === 'processing'}
+              style={{
+                flex: 1, padding: '10px 16px', borderRadius: 9999, fontSize: 14,
+                background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.13)',
+                color: 'rgba(216,232,248,0.9)', outline: 'none',
+                WebkitAppearance: 'none', appearance: 'none',
+              }}
+            />
+            <button
+              type="submit"
+              disabled={!typeInput.trim() || voiceState === 'processing'}
+              style={{
+                padding: 10, borderRadius: '50%',
+                cursor: typeInput.trim() ? 'pointer' : 'default',
+                background: typeInput.trim() ? 'rgba(16,185,129,0.2)' : 'rgba(255,255,255,0.04)',
+                border: `1px solid ${typeInput.trim() ? 'rgba(16,185,129,0.4)' : 'rgba(255,255,255,0.08)'}`,
+                color: typeInput.trim() ? '#6ee7b7' : 'rgba(148,163,184,0.3)',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                flexShrink: 0, transition: 'all 0.2s',
+              }}
+            >
+              <Send style={{ width: 16, height: 16 }} />
+            </button>
+          </form>
+
+          {/* ── Controls bar ── */}
           <div style={{
             position: 'relative', zIndex: 10, width: '100%', flexShrink: 0,
-            padding: '12px 20px',
-            paddingBottom: 'max(env(safe-area-inset-bottom, 0px), 28px)',
+            padding: '10px 20px',
+            paddingBottom: 'max(env(safe-area-inset-bottom, 0px), 24px)',
             borderTop: '1px solid rgba(255,255,255,0.05)',
             display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10,
           }}>
@@ -931,13 +1024,13 @@ export function VoiceMode({
               )}
               {voiceState === 'processing' && (
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: 'rgba(167,139,250,0.8)', fontSize: 13 }}>
-                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  <Loader2 style={{ width: 14, height: 14, animation: 'spin 1s linear infinite' }} />
                   Thinking&hellip;
                 </div>
               )}
               {voiceState === 'error' && (
                 <button
-                  onClick={() => setVoiceState('ready')}
+                  onClick={() => { setVoiceState('ready'); startListeningRef.current() }}
                   style={{ padding: '9px 20px', borderRadius: 9999, fontSize: 13, fontWeight: 600, cursor: 'pointer', background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.3)', color: '#fca5a5' }}
                 >
                   Try again
@@ -947,7 +1040,8 @@ export function VoiceMode({
                 onClick={() => setMuted(m => !m)}
                 title={muted ? 'Unmute Skippy' : "Mute Skippy's voice"}
                 style={{
-                  padding: 10, borderRadius: '50%', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  padding: 10, borderRadius: '50%', cursor: 'pointer',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
                   background: muted ? 'rgba(239,68,68,0.1)' : 'rgba(255,255,255,0.05)',
                   border: `1px solid ${muted ? 'rgba(239,68,68,0.3)' : 'rgba(255,255,255,0.1)'}`,
                   color: muted ? '#fca5a5' : 'rgba(148,163,184,0.6)',
@@ -958,7 +1052,7 @@ export function VoiceMode({
             </div>
             {!micAllowed && (
               <p style={{ fontSize: 11, color: 'rgba(239,68,68,0.75)', textAlign: 'center', margin: 0, lineHeight: 1.4 }}>
-                Microphone access blocked. Allow microphone in browser settings, then refresh.
+                Microphone blocked. Allow microphone in browser settings and refresh.
               </p>
             )}
           </div>
@@ -1001,7 +1095,7 @@ export function VoiceMode({
         )}
       </button>
 
-      {/* Portal: renders to document.body, outside all CSS stacking contexts */}
+      {/* Portal: renders directly to document.body, outside all CSS stacking contexts */}
       {mounted && createPortal(overlayContent, document.body)}
     </>
   )
