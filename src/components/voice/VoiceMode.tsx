@@ -159,9 +159,10 @@ export function VoiceMode({
   const [mounted, setMounted]         = useState(false)
   const [open, setOpen]               = useState(false)
   const [voiceState, setVoiceState]   = useState<VoiceState>('ready')
-  const [transcript, setTranscript]   = useState('')
-  const [response, setResponse]       = useState('')
-  const [muted, setMuted]             = useState(false)
+  const [transcript, setTranscript]       = useState('')
+  const [response, setResponse]           = useState('')
+  const [currentSentence, setCurrentSentence] = useState('')
+  const [muted, setMuted]                   = useState(false)
   const [micAllowed, setMicAllowed]   = useState(true)
   const [volumeLevel, setVolumeLevel] = useState(0)
   const [tick, setTick]               = useState(0)
@@ -176,6 +177,7 @@ export function VoiceMode({
   const wakeBlockRef       = useRef(false)
   const errRestartCountRef = useRef(0)   // only counts error-driven restarts, NOT no-speech
   const restartWindowRef   = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const processingRef      = useRef(false) // prevents concurrent processText calls
 
   const wakeRecogRef       = useRef<SpeechRecognition | null>(null)
   const listenRecogRef     = useRef<SpeechRecognition | null>(null)
@@ -303,8 +305,13 @@ export function VoiceMode({
 
       utt.onend   = () => { clearInterval(keepAlive); utteranceRef.current = null; onEnd() }
       utt.onerror = (e) => {
-        console.warn('TTS error:', e.error)
-        clearInterval(keepAlive); utteranceRef.current = null; onEnd()
+        clearInterval(keepAlive)
+        utteranceRef.current = null
+        // 'interrupted' / 'canceled' = intentional cancel() call — don't fire onEnd,
+        // which would re-trigger driveQueue incorrectly while a new sentence is starting
+        if (e.error !== 'interrupted' && e.error !== 'canceled') {
+          onEnd()
+        }
       }
 
       window.speechSynthesis.speak(utt)
@@ -337,38 +344,48 @@ export function VoiceMode({
 
   const processText = useCallback(async (text: string) => {
     if (!text.trim() || dismissingRef.current || !openRef.current) return
+    if (processingRef.current) return  // prevent concurrent double-calls
+    processingRef.current = true
     setVoiceState('processing')
+    setCurrentSentence('')
 
-    let ttsBuffer  = ''
+    let ttsBuffer         = ''
     const ttsQueue: string[] = []
-    let ttsActive  = false
-    let streamDone = false
+    let ttsActive         = false
+    let streamDone        = false
+    let anyStreamingSpeech = false  // tracks whether streaming TTS ever fired
+
+    const finishUp = () => {
+      processingRef.current = false
+      setCurrentSentence('')
+      if (!dismissingRef.current && openRef.current) {
+        setVoiceState('ready')
+        loopTimerRef.current = setTimeout(() => {
+          if (!dismissingRef.current && openRef.current) startListeningRef.current()
+        }, LOOP_PAUSE_MS)
+      }
+    }
 
     const driveQueue = () => {
       if (ttsActive || ttsQueue.length === 0 || mutedRef.current || !openRef.current) return
       ttsActive = true
-      setVoiceState('speaking')
+      anyStreamingSpeech = true
       const sentence = ttsQueue.shift()!
+      setCurrentSentence(sentence)   // show ONLY the sentence being spoken right now
+      setVoiceState('speaking')
       speak(sentence, () => {
         ttsActive = false
+        setCurrentSentence('')
         if (ttsQueue.length > 0) {
           driveQueue()
         } else if (streamDone) {
-          if (!dismissingRef.current && openRef.current) {
-            setVoiceState('ready')
-            loopTimerRef.current = setTimeout(() => {
-              if (!dismissingRef.current && openRef.current) startListeningRef.current()
-            }, LOOP_PAUSE_MS)
-          }
+          finishUp()
         }
-        // else: waiting for more stream chunks → driveQueue called again by onChunk
+        // else: stream still arriving — next onChunk call will driveQueue again
       })
     }
 
-    let liveResponse = ''
     const onChunk = (chunk: string) => {
-      liveResponse += chunk
-      setResponse(liveResponse)  // ← update display live so text matches what's being spoken
       ttsBuffer += chunk
       const { sentences, rest } = pullSentences(ttsBuffer)
       ttsBuffer = rest
@@ -380,7 +397,7 @@ export function VoiceMode({
 
     try {
       const fullResp = await onTranscriptRef.current(text, onChunk)
-      setResponse(fullResp)  // final authoritative value
+      setResponse(fullResp)
       playChime('done')
       streamDone = true
 
@@ -390,25 +407,22 @@ export function VoiceMode({
       ttsBuffer = ''
 
       if (mutedRef.current || !fullResp) {
-        setVoiceState('ready')
-        loopTimerRef.current = setTimeout(() => {
-          if (!dismissingRef.current && openRef.current) startListeningRef.current()
-        }, LOOP_PAUSE_MS)
-      } else if (!ttsActive && ttsQueue.length === 0) {
-        // No streaming happened (non-streaming API) — speak full response now
+        finishUp()
+      } else if (anyStreamingSpeech) {
+        // Streaming already spoke the content — don't speak again
+        // If TTS is still active, its onEnd chain calls finishUp via driveQueue
+        // If TTS finished already (fast voice, slow stream), manually finish
+        if (!ttsActive && ttsQueue.length === 0) finishUp()
+        else if (!ttsActive && ttsQueue.length > 0) driveQueue()
+        // else: ttsActive — driveQueue's onEnd handles it
+      } else {
+        // No streaming at all (non-streaming API fallback) — speak full response once
         setVoiceState('speaking')
-        speak(fullResp, () => {
-          if (dismissingRef.current || !openRef.current) return
-          setVoiceState('ready')
-          loopTimerRef.current = setTimeout(() => {
-            if (!dismissingRef.current && openRef.current) startListeningRef.current()
-          }, LOOP_PAUSE_MS)
-        })
-      } else if (!ttsActive && ttsQueue.length > 0) {
-        driveQueue()
+        speak(fullResp, finishUp)
       }
-      // else: ttsActive — its onEnd callback handles finishing
     } catch {
+      processingRef.current = false
+      setCurrentSentence('')
       setVoiceState('error')
       playChime('error')
       setTimeout(() => {
@@ -639,14 +653,16 @@ export function VoiceMode({
   // ── Dismiss ───────────────────────────────────────────────────────────────
 
   const dismiss = useCallback(() => {
-    dismissingRef.current = true
-    wakeBlockRef.current  = false
+    dismissingRef.current  = true
+    wakeBlockRef.current   = false
+    processingRef.current  = false
     stopListening()
     stopSpeaking()
     setOpen(false)
     setVoiceState('ready')
     setTranscript('')
     setResponse('')
+    setCurrentSentence('')
     setTypeInput('')
     setTimeout(() => { dismissingRef.current = false }, 1200)
     setTimeout(() => {
@@ -942,7 +958,9 @@ export function VoiceMode({
               )}
             </AnimatePresence>
             <AnimatePresence>
-              {response && voiceState !== 'processing' && (
+              {/* Show current sentence while speaking (text stays in sync with voice),
+                  or show full response when done speaking */}
+              {(currentSentence || (response && voiceState === 'ready')) && (
                 <motion.div
                   key="resp"
                   initial={{ opacity: 0, y: 10, scale: 0.97 }}
@@ -956,7 +974,7 @@ export function VoiceMode({
                   }}
                 >
                   <span style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.14em', color: 'rgba(16,185,129,0.7)', marginRight: 8 }}>Skippy</span>
-                  {response.slice(0, 300)}{response.length > 300 ? '\u2026' : ''}
+                  {currentSentence || (response.slice(0, 300) + (response.length > 300 ? '\u2026' : ''))}
                 </motion.div>
               )}
             </AnimatePresence>
