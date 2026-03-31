@@ -243,7 +243,7 @@ export function ChatInterface({ conversationId, onConversationCreated, onToggleS
    * Voice entry point — sends transcript through the same pipeline as text
    * but returns the accumulated AI response as a string for TTS.
    */
-  const sendMessageAndReturn = useCallback(async (text: string): Promise<string> => {
+  const sendMessageAndReturn = useCallback(async (text: string, onChunk?: (chunk: string) => void): Promise<string> => {
     return new Promise((resolve) => {
       let convId = currentConvId
 
@@ -295,8 +295,10 @@ export function ChatInterface({ conversationId, onConversationCreated, onToggleS
           while (true) {
             const { done, value } = await reader.read()
             if (done) break
-            accumulated += decoder.decode(value, { stream: true })
+            const decoded = decoder.decode(value, { stream: true })
+            accumulated += decoded
             setStreamingContent(accumulated)
+            onChunk?.(decoded)
           }
 
           const finalMessages = useChatStore.getState().messages.map((m) =>

@@ -11,7 +11,7 @@ import { cn } from '@/lib/utils'
 type VoiceState = 'greeting' | 'ready' | 'listening' | 'processing' | 'speaking' | 'error'
 
 interface VoiceModeProps {
-  onTranscript: (text: string) => Promise<string>
+  onTranscript: (text: string, onChunk?: (chunk: string) => void) => Promise<string>
   chatBusy?: boolean
   autoActivate?: boolean
   className?: string
@@ -24,7 +24,7 @@ const WAKE_WORDS = [
   'ok skippy', 'ok skip', 'yo skippy', 'yo skip',
   'skipy', 'skipper',
 ]
-const SILENCE_MS    = 3000
+const SILENCE_MS    = 2000
 const MAX_LISTEN_MS = 45_000
 const LOOP_PAUSE_MS = 1200
 
@@ -372,54 +372,121 @@ export function VoiceMode({
 
       const text = finalTextRef.current.trim()
 
+      // No speech — keep trying rather than going idle
       if (!text || !openRef.current || dismissingRef.current) {
-        if (openRef.current && !dismissingRef.current) setVoiceState('ready')
-        setTimeout(() => {
-          if (!wakeBlockRef.current && wakeRecogRef.current) {
-            try { wakeRecogRef.current.start() } catch {}
-          }
-        }, 600)
+        if (openRef.current && !dismissingRef.current) {
+          loopTimerRef.current = setTimeout(() => {
+            if (!dismissingRef.current && openRef.current) startListeningRef.current()
+          }, 400)
+        }
         return
       }
 
       setVoiceState('processing')
 
-      try {
-        const aiResponse = await onTranscriptRef.current(text)
-        setResponse(aiResponse)
-        playChime('done')
+      // ── Streaming TTS: speak sentences as chunks arrive ────────────────
+      let ttsBuffer  = ''
+      const ttsQueue: string[] = []
+      let ttsActive  = false
+      let streamDone = false
 
-        if (mutedRef.current || !aiResponse) {
+      const pullSentences = (buf: string): { sentences: string[]; rest: string } => {
+        const re = /[^.!?\n]*[.!?\n]+\s*/g
+        const sentences: string[] = []
+        let m, last = 0
+        while ((m = re.exec(buf)) !== null) {
+          const s = m[0].trim()
+          if (s.length > 5) sentences.push(s)
+          last = re.lastIndex
+        }
+        // also chunk on long comma-pauses so speech starts sooner
+        if (sentences.length === 0 && buf.length > 140) {
+          const ci = buf.lastIndexOf(',')
+          if (ci > 80) return { sentences: [buf.slice(0, ci + 1).trim()], rest: buf.slice(ci + 1) }
+        }
+        return { sentences, rest: buf.slice(last) }
+      }
+
+      const driveQueue = () => {
+        if (ttsActive || ttsQueue.length === 0 || mutedRef.current || !openRef.current) return
+        ttsActive = true
+        setVoiceState('speaking')
+        const sentence = ttsQueue.shift()!
+        speak(sentence, () => {
+          ttsActive = false
+          if (ttsQueue.length > 0) {
+            driveQueue()
+          } else if (streamDone) {
+            if (!dismissingRef.current && openRef.current) {
+              setVoiceState('ready')
+              loopTimerRef.current = setTimeout(() => {
+                if (!dismissingRef.current && openRef.current) startListeningRef.current()
+              }, LOOP_PAUSE_MS)
+            }
+          }
+          // else: waiting for more chunks
+        })
+      }
+
+      const onChunk = (chunk: string) => {
+        ttsBuffer += chunk
+        const { sentences, rest } = pullSentences(ttsBuffer)
+        ttsBuffer = rest
+        if (sentences.length > 0) {
+          ttsQueue.push(...sentences)
+          driveQueue()
+        }
+      }
+
+      try {
+        const fullResp = await onTranscriptRef.current(text, onChunk)
+        setResponse(fullResp)
+        playChime('done')
+        streamDone = true
+
+        // Flush any remaining partial sentence
+        const leftover = ttsBuffer.trim()
+        if (leftover.length > 4) ttsQueue.push(leftover)
+        ttsBuffer = ''
+
+        if (mutedRef.current || !fullResp) {
           setVoiceState('ready')
           loopTimerRef.current = setTimeout(() => {
             if (!dismissingRef.current && openRef.current) startListeningRef.current()
           }, LOOP_PAUSE_MS)
-        } else {
+        } else if (!ttsActive && ttsQueue.length === 0) {
+          // onChunk was never called (no streaming) — speak the full response now
           setVoiceState('speaking')
-          speak(aiResponse, () => {
+          speak(fullResp, () => {
             if (dismissingRef.current || !openRef.current) return
             setVoiceState('ready')
             loopTimerRef.current = setTimeout(() => {
               if (!dismissingRef.current && openRef.current) startListeningRef.current()
             }, LOOP_PAUSE_MS)
           })
+        } else if (!ttsActive && ttsQueue.length > 0) {
+          driveQueue()
         }
+        // else: ttsActive — its onEnd callback handles finishing
       } catch {
         setVoiceState('error')
         playChime('error')
         setTimeout(() => {
-          if (openRef.current && !dismissingRef.current) setVoiceState('ready')
-        }, 3000)
+          if (openRef.current && !dismissingRef.current) {
+            setVoiceState('ready')
+            loopTimerRef.current = setTimeout(() => startListeningRef.current(), 600)
+          }
+        }, 2500)
       }
     }
 
     recog.onerror = (e: SpeechRecognitionErrorEvent) => {
+      // Only block on explicit permission denial; everything else onend handles
       if (e.error === 'not-allowed') {
         setMicAllowed(false)
         setVoiceState('error')
-      } else if (e.error !== 'aborted') {
-        console.warn('SpeechRecognition error:', e.error)
       }
+      // no-speech / network / aborted → let onend restart gracefully
     }
 
     listenRecogRef.current = recog
@@ -431,8 +498,8 @@ export function VoiceMode({
       .then(s => { streamRef.current = s; startVolumeAnalysis(s) })
       .catch(() => { /* not fatal */ })
 
-    silenceTimerRef.current = setTimeout(() => { try { recog.stop() } catch {} }, 7000)
-    maxTimerRef.current     = setTimeout(() => { try { recog.stop() } catch {} }, MAX_LISTEN_MS)
+    // Only max-time hard stop — no premature 7-second cutoff
+    maxTimerRef.current = setTimeout(() => { try { recog.stop() } catch {} }, MAX_LISTEN_MS)
   }, [speak, stopVolumeAnalysis, startVolumeAnalysis])
 
   useEffect(() => { startListeningRef.current = startListening }, [startListening])
