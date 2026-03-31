@@ -217,6 +217,7 @@ export function VoiceMode({
   const startListeningRef  = useRef<() => void>(() => {})
   const processTextRef     = useRef<(t: string) => void>(() => {})
   const speakGreetingRef   = useRef<() => void>(() => {})
+  const orbTapRef          = useRef<() => void>(() => {})
   const greetingRef        = useRef(greetingLine())
   const typeInputRef       = useRef<HTMLInputElement>(null)
   const sessionLogRef      = useRef<HTMLDivElement>(null)
@@ -387,10 +388,13 @@ export function VoiceMode({
       setCurrentSentence('')
       if (!dismissingRef.current && openRef.current) {
         setVoiceState('ready')
-        // Don't auto-restart mic if user is actively typing
+        // Auto-listen after Skippy finishes — mirrors ChatGPT/Claude behavior
+        // Only if user isn’t actively typing
         if (!typingRef.current) {
           loopTimerRef.current = setTimeout(() => {
-            if (!dismissingRef.current && openRef.current && !typingRef.current) startListeningRef.current()
+            if (!dismissingRef.current && openRef.current && !typingRef.current && voiceStateRef.current === 'ready') {
+              startListeningRef.current()
+            }
           }, LOOP_PAUSE_MS)
         }
       }
@@ -514,35 +518,24 @@ export function VoiceMode({
     setTranscript('')
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const SR: typeof SpeechRecognition = (window as any).SpeechRecognition ?? (window as any).webkitSpeechRecognition
     const recog = new SR()
-    recog.continuous      = true
+    // KEY: continuous = false — single utterance, browser handles silence detection.
+    // This eliminates the restart-loop instability caused by continuous mode.
+    // ChatGPT / Claude / Grok voice are all single-shot per utterance.
+    recog.continuous      = false
     recog.interimResults  = true
     recog.lang            = 'en-US'
     recog.maxAlternatives = 3
 
     recog.onresult = (event) => {
       if (!openRef.current) return
-
-      // Any result resets the interim silence watchdog
-      if (interimTimerRef.current) clearTimeout(interimTimerRef.current)
-      // Only force-stop if we actually have final confirmed text — not just interim
-      interimTimerRef.current = setTimeout(() => {
-        if (finalTextRef.current.trim().length > 2) {
-          try { recog.stop() } catch {}
-        }
-      }, INTERIM_SILENCE_MS)
-
       let interim = ''
       for (let i = event.resultIndex; i < event.results.length; i++) {
         const r = event.results[i]
         if (r.isFinal) {
           finalTextRef.current += ' ' + r[0].transcript
-          // Reset silence countdown on each final word
-          if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current)
-          silenceTimerRef.current = setTimeout(() => {
-            try { recog.stop() } catch {}
-          }, SILENCE_MS)
         } else {
           interim += r[0].transcript
         }
@@ -558,13 +551,9 @@ export function VoiceMode({
 
       const text = finalTextRef.current.trim()
 
-      // No speech detected — restart immediately, never go idle
+      // Nothing heard → go idle. User taps to speak again. No restart loops.
       if (!text || !openRef.current || dismissingRef.current) {
-        if (openRef.current && !dismissingRef.current) {
-          loopTimerRef.current = setTimeout(() => {
-            if (!dismissingRef.current && openRef.current) startListeningRef.current()
-          }, 150)  // restart fast — no perceptible gap
-        }
+        if (openRef.current && !dismissingRef.current) setVoiceState('ready')
         return
       }
 
@@ -575,21 +564,8 @@ export function VoiceMode({
       if (e.error === 'not-allowed') {
         setMicAllowed(false)
         setVoiceState('error')
-        return
       }
-      // Track error-driven restarts to detect genuine crash loops
-      if (e.error !== 'no-speech' && e.error !== 'aborted') {
-        errRestartCountRef.current++
-        if (restartWindowRef.current) clearTimeout(restartWindowRef.current)
-        restartWindowRef.current = setTimeout(() => { errRestartCountRef.current = 0 }, 6000)
-        if (errRestartCountRef.current > MAX_ERR_RESTARTS) {
-          errRestartCountRef.current = 0
-          loopTimerRef.current = setTimeout(() => {
-            if (!dismissingRef.current && openRef.current) startListeningRef.current()
-          }, 3000)
-        }
-      }
-      // All other errors (no-speech, aborted, network) → let onend restart gracefully
+      // All other errors (no-speech, network, aborted) → let onend handle cleanup
     }
 
     listenRecogRef.current = recog
@@ -641,14 +617,12 @@ export function VoiceMode({
       // Don't intercept space in input/textarea
       if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA') return
       e.preventDefault()
-      const state = voiceStateRef.current
-      if      (state === 'ready')                                  startListeningRef.current()
-      else if (state === 'listening')                              { try { listenRecogRef.current?.stop() } catch {} }
-      else if (state === 'speaking' || state === 'greeting')       { stopSpeaking(); startListeningRef.current() }
+      // Delegate to orbTapRef for consistent interrupt/listen logic
+      orbTapRef.current()
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [open, stopSpeaking])
+  }, [open])
 
   // ── Auto-scroll session log ───────────────────────────────────────────────
 
@@ -666,6 +640,8 @@ export function VoiceMode({
     if (!text || dismissingRef.current) return
     stopListening()
     stopSpeaking()
+    ++generationRef.current  // cancel any in-flight speech chain
+    setCurrentSentence('')
     setTranscript(text)
     setTypeInput('')
     processText(text)
@@ -741,13 +717,23 @@ export function VoiceMode({
   // ── Robot tap ─────────────────────────────────────────────────────────────
 
   const orbTap = useCallback(() => {
-    if (voiceState === 'ready')
+    const state = voiceStateRef.current
+    if (state === 'ready') {
       startListeningRef.current()
-    else if (voiceState === 'listening')
-      { stopListening(); setVoiceState('ready') }
-    else if (voiceState === 'speaking' || voiceState === 'greeting')
-      { stopSpeaking(); startListeningRef.current() }
-  }, [voiceState, stopListening, stopSpeaking])
+    } else if (state === 'listening') {
+      // Force-stop early and process what we have
+      if (listenRecogRef.current) try { listenRecogRef.current.stop() } catch {}
+    } else if (state === 'speaking' || state === 'greeting') {
+      // Interrupt Skippy — cancel TTS and immediately start listening
+      stopSpeaking()
+      ++generationRef.current  // cancel current processText chain (prevents double-speak)
+      setCurrentSentence('')
+      setTimeout(() => { if (openRef.current && !dismissingRef.current) startListeningRef.current() }, 80)
+    }
+    // processing: ignore tap — prevents duplicate requests
+  }, [voiceState, stopSpeaking])
+
+  useEffect(() => { orbTapRef.current = orbTap }, [orbTap])
 
   // ── Waveform bars ─────────────────────────────────────────────────────────
 
