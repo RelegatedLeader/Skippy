@@ -3,6 +3,7 @@ import { createHmac } from 'crypto'
 import { prisma } from '@/lib/db'
 import { decrypt } from '@/lib/encryption'
 
+export const dynamic = 'force-dynamic'
 function stripMarkdown(text: string): string {
   return text
     .replace(/^#{1,6}\s+/gm, '')
