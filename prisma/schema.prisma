@@ -27,16 +27,21 @@ model Message {
 }
 
 model Memory {
-  id          String   @id @default(cuid())
-  category    String   // "fact", "preference", "goal", "mood", "skill", "context"
-  content     String
-  importance  Int      @default(5) // 1-10
-  sourceType  String?  // "chat" | "debate" | "manual"
-  sourceId    String?  // conversationId, debateId, etc.
-  sourceLabel String?  // human-readable: conversation title, debate topic, etc.
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
-  tags        String   @default("[]") // JSON array stored as string
+  id             String    @id @default(cuid())
+  category       String    // "fact"|"preference"|"goal"|"mood"|"skill"|"context"|"identity"|"relationship"|"health"|"finance"|"routine"|"event"|"belief"|"pattern"|"project"
+  content        String
+  importance     Int       @default(5)   // 1-10
+  confidence     Float     @default(0.8) // 0-1 certainty this memory is accurate
+  accessCount    Int       @default(0)   // how many times surfaced in context
+  lastAccessedAt DateTime?              // when last used in a system prompt
+  decayScore     Float     @default(1.0) // 1.0 = fresh, reduced when not reinforced over time
+  emotionalValence Float?               // -1 (negative) to +1 (positive) emotional tone
+  sourceType     String?   // "chat" | "debate" | "manual" | "note" | "todo"
+  sourceId       String?   // conversationId, debateId, noteId, etc.
+  sourceLabel    String?   // human-readable: conversation title, debate topic, etc.
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+  tags           String    @default("[]") // JSON array stored as string
 }
 
 model Reminder {

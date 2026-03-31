@@ -151,32 +151,53 @@ export async function extractMemoriesFromConversation(
       prisma.memory.findMany({
         select: { category: true, content: true },
         orderBy: { createdAt: 'desc' },
-        take: 200,
+        take: 300,
       }),
       callAI([
         {
           role: 'system',
-          content: `You are a memory extraction system. Analyze the conversation and extract important facts about the user.
-Return a JSON object with a "memories" array containing memory objects with this shape:
-{"memories": [{"category": "fact|preference|goal|mood|skill|context", "content": "...", "importance": 1-10, "tags": ["tag1", "tag2"]}]}
-Only extract genuinely useful, non-trivial information. Be concise and specific.
-Categories:
-- fact: factual information about the user (name, age, location, job, etc.)
-- preference: things they like/dislike
-- goal: things they want to achieve
-- mood: emotional states and patterns
-- skill: abilities and expertise
-- context: situational context about their life`,
+          content: `You are a comprehensive memory extraction system for a personal AI. Analyze the conversation and extract EVERY useful, non-trivial detail about the user.
+Be liberal — extract more rather than less. Aim for 8-20 memories per substantial conversation.
+Return a JSON object: {"memories": [{"category": "...", "content": "...", "importance": 1-10, "confidence": 0.1-1.0, "emotionalValence": -1.0 to 1.0 or null, "tags": ["tag1"]}]}
+
+CATEGORIES (pick the most specific fit):
+- fact: verifiable info — name, age, location, job, education, family structure, nationality
+- preference: likes/dislikes — food, music, hobbies, communication style, aesthetics
+- goal: future aspirations, targets, plans, timelines
+- mood: emotional states, energy patterns, mental health patterns, what lifts/drains them
+- skill: abilities, expertise, languages, tools they use, things they're learning
+- context: current circumstances — living situation, active projects, current status of ongoing things
+- identity: core self-concept, personality traits, how they describe themselves, life philosophy
+- relationship: specific named people (friend X, sister Y, boss Z) — who they are, dynamics
+- health: physical/mental health details, fitness habits, medical info, diet, sleep
+- finance: money situation, financial goals, spending habits, salary context, debt/savings
+- routine: daily/weekly habits, rituals, schedules, recurring activities
+- event: specific past/upcoming events with dates — trips, milestones, deadlines, anniversaries
+- belief: worldviews, political/ethical opinions, values they argue for, what they believe in
+- pattern: behavioral tendencies you observe — how they handle stress, procrastinate, make decisions, react to feedback
+- project: named ongoing projects with details, status, goals, collaborators
+
+IMPORTANCE scale (be honest):
+1-3: minor / might change soon
+4-6: useful, remember for context
+7-8: defines them or is actively relevant
+9-10: core fact about who they are
+
+CONFIDENCE: how certain you are (1.0 = explicitly stated, 0.7 = strongly implied, 0.4 = inferred)
+EMOTIONAL_VALENCE: only set if emotional content — positive (+0.5 to +1.0), negative (-0.5 to -1.0), neutral null
+
+Extract specific, concrete details. "User likes hiking in the mountains near their city" beats "user likes outdoors".
+Capture names, numbers, dates, relationships. These make memories powerful.`,
         },
         ...messages,
         {
           role: 'user',
-          content: 'Extract memories from this conversation. Return ONLY valid JSON object with memories array, no other text.',
+          content: 'Extract all meaningful memories from this conversation. Return ONLY valid JSON.',
         },
-      ], { json: true, temperature: 0.3 }),
+      ], { json: true, temperature: 0.3, max_tokens: 2000 }),
     ])
     const parsed = JSON.parse(text)
-    const rawMemories: Array<{ category?: string; content?: string; importance?: number; tags?: string[] }> = Array.isArray(parsed) ? parsed : parsed.memories || []
+    const rawMemories: Array<{ category?: string; content?: string; importance?: number; confidence?: number; emotionalValence?: number | null; tags?: string[] }> = Array.isArray(parsed) ? parsed : parsed.memories || []
 
     const candidates = rawMemories
       .filter(m => m.content?.trim())
@@ -184,6 +205,8 @@ Categories:
         category: m.category || 'fact',
         content: m.content!.trim(),
         importance: Math.min(10, Math.max(1, m.importance || 5)),
+        confidence: Math.min(1, Math.max(0.1, m.confidence ?? 0.8)),
+        emotionalValence: (m.emotionalValence != null && Math.abs(m.emotionalValence) <= 1) ? m.emotionalValence : null,
         tags: Array.isArray(m.tags) ? m.tags : [],
       }))
 
@@ -195,6 +218,8 @@ Categories:
           category: mem.category,
           content: mem.content,
           importance: mem.importance,
+          confidence: mem.confidence,
+          emotionalValence: mem.emotionalValence ?? undefined,
           tags: JSON.stringify(mem.tags),
           sourceType: 'chat',
           sourceId: opts?.conversationId,
@@ -251,14 +276,14 @@ ${transcript}`
           role: 'system',
           content: `You extract behavioral and personality insights from debate transcripts for a personal AI memory system.
 Analyze: how the person constructs arguments, what values they reveal under pressure, what they passionately defend vs readily concede, how they respond to being challenged, and what this reveals about their decision-making patterns.
-Return a JSON object: {"memories": [{"category": "fact|preference|goal|mood|skill|context", "content": "specific psychological insight about this person", "importance": 1-10, "tags": ["debate", "reasoning", ...topic-specific tags]}]}
-Extract 3-5 insights. Be specific and psychological — not generic. Reference the debate topic. Return ONLY valid JSON.`,
+Return a JSON object: {"memories": [{"category": "fact|preference|goal|mood|skill|context|identity|belief|pattern", "content": "specific psychological insight about this person", "importance": 1-10, "confidence": 0.1-1.0, "tags": ["debate", "reasoning", ...topic-specific tags]}]}
+Extract 4-7 insights. Be specific and psychological — not generic. Reference the debate topic. Return ONLY valid JSON.`,
         },
         { role: 'user', content: context },
       ], { json: true, temperature: 0.3, max_tokens: 700 }),
     ])
     const parsed = JSON.parse(text)
-    const rawMemories: Array<{ category?: string; content?: string; importance?: number; tags?: string[] }> = parsed.memories || []
+    const rawMemories: Array<{ category?: string; content?: string; importance?: number; confidence?: number; tags?: string[] }> = parsed.memories || []
 
     const candidates = rawMemories
       .filter(m => m.content?.trim())
@@ -269,6 +294,7 @@ Extract 3-5 insights. Be specific and psychological — not generic. Reference t
           category: m.category || 'context',
           content: m.content!.trim().slice(0, 500),
           importance: Math.min(10, Math.max(1, m.importance || 7)),
+          confidence: Math.min(1, Math.max(0.1, m.confidence ?? 0.85)),
           tags,
         }
       })
@@ -281,6 +307,7 @@ Extract 3-5 insights. Be specific and psychological — not generic. Reference t
           category: mem.category,
           content: mem.content,
           importance: mem.importance,
+          confidence: mem.confidence,
           tags: JSON.stringify(mem.tags),
           sourceType: 'debate',
           sourceId: debateId,
@@ -725,7 +752,7 @@ Return ONLY valid JSON: {"title": "...", "content": "markdown note content", "ta
 
 // ─── Memory retrieval ─────────────────────────────────────────────────────────
 
-export async function getRelevantMemories(query: string, limit = 20): Promise<string> {
+export async function getRelevantMemories(query: string, limit = 50): Promise<string> {
   const memories = await prisma.memory.findMany({
     orderBy: [{ importance: 'desc' }, { updatedAt: 'desc' }],
     take: limit,
@@ -733,11 +760,125 @@ export async function getRelevantMemories(query: string, limit = 20): Promise<st
 
   if (memories.length === 0) return ''
 
-  return memories.map(m => {
-    const date = m.createdAt.toISOString().slice(0, 10)
-    const source = m.sourceLabel ? ` ← "${m.sourceLabel}"` : ''
-    return `[${m.category.toUpperCase()}] (${date}) ${m.content}${source}`
-  }).join('\n')
+  // Track which memories were surfaced (batch update to avoid N+1)
+  const now = new Date()
+  prisma.memory.updateMany({
+    where: { id: { in: memories.map(m => m.id) } },
+    data: { accessCount: { increment: 1 }, lastAccessedAt: now },
+  }).catch(() => { /* non-critical */ })
+
+  // Group by category for a structured prompt
+  const grouped = memories.reduce((acc, m) => {
+    if (!acc[m.category]) acc[m.category] = []
+    acc[m.category].push(m)
+    return acc
+  }, {} as Record<string, typeof memories>)
+
+  const lines: string[] = []
+  for (const [cat, mems] of Object.entries(grouped)) {
+    lines.push(`[${cat.toUpperCase()}]`)
+    for (const m of mems) {
+      const date = m.createdAt.toISOString().slice(0, 10)
+      const source = m.sourceLabel ? ` ← "${m.sourceLabel}"` : ''
+      const conf = m.confidence < 0.6 ? ' (uncertain)' : ''
+      lines.push(`  • (${date}) ${m.content}${source}${conf}`)
+    }
+  }
+  return lines.join('\n')
+}
+
+// ─── Note search for context ──────────────────────────────────────────────────
+
+/**
+ * Search user's notes by keyword — used when Skippy needs to find a specific note.
+ * Returns formatted note excerpts for inclusion in AI context.
+ */
+export async function searchUserNotes(query: string, limit = 5): Promise<string> {
+  if (!query.trim()) return ''
+  const q = query.toLowerCase()
+  const notes = await prisma.note.findMany({
+    orderBy: { updatedAt: 'desc' },
+    take: 100,
+    select: { id: true, title: true, content: true, tags: true, encrypted: true, pinned: true, updatedAt: true },
+  })
+  const matches = notes
+    .map(n => {
+      const raw = n.encrypted ? decrypt(n.content) : n.content
+      const plain = raw.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim()
+      const score = (n.title.toLowerCase().includes(q) ? 3 : 0) +
+                    (plain.toLowerCase().includes(q) ? 2 : 0) +
+                    (n.pinned ? 1 : 0)
+      return { ...n, plain, score }
+    })
+    .filter(n => n.score > 0)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, limit)
+
+  if (matches.length === 0) return ''
+  return matches.map(n => {
+    const date = n.updatedAt.toISOString().slice(0, 10)
+    const preview = n.plain.slice(0, 500)
+    return `NOTE "${n.title}" [${date}]:\n${preview}…`
+  }).join('\n\n')
+}
+
+// ─── Memory consolidation ─────────────────────────────────────────────────────
+
+/**
+ * Merge near-duplicate memories across all categories, reinforce high-access memories,
+ * and apply time-based decay to stale low-importance memories.
+ * Safe to run as a background job.
+ */
+export async function consolidateMemories(): Promise<{ merged: number; decayed: number }> {
+  let merged = 0
+  let decayed = 0
+  try {
+    const allMemories = await prisma.memory.findMany({
+      orderBy: [{ importance: 'desc' }, { createdAt: 'asc' }],
+    })
+
+    // 1. Find and merge near-duplicates (same category, Jaccard ≥ 0.65)
+    const processed = new Set<string>()
+    for (const mem of allMemories) {
+      if (processed.has(mem.id)) continue
+      const sameCat = allMemories.filter(m => m.category === mem.category && m.id !== mem.id && !processed.has(m.id))
+      for (const other of sameCat) {
+        if (wordJaccard(mem.content, other.content) >= 0.65) {
+          // Keep the higher-importance one; delete the other
+          const keep = mem.importance >= other.importance ? mem : other
+          const drop = keep.id === mem.id ? other : mem
+          await prisma.memory.update({
+            where: { id: keep.id },
+            data: {
+              importance: Math.min(10, Math.max(keep.importance, drop.importance)),
+              confidence: Math.min(1, (keep.confidence + drop.confidence) / 2 + 0.05),
+              accessCount: keep.accessCount + drop.accessCount,
+            },
+          })
+          await prisma.memory.delete({ where: { id: drop.id } })
+          processed.add(drop.id)
+          merged++
+        }
+      }
+      processed.add(mem.id)
+    }
+
+    // 2. Apply decay to memories not accessed in 30+ days with low importance
+    const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000)
+    const stale = allMemories.filter(m =>
+      m.importance <= 4 &&
+      (!m.lastAccessedAt || m.lastAccessedAt < thirtyDaysAgo) &&
+      m.decayScore > 0.2
+    )
+    for (const m of stale) {
+      const newDecay = Math.max(0.1, m.decayScore * 0.85)
+      await prisma.memory.update({ where: { id: m.id }, data: { decayScore: newDecay } })
+      decayed++
+    }
+  } catch (e) {
+    console.error('Memory consolidation error:', e)
+  }
+  return { merged, decayed }
 }
 
 // ─── User profile ─────────────────────────────────────────────────────────────
@@ -801,49 +942,42 @@ export async function buildSystemPrompt(tzOffsetMinutes = 0): Promise<string> {
     return `${dueLocal.toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' })}${timeLabel}`
   }
 
-  // Surface reminders due through end of tomorrow (catches "tomorrow night" cases)
-  const endOfTomorrow = new Date()
-  endOfTomorrow.setDate(endOfTomorrow.getDate() + 1)
-  endOfTomorrow.setHours(23, 59, 59, 999)
-
-  const [memories, profile, recentNotes, recentDebates, pendingReminders, recentConversations, pendingTodos, langProgress, learnedWordsList] = await Promise.all([
-    getRelevantMemories('', 30),
+  const [memories, profile, allNotes, recentDebates, pendingReminders, recentConversations, pendingTodos, langProgress, learnedWordsList] = await Promise.all([
+    getRelevantMemories('', 50),
     getUserProfile(),
+    // Fetch all notes — pinned first, then most recent
     prisma.note.findMany({
-      orderBy: { updatedAt: 'desc' },
-      take: 12,
-      select: { title: true, content: true, tags: true, encrypted: true, pinned: true },
+      orderBy: [{ pinned: 'desc' }, { updatedAt: 'desc' }],
+      take: 30,
+      select: { title: true, content: true, tags: true, encrypted: true, pinned: true, updatedAt: true },
     }),
     prisma.debate.findMany({
       where: { status: 'concluded' },
       orderBy: { updatedAt: 'desc' },
-      take: 6,
+      take: 8,
       select: {
         topic: true, winner: true, conclusion: true, userStance: true,
         rounds: { orderBy: { roundNumber: 'desc' }, take: 1, select: { userScore: true, aiScore: true } },
       },
     }),
-    // Surface overdue + today + tomorrow reminders so Skippy is always aware
+    // ALL pending reminders, sorted by urgency
     prisma.reminder.findMany({
-      where: {
-        isDone: false,
-        OR: [{ dueDate: { lte: endOfTomorrow } }, { dueDate: null }],
-      },
+      where: { isDone: false },
       orderBy: [{ dueDate: 'asc' }, { createdAt: 'asc' }],
-      take: 8,
+      take: 30,
     }),
     // Recent conversations with summaries — the core continuity mechanism
     prisma.conversation.findMany({
       where: { summary: { not: null } },
       orderBy: { updatedAt: 'desc' },
-      take: 8,
+      take: 10,
       select: { id: true, title: true, summary: true, updatedAt: true },
     }),
-    // Pending todos — for time management context
+    // ALL pending todos — Skippy should know everything on the list
     prisma.todo.findMany({
       where: { isDone: false },
-      orderBy: [{ priority: 'desc' }, { dueDate: 'asc' }],
-      take: 10,
+      orderBy: [{ priority: 'desc' }, { dueDate: 'asc' }, { createdAt: 'asc' }],
+      take: 50,
     }),
     // Mandarin learning progress
     prisma.langProgress.findUnique({ where: { id: 'singleton_zh' } }).catch(() => null),
@@ -865,22 +999,22 @@ export async function buildSystemPrompt(tzOffsetMinutes = 0): Promise<string> {
     : ''
 
   const memorySection = memories
-    ? `\n\n## What I've learned about you across all conversations:\n${memories}`
+    ? `\n\n## What I've learned about you across all conversations (organized by category):\n${memories}`
     : ''
 
   let notesSection = ''
-  if (recentNotes.length > 0) {
-    const noteLines = recentNotes.map(n => {
+  if (allNotes.length > 0) {
+    const noteLines = allNotes.map(n => {
       const rawContent = n.encrypted ? decrypt(n.content) : n.content
-      const preview = rawContent
-        .replace(/<[^>]*>/g, ' ')
-        .replace(/\s+/g, ' ')
-        .trim()
-        .slice(0, 180)
+      const plain = rawContent.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim()
       const tags = n.tags ? (() => { try { return (JSON.parse(n.tags) as string[]).join(', ') } catch { return '' } })() : ''
-      return `- "${n.title}"${n.pinned ? ' [pinned]' : ''}${tags ? ` [${tags}]` : ''}${preview ? `: ${preview}…` : ''}`
+      const date = n.updatedAt.toISOString().slice(0, 10)
+      // Pinned notes get up to 400 chars; others get 200
+      const previewLen = n.pinned ? 400 : 200
+      const preview = plain.slice(0, previewLen)
+      return `- "${n.title}"${n.pinned ? ' 📌' : ''}${tags ? ` [${tags}]` : ''} [${date}]${preview ? `: ${preview}${plain.length > previewLen ? '…' : ''}` : ''}`
     })
-    notesSection = `\n\n## Your notes (most recent):\n${noteLines.join('\n')}`
+    notesSection = `\n\n## Your notes (${allNotes.length} total — you can reference any of these by title):\n${noteLines.join('\n')}`
   }
 
   let debateSection = ''
@@ -898,12 +1032,23 @@ export async function buildSystemPrompt(tzOffsetMinutes = 0): Promise<string> {
   let todoSection = ''
   if (pendingTodos.length > 0) {
     const PRIO = { urgent: '🔴', high: '🟠', normal: '🔵', low: '⚪' } as Record<string, string>
-    const todoLines = pendingTodos.map(t => {
-      const icon = PRIO[t.priority] || '🔵'
-      const due = t.dueDate ? ` [due ${toRelativeLabel(t.dueDate)}]` : ''
-      return `- ${icon} ${t.content}${due}`
-    })
-    todoSection = `\n\n## Your current todo list (today is ${localDayName} ${localDateStr}):\n${todoLines.join('\n')}`
+    // Group by priority
+    const byPriority: Record<string, typeof pendingTodos> = {}
+    for (const t of pendingTodos) {
+      const p = t.priority || 'normal'
+      if (!byPriority[p]) byPriority[p] = []
+      byPriority[p].push(t)
+    }
+    const todoLines: string[] = []
+    for (const prio of ['urgent', 'high', 'normal', 'low']) {
+      if (!byPriority[prio]) continue
+      for (const t of byPriority[prio]) {
+        const icon = PRIO[prio] || '🔵'
+        const due = t.dueDate ? ` [due ${toRelativeLabel(t.dueDate)}]` : ''
+        todoLines.push(`- ${icon} ${t.content}${due}`)
+      }
+    }
+    todoSection = `\n\n## Your complete todo list (${pendingTodos.length} items, today is ${localDayName} ${localDateStr}):\n${todoLines.join('\n')}`
   }
 
   let conversationSection = ''
@@ -917,15 +1062,33 @@ export async function buildSystemPrompt(tzOffsetMinutes = 0): Promise<string> {
 
   let reminderSection = ''
   if (pendingReminders.length > 0) {
-    const reminderLines = pendingReminders.map(r => {
+    const now = new Date()
+    const urgent: string[] = []
+    const upcoming: string[] = []
+    const anytime: string[] = []
+
+    for (const r of pendingReminders) {
       const duePart = r.dueDate
         ? ` — due ${toRelativeLabel(r.dueDate)}`
         : r.timeframeLabel
         ? ` — ${r.timeframeLabel}`
         : ''
-      return `• "${r.content}"${duePart}`
-    })
-    reminderSection = `\n\n## Your pending reminders (surface these naturally when relevant):\n${reminderLines.join('\n')}`
+      const line = `• "${r.content}"${duePart}`
+
+      if (!r.dueDate) {
+        anytime.push(line)
+      } else {
+        const hoursUntil = (new Date(r.dueDate).getTime() - now.getTime()) / 3_600_000
+        if (hoursUntil < 0 || hoursUntil <= 24) urgent.push(line)
+        else upcoming.push(line)
+      }
+    }
+
+    const parts: string[] = []
+    if (urgent.length) parts.push(`**Urgent/today:**\n${urgent.join('\n')}`)
+    if (upcoming.length) parts.push(`**Upcoming:**\n${upcoming.join('\n')}`)
+    if (anytime.length) parts.push(`**Anytime:**\n${anytime.join('\n')}`)
+    reminderSection = `\n\n## Your pending reminders (${pendingReminders.length} total — surface these when relevant):\n${parts.join('\n\n')}`
   }
 
   let langSection = ''
@@ -979,9 +1142,13 @@ Your core traits:
 - You're honest, sometimes bluntly so, but always supportive
 - You celebrate wins and help process setbacks
 - You help organize thoughts, build systems, and make things happen
+
+Your capabilities (always available — never say you "can't" do these):
 - When the user asks you to "write a daily note", "log what I did today", "save this as a note", or anything similar, write the full reflection in your response and let them know it's being saved to their notes automatically
 - When the user asks you to add something to their to-do list ("add X to my to-do", "put X on my list", "create a task for X"), confirm it in your response — it's being added automatically
-- When the user tells you they finished or completed something ("I finished X", "I did X", "I'm done with X", "crossed off X"), acknowledge it warmly and let them know it's being marked as done in their system automatically — you have full visibility of their todos and reminders${profileSection}${instructionsSection}${reminderSection}${todoSection}${conversationSection}${memorySection}${notesSection}${debateSection}${langSection}
+- When the user tells you they finished or completed something ("I finished X", "I did X", "I'm done with X", "crossed off X"), acknowledge it warmly and let them know it's being marked as done automatically
+- You know every note they've written — if they say "find my note about X", reference the matching note from the notes section below
+- You know their full todo list, ALL their reminders, and their complete memory history — reference specific items when relevant${profileSection}${instructionsSection}${reminderSection}${todoSection}${conversationSection}${memorySection}${notesSection}${debateSection}${langSection}
 
 Always respond in a way that reflects deep knowledge of this specific person. Never be generic. Use markdown formatting for structure when helpful — headers, bullet points, code blocks, etc.`
 }

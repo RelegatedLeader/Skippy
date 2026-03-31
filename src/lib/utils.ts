@@ -46,6 +46,15 @@ export function getCategoryColor(category: string): string {
     mood: '#f59e0b',
     skill: '#06b6d4',
     context: '#ec4899',
+    identity: '#8b5cf6',
+    relationship: '#f43f5e',
+    health: '#22c55e',
+    finance: '#16a34a',
+    routine: '#0ea5e9',
+    event: '#f97316',
+    belief: '#a855f7',
+    pattern: '#eab308',
+    project: '#14b8a6',
   }
   return colors[category] || '#64748b'
 }
@@ -58,6 +67,23 @@ export function getCategoryIcon(category: string): string {
     mood: '🌊',
     skill: '⚡',
     context: '🔍',
+    identity: '🪪',
+    relationship: '👥',
+    health: '🏃',
+    finance: '💰',
+    routine: '🔄',
+    event: '📅',
+    belief: '💭',
+    pattern: '🔁',
+    project: '🚀',
   }
   return icons[category] || '💡'
 }
+
+export const ALL_MEMORY_CATEGORIES = [
+  'fact', 'preference', 'goal', 'mood', 'skill', 'context',
+  'identity', 'relationship', 'health', 'finance', 'routine',
+  'event', 'belief', 'pattern', 'project',
+] as const
+
+export type MemoryCategory = typeof ALL_MEMORY_CATEGORIES[number]

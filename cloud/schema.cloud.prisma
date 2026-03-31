@@ -27,16 +27,21 @@ model Message {
 }
 
 model Memory {
-  id          String   @id @default(cuid())
-  category    String
-  content     String
-  importance  Int      @default(5)
-  sourceType  String?
-  sourceId    String?
-  sourceLabel String?
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
-  tags        String   @default("[]")
+  id             String    @id @default(cuid())
+  category       String
+  content        String
+  importance     Int       @default(5)
+  confidence     Float     @default(0.8)
+  accessCount    Int       @default(0)
+  lastAccessedAt DateTime?
+  decayScore     Float     @default(1.0)
+  emotionalValence Float?
+  sourceType     String?
+  sourceId       String?
+  sourceLabel    String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+  tags           String    @default("[]")
 }
 
 model Reminder {

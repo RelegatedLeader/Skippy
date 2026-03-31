@@ -1,37 +1,60 @@
 import { NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
 
+function parseMemory(m: {
+  id: string; category: string; content: string; importance: number
+  confidence: number; accessCount: number; lastAccessedAt: Date | null
+  decayScore: number; emotionalValence: number | null
+  sourceType: string | null; sourceId: string | null; sourceLabel: string | null
+  createdAt: Date; updatedAt: Date; tags: string
+}) {
+  return { ...m, tags: JSON.parse(m.tags || '[]') as string[] }
+}
+
 export async function GET(req: Request) {
   try {
     const { searchParams } = new URL(req.url)
     const q = searchParams.get('q')?.toLowerCase().trim()
+    const category = searchParams.get('category')?.toLowerCase().trim()
+    const source = searchParams.get('source')?.toLowerCase().trim()
 
     const memories = await prisma.memory.findMany({
       orderBy: [{ importance: 'desc' }, { updatedAt: 'desc' }],
     })
 
-    const filtered = q
-      ? memories.filter(m => {
-          const tags = JSON.parse(m.tags || '[]') as string[]
-          return (
-            m.content.toLowerCase().includes(q) ||
-            m.category.toLowerCase().includes(q) ||
-            (m.sourceLabel?.toLowerCase().includes(q) ?? false) ||
-            tags.some(t => t.toLowerCase().includes(q))
-          )
-        })
-      : memories
+    const filtered = memories.filter(m => {
+      const tags = JSON.parse(m.tags || '[]') as string[]
+      const matchQ = !q || (
+        m.content.toLowerCase().includes(q) ||
+        m.category.toLowerCase().includes(q) ||
+        (m.sourceLabel?.toLowerCase().includes(q) ?? false) ||
+        tags.some(t => t.toLowerCase().includes(q))
+      )
+      const matchCat = !category || m.category === category
+      const matchSrc = !source || m.sourceType === source
+      return matchQ && matchCat && matchSrc
+    })
 
     const grouped = filtered.reduce((acc, memory) => {
       if (!acc[memory.category]) acc[memory.category] = []
-      acc[memory.category].push({ ...memory, tags: JSON.parse(memory.tags || '[]') })
+      acc[memory.category].push(parseMemory(memory))
       return acc
-    }, {} as Record<string, unknown[]>)
+    }, {} as Record<string, ReturnType<typeof parseMemory>[]>)
+
+    // Stats per category
+    const categoryStats = Object.entries(grouped).map(([cat, mems]) => ({
+      category: cat,
+      count: mems.length,
+      avgImportance: mems.reduce((s, m) => s + m.importance, 0) / mems.length,
+      avgConfidence: mems.reduce((s, m) => s + m.confidence, 0) / mems.length,
+      mostRecent: mems[0]?.updatedAt,
+    })).sort((a, b) => b.count - a.count)
 
     return NextResponse.json({
-      memories: filtered.map(m => ({ ...m, tags: JSON.parse(m.tags || '[]') })),
+      memories: filtered.map(parseMemory),
       grouped,
       total: filtered.length,
+      categoryStats,
     })
   } catch (err) {
     console.error('Failed to fetch memories:', err)
@@ -41,10 +64,11 @@ export async function GET(req: Request) {
 
 export async function POST(req: Request) {
   try {
-    const { category, content, importance = 5, tags = [] } = await req.json() as {
+    const { category, content, importance = 5, confidence = 0.8, tags = [] } = await req.json() as {
       category?: string
       content?: string
       importance?: number
+      confidence?: number
       tags?: string[]
     }
 
@@ -57,15 +81,42 @@ export async function POST(req: Request) {
         category: category || 'fact',
         content: content.trim().slice(0, 500),
         importance: Math.min(10, Math.max(1, importance)),
+        confidence: Math.min(1, Math.max(0.1, confidence)),
         tags: JSON.stringify(Array.isArray(tags) ? tags : []),
         sourceType: 'manual',
       },
     })
 
-    return NextResponse.json({ ...memory, tags: JSON.parse(memory.tags || '[]') }, { status: 201 })
+    return NextResponse.json(parseMemory(memory), { status: 201 })
   } catch (err) {
     console.error('Failed to create memory:', err)
     return NextResponse.json({ error: 'Failed to create memory' }, { status: 500 })
+  }
+}
+
+export async function PATCH(req: Request) {
+  try {
+    const { id, importance, confidence, category } = await req.json() as {
+      id?: string
+      importance?: number
+      confidence?: number
+      category?: string
+    }
+
+    if (!id) {
+      return NextResponse.json({ error: 'Memory ID required' }, { status: 400 })
+    }
+
+    const data: Record<string, unknown> = {}
+    if (importance !== undefined) data.importance = Math.min(10, Math.max(1, importance))
+    if (confidence !== undefined) data.confidence = Math.min(1, Math.max(0.1, confidence))
+    if (category !== undefined) data.category = category
+
+    const memory = await prisma.memory.update({ where: { id }, data })
+    return NextResponse.json(parseMemory(memory))
+  } catch (err) {
+    console.error('Failed to update memory:', err)
+    return NextResponse.json({ error: 'Failed to update memory' }, { status: 500 })
   }
 }
 
