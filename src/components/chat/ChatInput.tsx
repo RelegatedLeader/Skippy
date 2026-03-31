@@ -2,17 +2,17 @@
 
 import { useState, useRef, useCallback, useEffect } from 'react'
 import { motion } from 'framer-motion'
-import { Send, Mic, Loader2 } from 'lucide-react'
+import { Send, Loader2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
 interface ChatInputProps {
   onSend: (message: string) => void
   isLoading: boolean
   disabled?: boolean
-  voiceActive?: boolean  // reserved for VoiceMode integration
+  voiceButton?: React.ReactNode  // rendered as the mic slot in the button row
 }
 
-export function ChatInput({ onSend, isLoading, disabled }: ChatInputProps) {
+export function ChatInput({ onSend, isLoading, disabled, voiceButton }: ChatInputProps) {
   const [value, setValue] = useState('')
   const [isFocused, setIsFocused] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
@@ -84,13 +84,7 @@ export function ChatInput({ onSend, isLoading, disabled }: ChatInputProps) {
               </span>
             )}
 
-            <button
-              type="button" disabled
-              className="p-2 rounded-xl text-muted/20 cursor-not-allowed opacity-0 pointer-events-none"
-              aria-hidden="true"
-            >
-              <Mic className="w-4 h-4" />
-            </button>
+            {voiceButton ?? null}
 
             <motion.button
               whileHover={canSend ? { scale: 1.07 } : {}}

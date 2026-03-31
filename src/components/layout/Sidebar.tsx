@@ -4,7 +4,7 @@ import Link from 'next/link'
 import Image from 'next/image'
 import { usePathname, useRouter } from 'next/navigation'
 import { motion, AnimatePresence } from 'framer-motion'
-import { MessageSquare, FileText, Brain, Settings, Info, Swords, Sparkles, CheckSquare, Flame, Trophy, GraduationCap, X, LogOut } from 'lucide-react'
+import { MessageSquare, FileText, Brain, Settings, Info, Swords, Sparkles, CheckSquare, Flame, Trophy, GraduationCap, X, LogOut, Mic } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useNotifications } from '@/components/notifications/NotificationProvider'
 import { useSidebar } from './SidebarContext'
@@ -94,6 +94,33 @@ function SidebarInner({
             <X className="w-4 h-4" />
           </button>
         )}
+      </div>
+
+      {/* Talk to Skippy voice button */}
+      <div className="px-3 py-3 border-b" style={{ borderColor: 'rgba(30,58,110,0.7)' }}>
+        <Link href="/chat?voice=1" onClick={onClose} className="block">
+          <button
+            className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold transition-all duration-200 border group"
+            style={{ background: 'rgba(41,194,230,0.07)', borderColor: 'rgba(41,194,230,0.2)', color: '#29c2e6' }}
+            onMouseEnter={e => {
+              (e.currentTarget as HTMLButtonElement).style.background = 'rgba(41,194,230,0.14)'
+              ;(e.currentTarget as HTMLButtonElement).style.borderColor = 'rgba(41,194,230,0.4)'
+              ;(e.currentTarget as HTMLButtonElement).style.boxShadow = '0 0 18px rgba(41,194,230,0.2)'
+            }}
+            onMouseLeave={e => {
+              (e.currentTarget as HTMLButtonElement).style.background = 'rgba(41,194,230,0.07)'
+              ;(e.currentTarget as HTMLButtonElement).style.borderColor = 'rgba(41,194,230,0.2)'
+              ;(e.currentTarget as HTMLButtonElement).style.boxShadow = ''
+            }}
+          >
+            <div className="relative">
+              <Mic className="w-4 h-4" />
+              <span className="absolute -top-0.5 -right-0.5 w-1.5 h-1.5 rounded-full bg-accent animate-pulse" />
+            </div>
+            Talk to Skippy
+            <span className="ml-auto text-[9px] font-bold px-1.5 py-0.5 rounded uppercase tracking-wider" style={{ background: 'rgba(41,194,230,0.15)' }}>Voice</span>
+          </button>
+        </Link>
       </div>
 
       {/* Navigation */}

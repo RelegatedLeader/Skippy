@@ -6,14 +6,11 @@
  * Architecture:
  *  1. Passive wake-word listener: polls SpeechRecognition for "skippy"
  *     using a sliding 5-word window (low CPU, browser-native, no cloud).
- *  2. On activation: starts encrypted recording session
- *     - Negotiates AES-256-GCM key per session via /api/voice/session
- *     - Records with MediaRecorder → encrypts each blob client-side
- *     - Sends encrypted audio to /api/voice/transcribe
- *  3. Transcript is fed into the chat send pipeline (same path as text).
- *  4. AI response is read aloud via Web Speech API (SpeechSynthesis)
- *     with a Skippy-tuned voice profile.
- *  5. Visual: animated orb with listening/thinking/speaking states.
+ *  2. On activation: opens a second SpeechRecognition session to capture
+ *     the full utterance — NO audio is ever sent to a server.
+ *  3. Transcript is fed into the chat pipeline (Grok / Claude) as plain text.
+ *  4. AI response is read aloud via Web Speech API (SpeechSynthesis).
+ *  5. Visual: animated orb with listening / thinking / speaking states.
  */
 
 import { useEffect, useRef, useCallback, useState } from 'react'
@@ -24,143 +21,97 @@ import { cn } from '@/lib/utils'
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 type VoiceState =
-  | 'idle'          // orb hidden, passive wake-word listener running in bg
-  | 'waking'        // heard "Skippy", playing activation chime, preparing
-  | 'listening'     // actively recording user speech
-  | 'processing'    // STT + AI response in flight
-  | 'speaking'      // reading AI response aloud
-  | 'error'         // something went wrong
+  | 'idle'
+  | 'waking'
+  | 'listening'
+  | 'processing'
+  | 'speaking'
+  | 'error'
 
 interface VoiceModeProps {
-  /** Called with the transcribed text — should feed it into the chat pipeline */
-  onTranscript: (text: string) => Promise<string>  // returns AI response text
-  /** Whether the chat is currently processing (disable voice if so) */
+  onTranscript: (text: string) => Promise<string>
   chatBusy?: boolean
+  /** If true, trigger voice activation automatically on first mount (e.g. from ?voice=1 URL) */
+  autoActivate?: boolean
   className?: string
 }
 
-// ─── Helpers ─────────────────────────────────────────────────────────────────
+// ─── Constants ────────────────────────────────────────────────────────────────
 
 const ACTIVATION_PHRASES = ['skippy', 'hey skippy', 'ok skippy', 'yo skippy', 'skipy']
-const SILENCE_TIMEOUT_MS = 2400   // stop recording after 2.4s silence
-const MAX_RECORD_MS      = 25_000 // hard cap at 25s
+const SILENCE_MS    = 2000
+const MAX_LISTEN_MS = 30_000
 
-/** AES-256-GCM encrypt a buffer using Web Crypto API */
-async function encryptAudioBuffer(
-  audioBuf: ArrayBuffer,
-  keyRaw: Uint8Array
-): Promise<{ iv: string; ciphertext: string }> {
-  const key = await crypto.subtle.importKey(
-    'raw', keyRaw.buffer as ArrayBuffer, { name: 'AES-GCM' }, false, ['encrypt']
-  )
-  const iv = crypto.getRandomValues(new Uint8Array(12))  // 96-bit IV for GCM
-  const encrypted = await crypto.subtle.encrypt(
-    { name: 'AES-GCM', iv },
-    key,
-    audioBuf
-  )
-  // Encode as base64 for JSON transport
-  const ivArr = Array.from(iv)
-  const encArr = Array.from(new Uint8Array(encrypted))
-  return {
-    iv: btoa(String.fromCharCode(...ivArr)),
-    ciphertext: btoa(String.fromCharCode(...encArr)),
-  }
-}
+// ─── Helpers ─────────────────────────────────────────────────────────────────
 
-/** Play a subtle chime to signal activation */
 function playActivationChime(type: 'wake' | 'done' | 'error') {
   try {
-    const ctx = new AudioContext()
-    const osc = ctx.createOscillator()
+    const ctx  = new AudioContext()
+    const osc  = ctx.createOscillator()
     const gain = ctx.createGain()
     osc.connect(gain)
     gain.connect(ctx.destination)
 
     if (type === 'wake') {
-      // Rising two-note: C5 → E5
       osc.frequency.setValueAtTime(523.25, ctx.currentTime)
       osc.frequency.setValueAtTime(659.25, ctx.currentTime + 0.12)
       gain.gain.setValueAtTime(0.18, ctx.currentTime)
       gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.35)
       osc.start(); osc.stop(ctx.currentTime + 0.35)
     } else if (type === 'done') {
-      // Soft descending G5 → E5
       osc.frequency.setValueAtTime(783.99, ctx.currentTime)
       osc.frequency.setValueAtTime(659.25, ctx.currentTime + 0.1)
       gain.gain.setValueAtTime(0.12, ctx.currentTime)
       gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.3)
       osc.start(); osc.stop(ctx.currentTime + 0.3)
     } else {
-      // Error: low beep
       osc.frequency.setValueAtTime(220, ctx.currentTime)
       gain.gain.setValueAtTime(0.1, ctx.currentTime)
       gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.25)
       osc.start(); osc.stop(ctx.currentTime + 0.25)
     }
     setTimeout(() => ctx.close(), 600)
-  } catch { /* AudioContext blocked (user hasn't interacted yet) */ }
+  } catch { /* AudioContext may be blocked before user gesture */ }
 }
 
 // ─── Component ───────────────────────────────────────────────────────────────
 
-export function VoiceMode({ onTranscript, chatBusy, className }: VoiceModeProps) {
-  const [state, setState] = useState<VoiceState>('idle')
-  const [transcript, setTranscript] = useState('')
-  const [response, setResponse] = useState('')
-  const [errorMsg, setErrorMsg] = useState('')
-  const [muted, setMuted] = useState(false)
-  const [visible, setVisible] = useState(false)
+export function VoiceMode({ onTranscript, chatBusy, autoActivate, className }: VoiceModeProps) {
+  const [state, setState]             = useState<VoiceState>('idle')
+  const [transcript, setTranscript]   = useState('')
+  const [response, setResponse]       = useState('')
+  const [errorMsg, setErrorMsg]       = useState('')
+  const [muted, setMuted]             = useState(false)
+  const [visible, setVisible]         = useState(false)
   const [wakeEnabled, setWakeEnabled] = useState(true)
   const [volumeLevel, setVolumeLevel] = useState(0)
 
-  const sessionRef = useRef<{ id: string; keyRaw: Uint8Array } | null>(null)
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null)
-  const chunksRef = useRef<Blob[]>([])
+  const wakeRecogRef    = useRef<SpeechRecognition | null>(null)
+  const listenRecogRef  = useRef<SpeechRecognition | null>(null)
+  const utteranceRef    = useRef<SpeechSynthesisUtterance | null>(null)
+  const streamRef       = useRef<MediaStream | null>(null)
+  const analyserRef     = useRef<AnalyserNode | null>(null)
+  const animFrameRef    = useRef<number | null>(null)
   const silenceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const maxTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const utteranceRef = useRef<SpeechSynthesisUtterance | null>(null)
-  const wakeRecogRef = useRef<SpeechRecognition | null>(null)
-  const streamRef = useRef<MediaStream | null>(null)
-  const analyserRef = useRef<AnalyserNode | null>(null)
-  const animFrameRef = useRef<number | null>(null)
-  const stateRef = useRef<VoiceState>('idle')
+  const maxTimerRef     = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const finalTextRef    = useRef<string>('')
+  const stateRef        = useRef<VoiceState>('idle')
+  const mutedRef        = useRef(false)
+  const wakeBlockRef    = useRef(false)
 
-  // Keep stateRef in sync for closures
   useEffect(() => { stateRef.current = state }, [state])
+  useEffect(() => { mutedRef.current = muted }, [muted])
 
-  // ── Session management ────────────────────────────────────────────────────
-
-  const negotiateSession = useCallback(async () => {
-    const res = await fetch('/api/voice/session', { method: 'POST' })
-    if (!res.ok) throw new Error('Failed to create voice session')
-    const { sessionId, keyHex } = await res.json()
-    const keyRaw = new Uint8Array(keyHex.match(/.{2}/g)!.map((b: string) => parseInt(b, 16)))
-    sessionRef.current = { id: sessionId, keyRaw }
-  }, [])
-
-  const teardownSession = useCallback(async () => {
-    if (sessionRef.current) {
-      fetch('/api/voice/session', {
-        method: 'DELETE',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sessionId: sessionRef.current.id }),
-      }).catch(() => {})
-      sessionRef.current = null
-    }
-  }, [])
-
-  // ── Volume visualiser ─────────────────────────────────────────────────────
+  // ── Volume visualiser (optional — just for the orb animation) ─────────────
 
   const startVolumeAnalysis = useCallback((stream: MediaStream) => {
     try {
-      const ctx = new AudioContext()
-      const source = ctx.createMediaStreamSource(stream)
+      const ctx     = new AudioContext()
+      const source  = ctx.createMediaStreamSource(stream)
       const analyser = ctx.createAnalyser()
       analyser.fftSize = 256
       source.connect(analyser)
       analyserRef.current = analyser
-
       const tick = () => {
         if (stateRef.current !== 'listening') return
         const data = new Uint8Array(analyser.frequencyBinCount)
@@ -174,142 +125,17 @@ export function VoiceMode({ onTranscript, chatBusy, className }: VoiceModeProps)
   }, [])
 
   const stopVolumeAnalysis = useCallback(() => {
-    if (animFrameRef.current) {
-      cancelAnimationFrame(animFrameRef.current)
-      animFrameRef.current = null
-    }
+    if (animFrameRef.current) { cancelAnimationFrame(animFrameRef.current); animFrameRef.current = null }
     setVolumeLevel(0)
+    streamRef.current?.getTracks().forEach(t => t.stop())
+    streamRef.current = null
   }, [])
-
-  // ── Recording ─────────────────────────────────────────────────────────────
-
-  const stopRecording = useCallback(() => {
-    if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current)
-    if (maxTimerRef.current) clearTimeout(maxTimerRef.current)
-    stopVolumeAnalysis()
-    if (mediaRecorderRef.current?.state === 'recording') {
-      mediaRecorderRef.current.stop()
-    }
-  }, [stopVolumeAnalysis])
-
-  const startRecording = useCallback(async () => {
-    try {
-      setState('listening')
-      setTranscript('')
-      setResponse('')
-      setErrorMsg('')
-
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, sampleRate: 16000 } })
-      streamRef.current = stream
-      startVolumeAnalysis(stream)
-
-      const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
-        ? 'audio/webm;codecs=opus'
-        : MediaRecorder.isTypeSupported('audio/ogg;codecs=opus')
-        ? 'audio/ogg;codecs=opus'
-        : 'audio/webm'
-
-      const recorder = new MediaRecorder(stream, { mimeType })
-      mediaRecorderRef.current = recorder
-      chunksRef.current = []
-
-      recorder.ondataavailable = (e) => {
-        if (e.data.size > 0) {
-          chunksRef.current.push(e.data)
-          // Reset silence timer on new audio data > threshold
-          if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current)
-          silenceTimerRef.current = setTimeout(() => stopRecording(), SILENCE_TIMEOUT_MS)
-        }
-      }
-
-      recorder.onstop = async () => {
-        stream.getTracks().forEach(t => t.stop())
-        streamRef.current = null
-
-        if (chunksRef.current.length === 0 || stateRef.current === 'idle') return
-
-        setState('processing')
-        try {
-          if (!sessionRef.current) await negotiateSession()
-          const session = sessionRef.current!
-
-          const blob = new Blob(chunksRef.current, { type: mimeType })
-          const audioBuf = await blob.arrayBuffer()
-
-          const { iv, ciphertext } = await encryptAudioBuffer(audioBuf, session.keyRaw)
-
-          const sttRes = await fetch('/api/voice/transcribe', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              sessionId: session.id,
-              iv,
-              ciphertext,
-              mimeType: blob.type,
-            }),
-          })
-
-          if (!sttRes.ok) {
-            const err = await sttRes.json().catch(() => ({}))
-            throw new Error(err.error || 'Transcription failed')
-          }
-
-          const { transcript: text } = await sttRes.json()
-          if (!text?.trim()) {
-            setState('idle')
-            setVisible(false)
-            return
-          }
-
-          setTranscript(text)
-
-          // Feed into chat pipeline — caller returns the AI response text
-          const aiResponse = await onTranscript(text)
-          setResponse(aiResponse)
-          playActivationChime('done')
-
-          if (!muted && aiResponse) {
-            setState('speaking')
-            speak(aiResponse, () => {
-              setState('idle')
-              setTimeout(() => setVisible(false), 1500)
-            })
-          } else {
-            setState('idle')
-            setTimeout(() => setVisible(false), 2500)
-          }
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : 'Something went wrong'
-          setErrorMsg(msg)
-          setState('error')
-          playActivationChime('error')
-          setTimeout(() => { setState('idle'); setVisible(false) }, 3500)
-        }
-      }
-
-      recorder.start(250)  // collect in 250ms chunks for silence detection
-
-      // Hard cap
-      maxTimerRef.current = setTimeout(() => stopRecording(), MAX_RECORD_MS)
-
-      // Initial silence guard (start timer immediately in case nothing is said)
-      silenceTimerRef.current = setTimeout(() => stopRecording(), SILENCE_TIMEOUT_MS + 1000)
-
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Microphone access denied'
-      setErrorMsg(msg)
-      setState('error')
-      setTimeout(() => { setState('idle'); setVisible(false) }, 3500)
-    }
-  }, [startVolumeAnalysis, stopRecording, negotiateSession, onTranscript, muted])
 
   // ── TTS ───────────────────────────────────────────────────────────────────
 
   const speak = useCallback((text: string, onEnd?: () => void) => {
     if (!('speechSynthesis' in window)) { onEnd?.(); return }
     window.speechSynthesis.cancel()
-
-    // Strip markdown for speech
     const clean = text
       .replace(/\*\*(.+?)\*\*/g, '$1')
       .replace(/\*(.+?)\*/g, '$1')
@@ -317,24 +143,20 @@ export function VoiceMode({ onTranscript, chatBusy, className }: VoiceModeProps)
       .replace(/#{1,6}\s/g, '')
       .replace(/\n+/g, ' ')
       .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
-      .slice(0, 600)  // cap length for voice
-
+      .slice(0, 600)
     const utt = new SpeechSynthesisUtterance(clean)
     utteranceRef.current = utt
-
-    // Pick a good voice — prefer a natural-sounding English voice
     const voices = window.speechSynthesis.getVoices()
-    const preferred = voices.find(v =>
-      /samira|karen|daniel|moira|alex|siri/i.test(v.name) && v.lang.startsWith('en')
-    ) || voices.find(v => v.lang === 'en-US' && v.localService) || voices.find(v => v.lang.startsWith('en'))
+    const preferred =
+      voices.find(v => /samira|karen|daniel|moira|alex|siri/i.test(v.name) && v.lang.startsWith('en')) ||
+      voices.find(v => v.lang === 'en-US' && v.localService) ||
+      voices.find(v => v.lang.startsWith('en'))
     if (preferred) utt.voice = preferred
-
-    utt.rate = 1.05
-    utt.pitch = 0.92
+    utt.rate   = 1.05
+    utt.pitch  = 0.92
     utt.volume = 0.88
-    utt.lang = 'en-US'
-
-    utt.onend = () => onEnd?.()
+    utt.lang   = 'en-US'
+    utt.onend  = () => onEnd?.()
     utt.onerror = () => onEnd?.()
     window.speechSynthesis.speak(utt)
   }, [])
@@ -346,106 +168,215 @@ export function VoiceMode({ onTranscript, chatBusy, className }: VoiceModeProps)
     setVisible(false)
   }, [])
 
-  // ── Wake-word detection (passive, always running) ─────────────────────────
+  // ── Active listening (browser STT — no server, no API key) ───────────────
 
-  const startWakeWordListener = useCallback(() => {
-    if (!('SpeechRecognition' in window || 'webkitSpeechRecognition' in window)) return
+  const stopListening = useCallback(() => {
+    if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current)
+    if (maxTimerRef.current) clearTimeout(maxTimerRef.current)
+    stopVolumeAnalysis()
+    listenRecogRef.current?.stop()
+    listenRecogRef.current = null
+  }, [stopVolumeAnalysis])
+
+  // Keep a ref so the onend closure always has the latest callback
+  const onTranscriptRef = useRef(onTranscript)
+  useEffect(() => { onTranscriptRef.current = onTranscript }, [onTranscript])
+
+  const startListening = useCallback(() => {
+    if (!('SpeechRecognition' in window || 'webkitSpeechRecognition' in window)) {
+      setErrorMsg('Speech recognition not supported in this browser')
+      setState('error')
+      setTimeout(() => { setState('idle'); setVisible(false) }, 3000)
+      return
+    }
+
+    // Pause the wake-word session while actively listening
+    wakeBlockRef.current = true
+    wakeRecogRef.current?.stop()
+
+    finalTextRef.current = ''
+    setState('listening')
+    setTranscript('')
+    setResponse('')
+    setErrorMsg('')
 
     const SR = (window.SpeechRecognition || window.webkitSpeechRecognition) as typeof SpeechRecognition
     const recog = new SR()
-    recog.continuous = true
-    recog.interimResults = true
-    recog.lang = 'en-US'
+    recog.continuous      = true
+    recog.interimResults  = true
+    recog.lang            = 'en-US'
     recog.maxAlternatives = 1
 
-    let slidingWindow = ''
-
     recog.onresult = (event) => {
-      // Only process if not already active and chat is free
-      if (stateRef.current !== 'idle' || chatBusy) return
+      let interim = ''
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        const r = event.results[i]
+        if (r.isFinal) {
+          finalTextRef.current += ' ' + r[0].transcript
+          // Reset the silence timer on each finalized phrase
+          if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current)
+          silenceTimerRef.current = setTimeout(() => recog.stop(), SILENCE_MS)
+        } else {
+          interim += r[0].transcript
+        }
+      }
+      setTranscript((finalTextRef.current + (interim ? ' ' + interim : '')).trim())
+    }
 
-      const latest = event.results[event.results.length - 1]
-      const word = latest[0].transcript.toLowerCase().trim()
-      slidingWindow = (slidingWindow + ' ' + word).split(' ').slice(-6).join(' ')
+    recog.onend = async () => {
+      stopVolumeAnalysis()
+      listenRecogRef.current = null
 
-      const activated = ACTIVATION_PHRASES.some(p => slidingWindow.includes(p))
-      if (activated) {
-        slidingWindow = ''
-        if (!wakeEnabled) return
+      // Re-enable wake-word listener
+      wakeBlockRef.current = false
+      setTimeout(() => {
+        if (wakeRecogRef.current && stateRef.current !== 'listening') {
+          try { wakeRecogRef.current.start() } catch { /* already running */ }
+        }
+      }, 800)
 
-        setState('waking')
-        setVisible(true)
-        playActivationChime('wake')
+      const text = finalTextRef.current.trim()
+      if (!text || stateRef.current === 'idle') return
 
-        // Brief visual delay then start recording
-        setTimeout(() => {
-          if (stateRef.current === 'waking') startRecording()
-        }, 450)
+      setState('processing')
+      try {
+        const aiResponse = await onTranscriptRef.current(text)
+        setResponse(aiResponse)
+        playActivationChime('done')
+        if (!mutedRef.current && aiResponse) {
+          setState('speaking')
+          speak(aiResponse, () => {
+            setState('idle')
+            setTimeout(() => setVisible(false), 1500)
+          })
+        } else {
+          setState('idle')
+          setTimeout(() => setVisible(false), 2500)
+        }
+      } catch {
+        setErrorMsg('Something went wrong')
+        setState('error')
+        playActivationChime('error')
+        setTimeout(() => { setState('idle'); setVisible(false) }, 3500)
       }
     }
 
     recog.onerror = (e: SpeechRecognitionErrorEvent) => {
       if (e.error === 'not-allowed') {
         setWakeEnabled(false)
+        setErrorMsg('Microphone access denied')
+        setState('error')
+        setTimeout(() => { setState('idle'); setVisible(false) }, 3000)
+      }
+      // 'no-speech' handled by silence timer
+    }
+
+    listenRecogRef.current = recog
+    recog.start()
+
+    // Best-effort volume visualiser (not required for STT)
+    navigator.mediaDevices
+      .getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } })
+      .then(stream => { streamRef.current = stream; startVolumeAnalysis(stream) })
+      .catch(() => { /* visualiser is optional */ })
+
+    silenceTimerRef.current = setTimeout(() => recog.stop(), SILENCE_MS + 1500)
+    maxTimerRef.current     = setTimeout(() => recog.stop(), MAX_LISTEN_MS)
+  }, [speak, stopVolumeAnalysis, startVolumeAnalysis])
+
+  // ── Wake-word detection (passive, always-on) ──────────────────────────────
+
+  const startWakeWordListener = useCallback(() => {
+    if (!('SpeechRecognition' in window || 'webkitSpeechRecognition' in window)) return
+    const SR = (window.SpeechRecognition || window.webkitSpeechRecognition) as typeof SpeechRecognition
+    const recog = new SR()
+    recog.continuous      = true
+    recog.interimResults  = true
+    recog.lang            = 'en-US'
+    recog.maxAlternatives = 1
+    let slidingWindow = ''
+
+    recog.onresult = (event) => {
+      if (stateRef.current !== 'idle' || chatBusy) return
+      const latest = event.results[event.results.length - 1]
+      const word = latest[0].transcript.toLowerCase().trim()
+      slidingWindow = (slidingWindow + ' ' + word).split(' ').slice(-6).join(' ')
+      if (ACTIVATION_PHRASES.some(p => slidingWindow.includes(p))) {
+        slidingWindow = ''
+        if (!wakeEnabled) return
+        setState('waking')
+        setVisible(true)
+        playActivationChime('wake')
+        setTimeout(() => { if (stateRef.current === 'waking') startListening() }, 450)
       }
     }
 
-    // Auto-restart on end (SpeechRecognition stops after ~60s on some browsers)
+    recog.onerror = (e: SpeechRecognitionErrorEvent) => {
+      if (e.error === 'not-allowed') setWakeEnabled(false)
+    }
+
     recog.onend = () => {
+      if (wakeBlockRef.current) return  // active session running, don't restart
       if (stateRef.current === 'idle') {
-        setTimeout(() => {
-          try { recog.start() } catch { /* already started */ }
-        }, 500)
+        setTimeout(() => { try { recog.start() } catch { /* already started */ } }, 500)
       }
     }
 
     wakeRecogRef.current = recog
-    try { recog.start() } catch { /* permission denied handled in onerror */ }
-  }, [chatBusy, wakeEnabled, startRecording])
+    try { recog.start() } catch { /* permission denied → handled in onerror */ }
+  }, [chatBusy, wakeEnabled, startListening])
 
+  // Mount / unmount
   useEffect(() => {
     startWakeWordListener()
     return () => {
+      wakeBlockRef.current = true
       wakeRecogRef.current?.stop()
       wakeRecogRef.current = null
+      listenRecogRef.current?.stop()
+      listenRecogRef.current = null
       stopSpeaking()
-      teardownSession()
+      stopVolumeAnalysis()
     }
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Negotiate session eagerly once to reduce first-activation latency
+  // Auto-activate on mount when ?voice=1 is in the URL
   useEffect(() => {
+    if (!autoActivate) return
     const timer = setTimeout(() => {
-      if (!sessionRef.current) negotiateSession().catch(() => {})
-    }, 3000)
+      if (stateRef.current === 'idle') {
+        setState('waking')
+        setVisible(true)
+        playActivationChime('wake')
+        setTimeout(() => { if (stateRef.current === 'waking') startListening() }, 450)
+      }
+    }, 800)
     return () => clearTimeout(timer)
-  }, [negotiateSession])
+  }, [autoActivate]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Dismiss ────────────────────────────────────────────────────────────────
 
   const dismiss = useCallback(() => {
-    stopRecording()
+    stopListening()
     stopSpeaking()
     setState('idle')
     setVisible(false)
     setTranscript('')
     setResponse('')
     setErrorMsg('')
-  }, [stopRecording, stopSpeaking])
+  }, [stopListening, stopSpeaking])
 
-  // ── Manual activation (mic button) ────────────────────────────────────────
+  // ── Manual activation (mic button click) ──────────────────────────────────
 
   const manualActivate = useCallback(() => {
     if (state !== 'idle' || chatBusy) return
     setState('waking')
     setVisible(true)
     playActivationChime('wake')
-    setTimeout(() => {
-      if (stateRef.current === 'waking') startRecording()
-    }, 300)
-  }, [state, chatBusy, startRecording])
+    setTimeout(() => { if (stateRef.current === 'waking') startListening() }, 300)
+  }, [state, chatBusy, startListening])
 
-  // ── Render labels ─────────────────────────────────────────────────────────
+  // ── Labels & colours ──────────────────────────────────────────────────────
 
   const stateLabel: Record<VoiceState, string> = {
     idle:       'Say "Skippy" to activate',
@@ -478,7 +409,7 @@ export function VoiceMode({ onTranscript, chatBusy, className }: VoiceModeProps)
 
   return (
     <>
-      {/* ── Passive mic button (always visible in chat) ── */}
+      {/* ── Mic button shown in the chat input toolbar ── */}
       <button
         onClick={manualActivate}
         disabled={!!chatBusy || (state !== 'idle' && state !== 'error')}
@@ -505,14 +436,13 @@ export function VoiceMode({ onTranscript, chatBusy, className }: VoiceModeProps)
         ) : (
           <Mic className="w-4 h-4 text-muted group-hover:text-accent transition-colors" />
         )}
-
-        {/* Wake-word indicator dot */}
+        {/* Always-on indicator dot when wake-word is active */}
         {wakeEnabled && state === 'idle' && (
           <span className="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-accent/60 animate-pulse" />
         )}
       </button>
 
-      {/* ── Active voice overlay ── */}
+      {/* ── Full-screen voice overlay ── */}
       <AnimatePresence>
         {isActive && (
           <motion.div
@@ -522,11 +452,10 @@ export function VoiceMode({ onTranscript, chatBusy, className }: VoiceModeProps)
             className="fixed inset-0 z-50 flex items-center justify-center"
             style={{ background: 'rgba(6,13,26,0.85)', backdropFilter: 'blur(20px)' }}
           >
-            {/* Dismiss backdrop */}
             <div className="absolute inset-0" onClick={state === 'error' ? dismiss : undefined} />
 
             <div className="relative flex flex-col items-center gap-8 px-6">
-              {/* ── Close button ── */}
+              {/* Close button */}
               <motion.button
                 initial={{ opacity: 0, scale: 0.8 }}
                 animate={{ opacity: 1, scale: 1 }}
@@ -536,9 +465,8 @@ export function VoiceMode({ onTranscript, chatBusy, className }: VoiceModeProps)
                 <X className="w-5 h-5" />
               </motion.button>
 
-              {/* ── Orb ── */}
+              {/* Orb */}
               <div className="relative flex items-center justify-center">
-                {/* Outer ring — breathing animation */}
                 {['listening', 'speaking'].includes(state) && (
                   <>
                     {[0, 1, 2].map(i => (
@@ -546,14 +474,12 @@ export function VoiceMode({ onTranscript, chatBusy, className }: VoiceModeProps)
                         key={i}
                         className="absolute rounded-full"
                         style={{
-                          width: `${220 + i * 60}px`,
+                          width:  `${220 + i * 60}px`,
                           height: `${220 + i * 60}px`,
                           border: `1px solid ${state === 'speaking' ? 'rgba(16,185,129,' : 'rgba(41,194,230,'}${0.18 - i * 0.05})`,
                         }}
                         animate={{
-                          scale: state === 'listening'
-                            ? [1, 1 + volumeLevel * 0.15 + 0.05, 1]
-                            : [1, 1.04, 1],
+                          scale:   state === 'listening' ? [1, 1 + volumeLevel * 0.15 + 0.05, 1] : [1, 1.04, 1],
                           opacity: [0.5, 0.9, 0.5],
                         }}
                         transition={{ duration: 1.5 + i * 0.4, repeat: Infinity, ease: 'easeInOut', delay: i * 0.2 }}
@@ -562,16 +488,13 @@ export function VoiceMode({ onTranscript, chatBusy, className }: VoiceModeProps)
                   </>
                 )}
 
-                {/* Main orb */}
                 <motion.div
                   className="relative w-40 h-40 rounded-full flex items-center justify-center"
                   style={{ background: orbColors[state], boxShadow: orbGlow[state] }}
                   animate={
-                    state === 'processing'
-                      ? { rotate: 360 }
-                      : state === 'listening'
-                      ? { scale: [1, 1 + volumeLevel * 0.12 + 0.02, 1] }
-                      : { scale: [1, 1.03, 1] }
+                    state === 'processing' ? { rotate: 360 }
+                    : state === 'listening' ? { scale: [1, 1 + volumeLevel * 0.12 + 0.02, 1] }
+                    : { scale: [1, 1.03, 1] }
                   }
                   transition={
                     state === 'processing'
@@ -579,44 +502,31 @@ export function VoiceMode({ onTranscript, chatBusy, className }: VoiceModeProps)
                       : { duration: 1.8, repeat: Infinity, ease: 'easeInOut' }
                   }
                 >
-                  {/* Inner glow ring */}
                   <div
                     className="absolute inset-3 rounded-full opacity-60"
                     style={{
                       background: `radial-gradient(circle at 40% 35%, ${
-                        state === 'speaking' ? 'rgba(16,185,129,0.4)' :
+                        state === 'speaking'   ? 'rgba(16,185,129,0.4)'  :
                         state === 'processing' ? 'rgba(124,58,237,0.4)' :
-                        state === 'error' ? 'rgba(239,68,68,0.4)' :
+                        state === 'error'      ? 'rgba(239,68,68,0.4)'  :
                         'rgba(41,194,230,0.4)'
                       }, transparent 70%)`,
                     }}
                   />
-
-                  {/* Icon */}
                   <div className="relative z-10">
-                    {state === 'processing' ? (
-                      <Zap className="w-12 h-12 text-purple-300 animate-pulse" />
-                    ) : state === 'speaking' ? (
-                      <Volume2 className="w-12 h-12 text-emerald-300" />
-                    ) : state === 'error' ? (
-                      <MicOff className="w-12 h-12 text-red-300" />
-                    ) : (
-                      <Mic className="w-12 h-12 text-accent" />
-                    )}
+                    {state === 'processing' ? <Zap     className="w-12 h-12 text-purple-300 animate-pulse" />
+                    : state === 'speaking'  ? <Volume2 className="w-12 h-12 text-emerald-300" />
+                    : state === 'error'     ? <MicOff  className="w-12 h-12 text-red-300" />
+                    :                        <Mic     className="w-12 h-12 text-accent" />}
                   </div>
 
-                  {/* Volume bars (listening state) */}
                   {state === 'listening' && (
                     <div className="absolute bottom-6 flex items-end gap-0.5">
                       {Array.from({ length: 7 }).map((_, i) => {
-                        const height = 4 + Math.sin((Date.now() / 200 + i) * 1.3) * volumeLevel * 14 + volumeLevel * 8
+                        const h = 4 + Math.sin((Date.now() / 200 + i) * 1.3) * volumeLevel * 14 + volumeLevel * 8
                         return (
-                          <motion.div
-                            key={i}
-                            className="w-1 rounded-full bg-accent/80"
-                            animate={{ height: `${Math.max(4, height)}px` }}
-                            transition={{ duration: 0.1 }}
-                          />
+                          <motion.div key={i} className="w-1 rounded-full bg-accent/80"
+                            animate={{ height: `${Math.max(4, h)}px` }} transition={{ duration: 0.1 }} />
                         )
                       })}
                     </div>
@@ -624,35 +534,30 @@ export function VoiceMode({ onTranscript, chatBusy, className }: VoiceModeProps)
                 </motion.div>
               </div>
 
-              {/* ── Skippy wordmark ── */}
+              {/* Skippy wordmark + state */}
               <div className="text-center">
                 <p className="font-display text-2xl font-black gradient-text tracking-wide">SKIPPY</p>
                 <p className="text-sm text-muted mt-1">{stateLabel[state]}</p>
               </div>
 
-              {/* ── Transcript bubble ── */}
+              {/* You transcript bubble */}
               <AnimatePresence>
                 {transcript && (
                   <motion.div
-                    initial={{ opacity: 0, y: 10 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    exit={{ opacity: 0 }}
+                    initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}
                     className="max-w-sm w-full px-4 py-3 rounded-2xl text-sm text-foreground/90 text-center leading-relaxed"
                     style={{ background: 'rgba(15,39,89,0.8)', border: '1px solid rgba(41,194,230,0.2)' }}
                   >
-                    <span className="text-accent/50 text-xs mr-1">You:</span>
-                    {transcript}
+                    <span className="text-accent/50 text-xs mr-1">You:</span>{transcript}
                   </motion.div>
                 )}
               </AnimatePresence>
 
-              {/* ── Response bubble ── */}
+              {/* Skippy response bubble */}
               <AnimatePresence>
                 {response && state !== 'processing' && (
                   <motion.div
-                    initial={{ opacity: 0, y: 10 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    exit={{ opacity: 0 }}
+                    initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}
                     className="max-w-sm w-full px-4 py-3 rounded-2xl text-sm text-foreground/90 text-center leading-relaxed"
                     style={{ background: 'rgba(16,185,129,0.08)', border: '1px solid rgba(16,185,129,0.2)' }}
                   >
@@ -662,40 +567,35 @@ export function VoiceMode({ onTranscript, chatBusy, className }: VoiceModeProps)
                 )}
               </AnimatePresence>
 
-              {/* ── Controls ── */}
+              {/* Controls */}
               <div className="flex items-center gap-4">
                 {state === 'speaking' && (
-                  <button
-                    onClick={stopSpeaking}
-                    className="px-5 py-2.5 rounded-full text-sm font-semibold border border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/10 transition-colors"
-                  >
+                  <button onClick={stopSpeaking}
+                    className="px-5 py-2.5 rounded-full text-sm font-semibold border border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/10 transition-colors">
                     Stop speaking
                   </button>
                 )}
                 {(state === 'listening' || state === 'waking') && (
-                  <button
-                    onClick={stopRecording}
-                    className="px-5 py-2.5 rounded-full text-sm font-semibold border border-accent/30 text-accent hover:bg-accent/10 transition-colors"
-                  >
+                  <button onClick={stopListening}
+                    className="px-5 py-2.5 rounded-full text-sm font-semibold border border-accent/30 text-accent hover:bg-accent/10 transition-colors">
                     Done talking
                   </button>
                 )}
                 <button
                   onClick={() => setMuted(m => !m)}
-                  className={cn(
-                    'p-2.5 rounded-full transition-colors',
-                    muted ? 'text-red-400 border-red-400/30 border bg-red-500/10' : 'text-muted border border-border hover:text-foreground hover:bg-surface'
-                  )}
+                  className={cn('p-2.5 rounded-full transition-colors',
+                    muted ? 'text-red-400 border-red-400/30 border bg-red-500/10'
+                          : 'text-muted border border-border hover:text-foreground hover:bg-surface')}
                   title={muted ? 'Unmute responses' : 'Mute responses'}
                 >
                   {muted ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}
                 </button>
               </div>
 
-              {/* ── Security badge ── */}
+              {/* Privacy badge */}
               <div className="flex items-center gap-1.5 text-[10px] text-muted/40">
                 <div className="w-1.5 h-1.5 rounded-full bg-emerald-500/50" />
-                End-to-end encrypted · AES-256-GCM · ephemeral key
+                Voice processed locally · No audio sent to servers
               </div>
             </div>
           </motion.div>

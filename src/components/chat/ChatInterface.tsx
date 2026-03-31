@@ -3,6 +3,7 @@
 import { useEffect, useRef, useCallback, useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import Image from 'next/image'
+import { useSearchParams } from 'next/navigation'
 import { Zap, Brain, FileText, TrendingUp, Cpu, AlertTriangle, Swords, X, Sparkles, Menu, BookOpen, GraduationCap, CheckSquare, Bell } from 'lucide-react'
 import { nanoid } from 'nanoid'
 import { useChatStore, type AIModel } from '@/store/chat'
@@ -40,6 +41,9 @@ export function ChatInterface({ conversationId, onConversationCreated, onToggleS
     updateConversationTitle, addConversation,
     selectedModel, setSelectedModel,
   } = useChatStore()
+
+  const searchParams = useSearchParams()
+  const autoVoice = searchParams?.get('voice') === '1'
 
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const abortControllerRef = useRef<AbortController | null>(null)
@@ -643,15 +647,18 @@ export function ChatInterface({ conversationId, onConversationCreated, onToggleS
             </motion.div>
           )}
         </AnimatePresence>
-        <div className="max-w-3xl mx-auto md:pr-16 relative">
-          {/* VoiceMode mic button lives inside the input row */}
-          <div className="absolute right-3 top-1/2 -translate-y-1/2 z-10">
-            <VoiceMode
-              onTranscript={sendMessageAndReturn}
-              chatBusy={isLoading}
-            />
-          </div>
-          <ChatInput onSend={sendMessage} isLoading={isLoading} voiceActive={false} />
+        <div className="max-w-3xl mx-auto md:pr-16">
+          <ChatInput
+            onSend={sendMessage}
+            isLoading={isLoading}
+            voiceButton={
+              <VoiceMode
+                onTranscript={sendMessageAndReturn}
+                chatBusy={isLoading}
+                autoActivate={autoVoice}
+              />
+            }
+          />
         </div>
       </div>
     </div>
