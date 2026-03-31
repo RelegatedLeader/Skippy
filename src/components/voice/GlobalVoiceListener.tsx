@@ -19,7 +19,7 @@ import { useEffect, useRef, useState, useCallback } from 'react'
 import { useRouter, usePathname } from 'next/navigation'
 import { Mic } from 'lucide-react'
 
-const WAKE_WORDS = ['skippy', 'hey skippy', 'ok skippy', 'yo skippy', 'skipy']
+const WAKE_WORDS = ['skippy', 'skip', 'hey skippy', 'hey skip', 'ok skippy', 'ok skip', 'yo skippy', 'skipy', 'skipper']
 
 export function GlobalVoiceListener() {
   const router   = useRouter()
