@@ -381,7 +381,19 @@ export async function extractRemindersFromConversation(
   try {
     // Quick pre-scan to avoid unnecessary API calls
     const userText = messages.filter(m => m.role === 'user').map(m => m.content).join(' ')
-    const hasReminderLanguage = /\bremind\b|\breminder\b|remember\s+(this|that|to|me)|don.?t\s+(let\s+me\s+)?forget|need\s+to\s+do|make\s+sure\s+(I|to)|can\s+you\s+remind|will\s+you\s+remind|set\s+a\s+reminder|i\s+want\s+to\s+remember|keep\s+(this\s+)?in\s+mind|note\s+this|save\s+this|add\s+(it|this)\s+to\s+my|by\s+(tomorrow|tonight|monday|tuesday|wednesday|thursday|friday|saturday|sunday|next\s+week|end\s+of)/i.test(userText)
+    const hasReminderLanguage =
+      /\bremin(d(er)?s?)?\b/i.test(userText) ||
+      /remember\s+(this|that|to|me)/i.test(userText) ||
+      /don.?t\s+(let\s+me\s+)?forget/i.test(userText) ||
+      /make\s+sure\s+(I|to)/i.test(userText) ||
+      /set\s+a\s+(reminder|alert|alarm)/i.test(userText) ||
+      /i\s+want\s+to\s+remember/i.test(userText) ||
+      /keep\s+(this\s+)?in\s+mind/i.test(userText) ||
+      /\b(alert|notify|ping|nudge)\s+me\b/i.test(userText) ||
+      // Time-bearing add/schedule requests should also become reminders:
+      /\b(add|put|schedule|book|plan)\b.{0,80}\b(tomorrow|tonight|this (morning|afternoon|evening|night)|next (monday|tuesday|wednesday|thursday|friday|saturday|sunday|week)|by (the\s+)?(monday|tuesday|wednesday|thursday|friday|saturday|sunday)|at \d|in \d+ (minute|hour|day)s?|on (monday|tuesday|wednesday|thursday|friday|saturday|sunday))\b/i.test(userText) ||
+      /\badd.{0,80}to\s+(my\s+)?reminders?\b/i.test(userText) ||
+      /by\s+(tomorrow|tonight|monday|tuesday|wednesday|thursday|friday|saturday|sunday|next\s+week|end\s+of)/i.test(userText)
     if (!hasReminderLanguage) return
 
     const now = new Date()
@@ -528,6 +540,48 @@ async function awardXpDirect(xp: number, type: 'todo' | 'reminder'): Promise<voi
   } catch { /* non-critical */ }
 }
 
+// ─── Task intelligence helpers ────────────────────────────────────────────────
+
+/**
+ * Returns true if the task description implies same-day execution when no explicit
+ * date is given. "VR session", "gym", "lunch" → due today when added without a date.
+ */
+function isSameDayActivityTask(content: string): boolean {
+  const c = content.toLowerCase()
+  return (
+    /\b(vr|vr session|virtual reality|gym|workout|exercise|run(ning)?|jog(ging)?|walk(ing)?|swim(ming)?|yoga|pilates|lift(ing)?|weights|boxing|cycling|stretching|meditation|training session|crossfit|hiit)\b/.test(c) ||
+    /\b(coffee|lunch|dinner|breakfast|brunch|drinks|happy hour|date night?|meetup|hang(ing)?\s*out|catch up)\b/.test(c) ||
+    /\b(call|phone\s*call|video\s*call|appointment|errand|groceries|shopping)\b/.test(c) ||
+    /\b(today|tonight|this\s*(morning|afternoon|evening|night)|right now|in a bit|shortly|soon)\b/.test(c)
+  )
+}
+
+/**
+ * Scans content + original user message for explicit priority signals,
+ * returning a hard priority override when found.
+ */
+function inferTaskPriorityFromSignals(content: string, userMsg: string): 'low' | 'normal' | 'high' | 'urgent' {
+  const combined = `${content} ${userMsg}`.toLowerCase()
+  if (/\b(urgent|asap|immediately|emergency|deadline|overdue|critical|must (do|finish|complete|handle)|right now|cannot wait|time-?sensitive)\b/.test(combined)) return 'urgent'
+  if (/\b(important|high[- ]priority|need to|have to|by tonight|by tomorrow|by (monday|tuesday|wednesday|thursday|friday|saturday|sunday)|by next week|don.t forget|can't forget|cannot forget)\b/.test(combined)) return 'high'
+  if (/\b(whenever|eventually|no rush|low[- ]priority|not urgent|can wait|when (i have|you have) time|someday|maybe|if i get to it|at some point)\b/.test(combined)) return 'low'
+  return 'normal'
+}
+
+/** Loads learned behavior patterns so the extraction AI understands this specific user. */
+async function loadUserTodoBehaviorContext(): Promise<string> {
+  try {
+    const patterns = await prisma.memory.findMany({
+      where: { category: 'pattern', tags: { contains: '"todo-behavior"' }, isArchived: false },
+      orderBy: { importance: 'desc' },
+      take: 8,
+      select: { content: true },
+    })
+    if (patterns.length === 0) return ''
+    return `\nLearned patterns for this user:\n${patterns.map(p => `- ${p.content}`).join('\n')}`
+  } catch { return '' }
+}
+
 // ─── Todo extraction from chat ────────────────────────────────────────────────
 
 /**
@@ -540,80 +594,120 @@ export async function extractTodosFromConversation(
   tzOffsetMinutes = 0,
 ): Promise<void> {
   try {
-    // Only scan the most recent user message — NOT the full history.
-    // Scanning all messages caused re-extraction of todos already created in
-    // earlier turns of the same conversation, producing duplicates and confusing the AI.
+    // Only scan the most recent user message to avoid re-extracting prior turns.
     const lastUserMsg = messages.filter(m => m.role === 'user').slice(-1)[0]?.content ?? ''
     if (!lastUserMsg) return
 
+    // Broad pre-scan — catch explicit adds, scheduling language, and implicit "I need to" patterns.
     const hasTodoLanguage =
       /\bto[\s-]?do\b|\btodo\b/i.test(lastUserMsg) ||
-      /\b(add|put|create|make|new)\b.{0,100}\b(task|tasks|list)\b/i.test(lastUserMsg) ||
-      /\b(add|put)\b.{0,120}\bmy\s+(list|tasks?|todos?|to[\s-]?do)\b/i.test(lastUserMsg) ||
-      /\badd\b.{0,120}\bto\s+my\b/i.test(lastUserMsg) ||
-      /\b(create|add)\s+a\s+(new\s+)?(task|todo)\b/i.test(lastUserMsg)
+      /\b(add|put|create|make|save|drop|throw|stick)\b.{0,100}\b(task|tasks|list|queue|agenda)\b/i.test(lastUserMsg) ||
+      /\b(add|put)\b.{0,120}\bmy\s+(list|tasks?|todos?|to[\s-]?do|queue|agenda)\b/i.test(lastUserMsg) ||
+      /\badd\b.{0,120}\bto\s+(my|the)\b/i.test(lastUserMsg) ||
+      /\b(create|add)\s+a\s+(new\s+)?(task|todo|item)\b/i.test(lastUserMsg) ||
+      /\b(schedule|book|plan)\b.{0,60}\b(for|on|at|tomorrow|today|tonight|next|this)\b/i.test(lastUserMsg) ||
+      /\b(remind me to|don.?t (let me )?forget to|i (need|have|want|gotta|got)\s+to)\b/i.test(lastUserMsg) ||
+      /\bkeep (in mind|note|track)\b.{0,60}\b(to|that)\b/i.test(lastUserMsg) ||
+      /\btask:\s*.+/i.test(lastUserMsg)
     if (!hasTodoLanguage) return
 
-    // Fetch existing pending todos for deduplication before creating new ones
-    const existingTodos = await prisma.todo.findMany({
-      where: { isDone: false },
-      select: { content: true },
-      orderBy: { createdAt: 'desc' },
-      take: 100,
-    })
-    const existingContents = existingTodos.map(t => t.content)
+    const now = new Date()
+    const localNow = new Date(now.getTime() - tzOffsetMinutes * 60 * 1000)
+    const today = localNow.toISOString().slice(0, 10)
+    const tomorrowDate = new Date(localNow)
+    tomorrowDate.setUTCDate(tomorrowDate.getUTCDate() + 1)
+    const tomorrow = tomorrowDate.toISOString().slice(0, 10)
+    const localDayName = localNow.toLocaleDateString('en-US', { weekday: 'long', timeZone: 'UTC' })
 
-    // Only pass the last few messages so the AI isn't confused by prior turns.
-    // The final user-role "extract" prompt tells it to look at the MOST RECENT request only.
+    // Fetch in parallel: existing pending todos (dedup) + user's learned behavior patterns.
+    const [existingTodos, behaviorContext] = await Promise.all([
+      prisma.todo.findMany({
+        where: { isDone: false },
+        select: { content: true },
+        orderBy: { createdAt: 'desc' },
+        take: 100,
+      }),
+      loadUserTodoBehaviorContext(),
+    ])
+    const existingContents = existingTodos.map(t => t.content)
     const recentMessages = messages.slice(-6)
 
     const text = await callAI([
       {
         role: 'system',
-        content: `You are a to-do extraction assistant. Look ONLY at the most recent user message and extract any task they explicitly want added to their to-do list.
+        content: `You are a smart task extraction assistant for a personal AI called Skippy.
+Today is ${localDayName}, ${today}. Tomorrow is ${tomorrow}.${behaviorContext}
 
-Return JSON: {"todos": [{"content": "concise task description", "priority": "low|normal|high|urgent", "dueDate": "YYYY-MM-DD or null"}]}
+LIBERALLY extract ANY task or action item the user wants added to their list. If in doubt, extract it.
 
-ONLY extract if the user is clearly asking to add something to a list right now. Do NOT re-extract tasks mentioned in older parts of the conversation.
+PRIORITY INFERENCE:
+- "urgent", "asap", "emergency", "deadline", "right now", "must do today", "cannot wait" → urgent
+- "important", "need to", "have to", "by tomorrow", "by [specific day]", "don't forget" → high
+- "whenever", "eventually", "no rush", "low priority", "sometime" → low
+- Everything else → normal
 
-Examples of valid requests:
-- "add call the dentist to my to-do list" → [{"content": "Call the dentist", "priority": "normal", "dueDate": null}]
-- "add buy groceries to my todos" → [{"content": "Buy groceries", "priority": "normal", "dueDate": null}]
-- "put finish the report on my list" → [{"content": "Finish the report", "priority": "normal", "dueDate": null}]
-- "add this to my tasks: clean the garage" → [{"content": "Clean the garage", "priority": "normal", "dueDate": null}]
-- "to-do: book the flight" → [{"content": "Book the flight", "priority": "normal", "dueDate": null}]
-- "create a task for updating my resume" → [{"content": "Update my resume", "priority": "normal", "dueDate": null}]
-- "new task: call mom by Friday" → [{"content": "Call mom", "priority": "normal", "dueDate": "[next Friday]"}]
+DUE DATE INFERENCE (be smart and contextual):
+- "today", "tonight", "this morning/afternoon/evening" → ${today}
+- "tomorrow", "tomorrow morning/afternoon/evening/night" → ${tomorrow}
+- "next [weekday]" → compute that exact date from ${today}
+- "in X days/weeks" → compute from ${today}
+- "by [date]" → that date at end of day
+- ACTIVITY TYPES with NO explicit date (gym, workout, VR session, vr, yoga, run, jog, boxing, coffee, lunch, dinner, call, appointment, errand, groceries, shopping, date, meetup) → assume ${today} (these are typically same-day tasks when added without a date)
+- No time or day signal → null
 
-If no explicit to-do creation request in the LATEST user message, return {"todos": []}.`,
+Return JSON: {"todos": [{"content": "action-oriented task (e.g. Go to gym, Call dentist, Buy groceries)", "priority": "low|normal|high|urgent", "dueDate": "YYYY-MM-DD or YYYY-MM-DDTHH:mm:ss or null"}]}
+
+Examples:
+- "add vr session to my to do list" → [{"content":"VR session","priority":"normal","dueDate":"${today}"}]
+- "add call the dentist to my todos" → [{"content":"Call the dentist","priority":"normal","dueDate":null}]
+- "put gym on my list" → [{"content":"Go to gym","priority":"normal","dueDate":"${today}"}]
+- "add buy groceries to my list" → [{"content":"Buy groceries","priority":"normal","dueDate":"${today}"}]
+- "add finish the report by friday" → [{"content":"Finish the report","priority":"high","dueDate":"[next friday from ${today}]"}]
+- "I need to call mom" → [{"content":"Call mom","priority":"high","dueDate":null}]
+- "remind me to buy a birthday gift for Sarah by next Saturday" → [{"content":"Buy birthday gift for Sarah","priority":"high","dueDate":"[next saturday]"}]
+- "task: update my resume" → [{"content":"Update resume","priority":"normal","dueDate":null}]
+- "don't let me forget to pay rent" → [{"content":"Pay rent","priority":"high","dueDate":null}]
+
+Return {"todos": []} ONLY if there is absolutely nothing task-like in the latest message.`,
       },
       ...recentMessages.filter(m => m.role !== 'system'),
-      { role: 'user', content: 'Extract only what the user JUST asked to add. Return ONLY valid JSON.' },
-    ], { json: true, temperature: 0.1, max_tokens: 400 })
+      { role: 'user', content: 'Extract tasks from the most recent user message. Return ONLY valid JSON.' },
+    ], { json: true, temperature: 0.1, max_tokens: 600 })
 
     const parsed = JSON.parse(text)
     const todos: Array<{ content?: string; priority?: string; dueDate?: string }> = parsed.todos || []
     if (todos.length === 0) return
 
+    const XP_BY_PRIORITY: Record<string, number> = { low: 5, normal: 10, high: 15, urgent: 25 }
+
     for (const t of todos) {
       if (!t.content?.trim()) continue
       const normalized = t.content.trim().slice(0, 500)
 
-      // Skip if an identical or near-identical pending todo already exists
-      const isDupe = existingContents.some(c => wordJaccard(c, normalized) >= 0.55)
+      // Dynamic dedup threshold: short tasks need higher word overlap to be considered dupes.
+      const dedupThreshold = normalized.length < 20 ? 0.7 : 0.55
+      const isDupe = existingContents.some(c => wordJaccard(c, normalized) >= dedupThreshold)
       if (isDupe) continue
 
-      const priority = t.priority && ['low', 'normal', 'high', 'urgent'].includes(t.priority) ? t.priority : 'normal'
+      // Priority: take AI suggestion, but override with hard keyword signals.
+      let priority = t.priority && ['low', 'normal', 'high', 'urgent'].includes(t.priority) ? t.priority : 'normal'
+      const heuristic = inferTaskPriorityFromSignals(normalized, lastUserMsg)
+      if (heuristic === 'urgent' || heuristic === 'low') priority = heuristic
+      else if (priority === 'normal') priority = heuristic
+
+      // Due date: use AI result first, then same-day heuristic.
       let dueDate: Date | null = null
       if (t.dueDate) {
         const d = new Date(t.dueDate)
         if (!isNaN(d.getTime())) {
-          // If AI returned a date-only value (midnight UTC), apply the timezone offset
-          // so it's stored at the user's local midnight — consistent with how reminders
-          // are stored, and prevents toRelativeLabel from rolling it back a calendar day.
           const hasTime = d.getUTCHours() !== 0 || d.getUTCMinutes() !== 0
+          // Date-only → apply tz offset so toRelativeLabel shows the correct local day.
           dueDate = hasTime ? d : new Date(d.getTime() + tzOffsetMinutes * 60 * 1000)
         }
+      }
+      // If AI gave no date but this is a same-day activity type → set to today.
+      if (!dueDate && isSameDayActivityTask(normalized)) {
+        dueDate = new Date(`${today}T00:00:00.000Z`)
       }
 
       await prisma.todo.create({
@@ -622,10 +716,50 @@ If no explicit to-do creation request in the LATEST user message, return {"todos
           priority,
           dueDate: dueDate ?? undefined,
           tags: JSON.stringify([]),
-          xpReward: 1,
+          xpReward: XP_BY_PRIORITY[priority] ?? 10,
         },
       })
       existingContents.push(normalized)
+
+      // If the todo has a specific time-of-day, auto-create a matching reminder.
+      if (dueDate && (dueDate.getUTCHours() !== 0 || dueDate.getUTCMinutes() !== 0)) {
+        const reminderContent = `Do: ${normalized}`
+        const existingReminder = await prisma.reminder.findFirst({
+          where: { content: reminderContent, isDone: false },
+        })
+        if (!existingReminder) {
+          await prisma.reminder.create({
+            data: {
+              content: reminderContent.slice(0, 300),
+              dueDate,
+              timeframeLabel: 'Auto-reminder from task',
+              sourceType: 'chat',
+              sourceId: conversationId,
+            },
+          }).catch(() => {})
+        }
+      }
+
+      // Learn: record non-default patterns so future extraction is smarter.
+      if (priority !== 'normal' || (dueDate && isSameDayActivityTask(normalized))) {
+        const patternContent = `"${lastUserMsg.slice(0, 80)}" → task "${normalized}" (${priority}${dueDate && isSameDayActivityTask(normalized) ? ', same-day' : ''})`
+        const alreadyKnown = await prisma.memory.findFirst({
+          where: { category: 'pattern', tags: { contains: '"todo-behavior"' }, content: { contains: normalized.slice(0, 25) } },
+        })
+        if (!alreadyKnown) {
+          await prisma.memory.create({
+            data: {
+              category: 'pattern',
+              content: patternContent,
+              importance: 3,
+              confidence: 0.7,
+              tags: JSON.stringify(['todo-behavior']),
+              sourceType: 'todo',
+              sourceId: conversationId,
+            },
+          }).catch(() => {})
+        }
+      }
     }
   } catch (e) {
     console.error('Failed to extract todos:', e)
@@ -643,7 +777,7 @@ export async function markItemsCompleteFromChat(
 ): Promise<void> {
   try {
     const recentUser = messages.filter(m => m.role === 'user').slice(-3).map(m => m.content).join(' ')
-    const hasCompletionLanguage = /\b(done|finished|completed|i did|i've done|already did|just did|crossed off|checked off|mark.{0,10}done|i.m done with|done with)\b/i.test(recentUser)
+    const hasCompletionLanguage = /\b(done|finished|completed|i did|i've done|already did|just did|crossed off|checked off|mark.{0,10}done|i.m done with|done with|took care of|handled|knocked out|got it done|wrapped up|all done|got done|nailed it|finished up|done and done|took care|dealt with|sorted out|got through|knocked off)\b/i.test(recentUser)
     if (!hasCompletionLanguage) return
 
     const [pendingTodos, pendingReminders] = await Promise.all([
@@ -1365,7 +1499,7 @@ export async function buildSystemPrompt(tzOffsetMinutes = 0, recentUserMessages:
   const _contextQuery = recentUserMessages.slice(-2).join(' ')
   const _noteRelated  = /note|wrote|saved|journal|log|record|wrote down/i.test(_contextQuery)
 
-  const [memories, profile, allNotes, recentDebates, pendingReminders, recentConversations, pendingTodos, langProgress, learnedWordsList] = await Promise.all([
+  const [memories, profile, allNotes, recentDebates, pendingReminders, recentConversations, pendingTodos, langProgress, learnedWordsList, completedTodos, completedReminders, todoBehaviorPatterns] = await Promise.all([
     getRelevantMemories(_contextQuery, 50),
     getUserProfile(),
     // Smart note loading: full 30 when the conversation references notes; 15 otherwise
@@ -1411,6 +1545,27 @@ export async function buildSystemPrompt(tzOffsetMinutes = 0, recentUserMessages:
       take: 50,
       include: { word: { select: { simplified: true, pinyin: true, meaning: true, hsk: true } } },
     }).catch(() => [] as Array<{ repetitions: number; interval: number; totalCorrect: number; totalAttempts: number; word: { simplified: string; pinyin: string; meaning: string; hsk: number } }>),
+    // Completed todos (last 14 days) — so Skippy can celebrate progress & see momentum
+    prisma.todo.findMany({
+      where: { isDone: true, completedAt: { gte: new Date(Date.now() - 14 * 86400 * 1000) } },
+      orderBy: { completedAt: 'desc' },
+      take: 30,
+      select: { content: true, priority: true, completedAt: true },
+    }).catch(() => [] as Array<{ content: string; priority: string; completedAt: Date | null }>),
+    // Completed reminders (last 7 days) — continuity context
+    prisma.reminder.findMany({
+      where: { isDone: true, completedAt: { gte: new Date(Date.now() - 7 * 86400 * 1000) } },
+      orderBy: { completedAt: 'desc' },
+      take: 20,
+      select: { content: true, completedAt: true },
+    }).catch(() => [] as Array<{ content: string; completedAt: Date | null }>),
+    // Behavior patterns — how this user phrases and prioritizes tasks
+    prisma.memory.findMany({
+      where: { category: 'pattern', tags: { contains: '"todo-behavior"' }, isArchived: false },
+      orderBy: { importance: 'desc' },
+      take: 6,
+      select: { content: true },
+    }).catch(() => [] as Array<{ content: string }>),
   ])
 
   const profileSection = profile.about
@@ -1472,6 +1627,33 @@ export async function buildSystemPrompt(tzOffsetMinutes = 0, recentUserMessages:
       }
     }
     todoSection = `\n\n## Your complete todo list (${pendingTodos.length} items, today is ${localDayName} ${localDateStr}):\n${todoLines.join('\n')}`
+  }
+
+  // Completed todos section — celebrate progress and show momentum
+  let completedTodosSection = ''
+  if (completedTodos.length > 0) {
+    const lines = completedTodos.map(t => {
+      const when = t.completedAt ? ` [${toRelativeLabel(t.completedAt)}]` : ''
+      const icon = t.priority === 'urgent' ? '🔴' : t.priority === 'high' ? '🟠' : '✓'
+      return `- ${icon} ${t.content}${when}`
+    })
+    completedTodosSection = `\n\n## Recently completed tasks (last 14 days — ${completedTodos.length} done — reference these to celebrate wins and spot patterns):\n${lines.join('\n')}`
+  }
+
+  // Completed reminders section
+  let completedRemindersSection = ''
+  if (completedReminders.length > 0) {
+    const lines = completedReminders.map(r => {
+      const when = r.completedAt ? ` [${toRelativeLabel(r.completedAt)}]` : ''
+      return `- ✓ ${r.content}${when}`
+    })
+    completedRemindersSection = `\n\n## Recently dismissed reminders (last 7 days):\n${lines.join('\n')}`
+  }
+
+  // Behavior patterns section — teaches Skippy how this user talks
+  let behaviorPatternSection = ''
+  if (todoBehaviorPatterns.length > 0) {
+    behaviorPatternSection = `\n\n## Learned task patterns (how this user assigns and phrases tasks — use for smarter priority/date inference):\n${todoBehaviorPatterns.map(p => `- ${p.content}`).join('\n')}`
   }
 
   let conversationSection = ''
@@ -1567,11 +1749,17 @@ Your core traits:
 - You help organize thoughts, build systems, and make things happen
 
 Your capabilities (always available — never say you "can't" do these):
-- When the user asks you to "write a daily note", "log what I did today", "save this as a note", or anything similar, write the full reflection in your response and let them know it's being saved to their notes automatically
-- When the user asks you to add something to their to-do list ("add X to my to-do", "put X on my list", "create a task for X"), confirm it in your response — it's being added automatically
-- When the user tells you they finished or completed something ("I finished X", "I did X", "I'm done with X", "crossed off X"), acknowledge it warmly and let them know it's being marked as done automatically
+- When the user asks you to "write a daily note", "log what I did today", "save this as a note", or anything similar, write the full reflection in your response and let them know it's being saved automatically
+- **Todo creation** (critical — this ALWAYS works): When the user says "add X to my list/todos/to-do", "put X on my tasks", "create a task for X", "task: X", "I need to do X", "don't forget to X", "schedule X for [date]" → confirm it in your response AND it is being added to their database automatically. Be specific: repeat the task name and any due date back to them.
+  - Activity-type tasks with NO date (gym, workout, VR session, yoga, run, coffee, lunch, dinner, call, appointment, errand, groceries) → Skippy knows these are same-day tasks and sets them due TODAY automatically.
+  - Explicit due dates ("by Friday", "tomorrow") → set accordingly.
+  - Urgency signals ("asap", "urgent", "deadline") → set as high/urgent priority.
+- **Reminder creation**: "remind me to X at Y", "set a reminder for X", "don't let me forget X by Z" → confirm it and it's being set automatically. Always state the time/date back.
+- **Marking complete**: When user says "I finished X", "I did X", "done with X", "I took care of X", "knocked out X" → acknowledge warmly, specific to the item, and it's being checked off automatically.
+- **You know the full list**: You see EVERY pending todo AND every recently completed item. Reference completion history to celebrate streaks and momentum ("you've knocked out X tasks this week!").
+- **Pattern awareness**: You have learned how this user talks. A casual "add gym" means same-day urgent, "add X eventually" means low priority. Apply these patterns intelligently.
 - You know every note they've written — if they say "find my note about X", reference the matching note from the notes section below
-- You know their full todo list, ALL their reminders, and their complete memory history — reference specific items when relevant${profileSection}${instructionsSection}${reminderSection}${todoSection}${conversationSection}${memorySection}${notesSection}${debateSection}${langSection}
+- You know their full todo list, ALL their reminders, their complete memory history, and their recently completed tasks — reference specific items when relevant${profileSection}${instructionsSection}${reminderSection}${todoSection}${completedTodosSection}${completedRemindersSection}${behaviorPatternSection}${conversationSection}${memorySection}${notesSection}${debateSection}${langSection}
 
 Always respond in a way that reflects deep knowledge of this specific person. Never be generic. Use markdown formatting for structure when helpful — headers, bullet points, code blocks, etc.`
 }

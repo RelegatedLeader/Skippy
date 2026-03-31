@@ -3,7 +3,7 @@
 import { useEffect, useRef, useCallback, useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import Image from 'next/image'
-import { Zap, Brain, FileText, TrendingUp, Cpu, AlertTriangle, Swords, X, Sparkles, Menu, BookOpen, GraduationCap } from 'lucide-react'
+import { Zap, Brain, FileText, TrendingUp, Cpu, AlertTriangle, Swords, X, Sparkles, Menu, BookOpen, GraduationCap, CheckSquare, Bell } from 'lucide-react'
 import { nanoid } from 'nanoid'
 import { useChatStore, type AIModel } from '@/store/chat'
 import { MessageBubble } from './MessageBubble'
@@ -46,6 +46,8 @@ export function ChatInterface({ conversationId, onConversationCreated, onToggleS
   const [currentConvId, setCurrentConvId] = useState<string | null>(conversationId)
   const [escalation, setEscalation] = useState<string | null>(null)
   const [showModelPicker, setShowModelPicker] = useState(false)
+  const [createdNotices, setCreatedNotices] = useState<Array<{ id: string; type: 'todo' | 'reminder'; text: string }>>([])  
+  const preSendCountsRef = useRef<{ todos: number; reminders: number } | null>(null)
   const { refreshReminders, refreshTodos } = useNotifications()
 
   useEffect(() => { setCurrentConvId(conversationId) }, [conversationId])
@@ -70,6 +72,26 @@ export function ChatInterface({ conversationId, onConversationCreated, onToggleS
     async (content: string) => {
       if (isLoading) return
       setEscalation(null)
+
+      // Pre-snapshot: if user is likely adding a todo or reminder, capture counts
+      // so we can show a visible confirmation chip when the stream completes.
+      const likelyTaskRequest = /\b(todo|to[\s-]?do|remind(er)?s?|add.{0,80}(list|tasks?|my\s+\w+s?)|task:|schedule|don.?t forget|i need to|i have to)\b/i.test(content)
+      if (likelyTaskRequest) {
+        try {
+          const [todosRes, remindersRes] = await Promise.all([
+            fetch('/api/todos?status=pending'),
+            fetch('/api/reminders?pending=true'),
+          ])
+          const todosData = todosRes.ok ? await todosRes.json() : []
+          const remindersData = remindersRes.ok ? await remindersRes.json() : []
+          preSendCountsRef.current = {
+            todos: Array.isArray(todosData) ? todosData.length : 0,
+            reminders: Array.isArray(remindersData) ? remindersData.length : 0,
+          }
+        } catch { preSendCountsRef.current = null }
+      } else {
+        preSendCountsRef.current = null
+      }
 
       let convId = currentConvId
       if (!convId) {
@@ -138,6 +160,41 @@ export function ChatInterface({ conversationId, onConversationCreated, onToggleS
         // Stream closed = saves complete. Refresh bell so new reminders/todos show immediately.
         refreshReminders()
         refreshTodos()
+
+        // Diff against pre-send snapshot to show visible "added" chips in the chat.
+        if (preSendCountsRef.current !== null) {
+          const snap = preSendCountsRef.current
+          preSendCountsRef.current = null
+          setTimeout(async () => {
+            try {
+              const [todosRes, remindersRes] = await Promise.all([
+                fetch('/api/todos?status=pending'),
+                fetch('/api/reminders?pending=true'),
+              ])
+              const newTodos = todosRes.ok ? await todosRes.json() : []
+              const newReminders = remindersRes.ok ? await remindersRes.json() : []
+              const addedTodos = Array.isArray(newTodos) ? newTodos.length - snap.todos : 0
+              const addedReminders = Array.isArray(newReminders) ? newReminders.length - snap.reminders : 0
+              const notices: Array<{ id: string; type: 'todo' | 'reminder'; text: string }> = []
+              if (addedTodos > 0) {
+                const latest = Array.isArray(newTodos) ? newTodos.slice(0, addedTodos) : []
+                for (const t of latest) {
+                  notices.push({ id: t.id, type: 'todo', text: t.content })
+                }
+              }
+              if (addedReminders > 0) {
+                const latest = Array.isArray(newReminders) ? newReminders.slice(0, addedReminders) : []
+                for (const r of latest) {
+                  notices.push({ id: r.id, type: 'reminder', text: r.content })
+                }
+              }
+              if (notices.length > 0) {
+                setCreatedNotices(notices)
+                setTimeout(() => setCreatedNotices([]), 7000)
+              }
+            } catch { /* non-critical */ }
+          }, 600)
+        }
 
         setTimeout(async () => {
           try {
@@ -474,6 +531,35 @@ export function ChatInterface({ conversationId, onConversationCreated, onToggleS
 
       {/* Input */}
       <div className="border-t relative z-10" style={{ borderColor: 'rgba(30,58,110,0.8)', background: 'rgba(6,13,26,0.6)', backdropFilter: 'blur(12px)' }}>
+        {/* Created notices — show when todos/reminders are added from this message */}
+        <AnimatePresence>
+          {createdNotices.length > 0 && (
+            <motion.div
+              initial={{ opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: 4 }}
+              className="flex flex-wrap gap-2 px-4 pt-3 pb-1 max-w-3xl mx-auto"
+            >
+              {createdNotices.map(n => (
+                <Link
+                  key={n.id}
+                  href={n.type === 'todo' ? '/todos' : '/settings'}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold transition-opacity hover:opacity-80"
+                  style={{
+                    background: n.type === 'todo' ? 'rgba(41,194,230,0.15)' : 'rgba(124,58,237,0.18)',
+                    border: `1px solid ${n.type === 'todo' ? 'rgba(41,194,230,0.35)' : 'rgba(124,58,237,0.4)'}`,
+                    color: n.type === 'todo' ? '#29c2e6' : '#a78bfa',
+                  }}
+                >
+                  {n.type === 'todo' ? <CheckSquare className="w-3.5 h-3.5 flex-shrink-0" /> : <Bell className="w-3.5 h-3.5 flex-shrink-0" />}
+                  <span className="truncate max-w-[200px]">
+                    {n.type === 'todo' ? '✓ Added: ' : '🔔 Set: '}{n.text}
+                  </span>
+                </Link>
+              ))}
+            </motion.div>
+          )}
+        </AnimatePresence>
         <div className="max-w-3xl mx-auto md:pr-16">
           <ChatInput onSend={sendMessage} isLoading={isLoading} />
         </div>
