@@ -21,3 +21,10 @@ data class ChatMessage(
     val role: String,     // "user" or "assistant"
     val content: String,
 )
+
+/** A single entry in the on-screen conversation log. */
+data class ChatEntry(
+    val role: String,   // "user" or "skippy"
+    val text: String,
+    val id: String = System.nanoTime().toString(),
+)

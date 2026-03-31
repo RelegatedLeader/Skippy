@@ -21,4 +21,13 @@ class AppPreferences(context: Context) {
     var pinnedApps: List<String>
         get() = (prefs.getString("pinned_apps", null) ?: "").split(",").filter { it.isNotBlank() }
         set(value) = prefs.edit().putString("pinned_apps", value.joinToString(",")).apply()
+
+    // TTS voice tuning  (deep male voice defaults)
+    var speechRate: Float
+        get() = prefs.getFloat("speech_rate", 0.90f)
+        set(value) = prefs.edit().putFloat("speech_rate", value).apply()
+
+    var speechPitch: Float
+        get() = prefs.getFloat("speech_pitch", 0.85f)
+        set(value) = prefs.edit().putFloat("speech_pitch", value).apply()
 }
