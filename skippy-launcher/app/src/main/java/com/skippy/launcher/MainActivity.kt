@@ -14,6 +14,7 @@ import androidx.compose.ui.Modifier
 import com.skippy.launcher.ui.screens.*
 import com.skippy.launcher.ui.theme.SkippyTheme
 import com.skippy.launcher.viewmodel.LauncherViewModel
+import com.skippy.launcher.viewmodel.LoginState
 
 class MainActivity : ComponentActivity() {
 
@@ -32,19 +33,14 @@ class MainActivity : ComponentActivity() {
 
 @Composable
 private fun SkippyApp(viewModel: LauncherViewModel) {
-    var setupDone  by remember { mutableStateOf(viewModel.prefs.isSetupDone && viewModel.prefs.skippyUrl.isNotBlank()) }
-    var showDrawer by remember { mutableStateOf(false) }
+    val isAuthenticated by viewModel.isAuthenticated.collectAsState()
+    val loginState      by viewModel.loginState.collectAsState()
+    var showDrawer      by remember { mutableStateOf(false) }
 
-    // Observe prefs changes (reset from settings)
-    LaunchedEffect(viewModel.prefs.isSetupDone, viewModel.prefs.skippyUrl) {
-        setupDone = viewModel.prefs.isSetupDone && viewModel.prefs.skippyUrl.isNotBlank()
-    }
+    val goHome = isAuthenticated && loginState !is LoginState.Loading
 
-    if (!setupDone) {
-        SetupScreen(onComplete = { url ->
-            viewModel.completeSetup(url)
-            setupDone = true
-        })
+    if (!goHome) {
+        LoginScreen(viewModel = viewModel)
         return
     }
 
@@ -52,6 +48,7 @@ private fun SkippyApp(viewModel: LauncherViewModel) {
         HomeScreen(
             viewModel    = viewModel,
             onOpenDrawer = { showDrawer = true },
+            onLogout     = { viewModel.logout() },
         )
 
         AnimatedVisibility(
@@ -61,9 +58,15 @@ private fun SkippyApp(viewModel: LauncherViewModel) {
         ) {
             val apps by viewModel.apps.collectAsState()
             AppDrawerScreen(
-                apps       = apps,
-                onAppClick = { pkg -> viewModel.launchApp(pkg) },
-                onDismiss  = { showDrawer = false },
+                apps           = apps,
+                pinnedPackages = viewModel.prefs.pinnedApps,
+                onAppClick     = { pkg -> viewModel.launchApp(pkg) },
+                onPinToggle    = { pkg ->
+                    val current = viewModel.prefs.pinnedApps.toMutableList()
+                    if (current.contains(pkg)) current.remove(pkg) else current.add(pkg)
+                    viewModel.prefs.pinnedApps = current
+                },
+                onDismiss = { showDrawer = false },
             )
         }
     }

@@ -42,6 +42,7 @@ object SkippyApi {
             val req = Request.Builder()
                 .url("$baseUrl/api/chat")
                 .post(body)
+                .addHeader("Cookie", SkippyRestApi.sessionCookie)
                 .build()
 
             val response = client.newCall(req).execute()

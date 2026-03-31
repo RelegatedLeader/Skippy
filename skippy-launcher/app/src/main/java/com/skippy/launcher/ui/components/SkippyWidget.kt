@@ -19,21 +19,23 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
-import androidx.compose.material.icons.filled.Mic
-import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.*
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.skippy.launcher.R
 import com.skippy.launcher.ui.theme.*
 import com.skippy.launcher.viewmodel.LauncherViewModel
 import com.skippy.launcher.viewmodel.VoiceState
@@ -43,6 +45,7 @@ import java.util.Locale
 fun SkippyWidget(
     viewModel: LauncherViewModel,
     modifier: Modifier = Modifier,
+    compact: Boolean = false,
 ) {
     val context        = LocalContext.current
     val voiceState     by viewModel.voiceState.collectAsState()
@@ -59,7 +62,7 @@ fun SkippyWidget(
         if (granted) startListening(speechRecognizer, viewModel)
     }
 
-    // Orb pulse animation
+    // Pulse animation for mic orb
     val pulseTransition = rememberInfiniteTransition(label = "orb")
     val pulseScale by pulseTransition.animateFloat(
         initialValue = 1f,
@@ -83,14 +86,39 @@ fun SkippyWidget(
         else                     -> CyanGlow
     }
 
+    fun handleSend() {
+        val trimmed = textInput.trim()
+        if (trimmed.isBlank()) return
+        // Check if it's an "open <app>" command first
+        val openMatch = Regex("""^(?:openlaunchstart)\s+(.+)$""", RegexOption.IGNORE_CASE).find(trimmed)
+        if (openMatch != null) {
+            val appName = openMatch.groupValues[1]
+            if (viewModel.launchAppByName(appName)) {
+                textInput = ""
+                keyboard?.hide()
+                return
+            }
+        }
+        // Check general voice commands
+        if (viewModel.handleVoiceCommand(trimmed)) {
+            textInput = ""
+            keyboard?.hide()
+            return
+        }
+        // Otherwise send to Skippy AI
+        viewModel.askSkippy(trimmed)
+        textInput = ""
+        keyboard?.hide()
+    }
+
     Column(
-        modifier = modifier.fillMaxWidth(),
+        modifier = modifier.fillMaxWidth().padding(horizontal = 16.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(10.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        // Response bubble
+        // Response bubble (only when there's a response and not compact or has response)
         AnimatedVisibility(
-            visible = lastResponse.isNotEmpty(),
+            visible = lastResponse.isNotEmpty() && !compact,
             enter = fadeIn() + expandVertically(),
             exit  = fadeOut() + shrinkVertically(),
         ) {
@@ -101,41 +129,58 @@ fun SkippyWidget(
                 shape = RoundedCornerShape(16.dp),
                 color = CyanDim,
             ) {
-                Text(
-                    text = lastResponse,
-                    modifier = Modifier.padding(14.dp),
-                    color = WhiteText,
-                    fontSize = 14.sp,
-                    maxLines = 5,
-                    overflow = TextOverflow.Ellipsis,
-                )
+                Row(
+                    modifier = Modifier.padding(12.dp),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    verticalAlignment = Alignment.Top,
+                ) {
+                    Image(
+                        painter = painterResource(R.drawable.skippy_robot),
+                        contentDescription = null,
+                        modifier = Modifier.size(32.dp),
+                        contentScale = ContentScale.Fit,
+                    )
+                    Text(
+                        text = lastResponse,
+                        modifier = Modifier.weight(1f),
+                        color = WhiteText,
+                        fontSize = 14.sp,
+                        maxLines = 5,
+                        overflow = TextOverflow.Ellipsis,
+                        lineHeight = 20.sp,
+                    )
+                }
             }
         }
 
-        // Main input card
+        // ── Main search/command bar ───────────────────────────────────────
         Surface(
             modifier = Modifier
                 .fillMaxWidth()
-                .border(1.dp, CyanGlow, RoundedCornerShape(20.dp)),
+                .border(
+                    1.dp,
+                    if (voiceState !is VoiceState.Idle) CyanPrimary else CyanGlow,
+                    RoundedCornerShape(20.dp),
+                ),
             shape = RoundedCornerShape(20.dp),
             color = NavyMid.copy(alpha = 0.9f),
         ) {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                    .padding(horizontal = 10.dp, vertical = 8.dp),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                // Mic / stop orb button
+                // Mic / robot orb
                 Box(
                     modifier = Modifier
-                        .size(50.dp)
+                        .size(46.dp)
                         .scale(pulseScale)
                         .clip(CircleShape)
                         .background(
                             Brush.radialGradient(
-                                colors = listOf(orbColor, orbColor.copy(alpha = 0.2f))
+                                colors = listOf(orbColor, orbColor.copy(alpha = 0.15f))
                             )
                         )
                         .border(1.5.dp, orbColor, CircleShape)
@@ -148,8 +193,7 @@ fun SkippyWidget(
                                 is VoiceState.Speaking -> viewModel.onSpeakDone()
                                 else -> {
                                     if (context.checkSelfPermission(Manifest.permission.RECORD_AUDIO)
-                                        == PackageManager.PERMISSION_GRANTED
-                                    ) {
+                                        == PackageManager.PERMISSION_GRANTED) {
                                         startListening(speechRecognizer, viewModel)
                                     } else {
                                         micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
@@ -159,69 +203,66 @@ fun SkippyWidget(
                         },
                     contentAlignment = Alignment.Center,
                 ) {
-                    Icon(
-                        imageVector = when (voiceState) {
-                            is VoiceState.Listening, is VoiceState.Speaking -> Icons.Default.Stop
-                            else -> Icons.Default.Mic
-                        },
-                        contentDescription = "Voice",
-                        tint = WhiteText,
-                        modifier = Modifier.size(22.dp),
-                    )
+                    if (voiceState is VoiceState.Idle) {
+                        Image(
+                            painter = painterResource(R.drawable.skippy_robot),
+                            contentDescription = "Skippy",
+                            modifier = Modifier.size(28.dp),
+                            contentScale = ContentScale.Fit,
+                        )
+                    } else {
+                        Icon(
+                            imageVector = when (voiceState) {
+                                is VoiceState.Listening, is VoiceState.Speaking -> Icons.Default.Stop
+                                else -> Icons.Default.Mic
+                            },
+                            contentDescription = "Voice",
+                            tint = WhiteText,
+                            modifier = Modifier.size(22.dp),
+                        )
+                    }
                 }
 
-                // Text field
+                // Text input
                 OutlinedTextField(
                     value = textInput,
                     onValueChange = { textInput = it },
                     placeholder = {
                         Text(
                             text = when (voiceState) {
-                                is VoiceState.Listening  -> "Listening..."
-                                is VoiceState.Processing -> "Thinking..."
-                                is VoiceState.Speaking   -> "Speaking..."
-                                else                     -> "Ask Skippy anything..."
+                                is VoiceState.Listening  -> "Listening…"
+                                is VoiceState.Processing -> "Thinking…"
+                                is VoiceState.Speaking   -> "Speaking…"
+                                else                     -> "Ask Skippy or open an app…"
                             },
                             color = WhiteDim,
-                            fontSize = 14.sp,
+                            fontSize = 13.sp,
                         )
                     },
                     modifier = Modifier.weight(1f),
                     colors = OutlinedTextFieldDefaults.colors(
                         focusedBorderColor     = CyanPrimary,
-                        unfocusedBorderColor   = CyanGlow,
+                        unfocusedBorderColor   = androidx.compose.ui.graphics.Color.Transparent,
                         focusedTextColor       = WhiteText,
                         unfocusedTextColor     = WhiteText,
                         cursorColor            = CyanPrimary,
-                        focusedContainerColor  = NavyDeep.copy(alpha = 0.3f),
-                        unfocusedContainerColor = NavyDeep.copy(alpha = 0.3f),
+                        focusedContainerColor  = androidx.compose.ui.graphics.Color.Transparent,
+                        unfocusedContainerColor = androidx.compose.ui.graphics.Color.Transparent,
                     ),
                     shape = RoundedCornerShape(12.dp),
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
-                    keyboardActions = KeyboardActions(onSend = {
-                        if (textInput.isNotBlank()) {
-                            viewModel.askSkippy(textInput.trim())
-                            textInput = ""
-                            keyboard?.hide()
-                        }
-                    }),
+                    keyboardActions = KeyboardActions(onSend = { handleSend() }),
                     singleLine = true,
                     enabled = voiceState is VoiceState.Idle,
                 )
 
-                // Send button (visible when typing)
+                // Send button
                 AnimatedVisibility(
                     visible = textInput.isNotBlank(),
                     enter   = fadeIn() + scaleIn(),
                     exit    = fadeOut() + scaleOut(),
                 ) {
-                    IconButton(onClick = {
-                        if (textInput.isNotBlank()) {
-                            viewModel.askSkippy(textInput.trim())
-                            textInput = ""
-                            keyboard?.hide()
-                        }
-                    }) {
+                    IconButton(onClick = { handleSend() }) {
                         Icon(Icons.AutoMirrored.Filled.Send, "Send", tint = CyanPrimary)
                     }
                 }
@@ -233,12 +274,11 @@ fun SkippyWidget(
             Text(
                 text = when (voiceState) {
                     is VoiceState.Listening  -> "● Listening"
-                    is VoiceState.Processing -> "◌ Thinking..."
+                    is VoiceState.Processing -> "◌ Thinking…"
                     is VoiceState.Speaking   -> "◎ Speaking"
-                    else                     -> ""
+                    else -> ""
                 },
-                fontSize = 12.sp,
-                fontWeight = FontWeight.Medium,
+                fontSize = 12.sp, fontWeight = FontWeight.Medium,
                 color = when (voiceState) {
                     is VoiceState.Listening -> ListeningRed
                     else                    -> CyanPrimary
@@ -266,14 +306,10 @@ private fun startListening(recognizer: SpeechRecognizer, viewModel: LauncherView
         override fun onResults(results: Bundle?) {
             val text = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull()
             if (!text.isNullOrBlank()) {
-                // "Open <app>" command — launch without calling AI
-                val openMatch = Regex("""^open\s+(.+)$""", RegexOption.IGNORE_CASE).find(text.trim())
-                if (openMatch != null) {
-                    val appName = openMatch.groupValues[1]
-                    if (viewModel.launchAppByName(appName)) {
-                        viewModel.setVoiceState(VoiceState.Idle)
-                        return
-                    }
+                // Try local commands first
+                if (viewModel.handleVoiceCommand(text)) {
+                    viewModel.setVoiceState(VoiceState.Idle)
+                    return
                 }
                 viewModel.askSkippy(text)
             } else {

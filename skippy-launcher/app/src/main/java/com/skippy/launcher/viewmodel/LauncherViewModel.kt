@@ -33,6 +33,13 @@ sealed class VoiceState {
     data object Speaking   : VoiceState()
 }
 
+sealed class LoginState {
+    data object Idle    : LoginState()
+    data object Loading : LoginState()
+    data class  Error(val message: String) : LoginState()
+    data object Success : LoginState()
+}
+
 class LauncherViewModel(application: Application) : AndroidViewModel(application) {
 
     val prefs = AppPreferences(application)
@@ -118,6 +125,12 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
     private val _errorMessage = MutableStateFlow<String?>(null)
     val errorMessage: StateFlow<String?> = _errorMessage.asStateFlow()
 
+    private val _loginState = MutableStateFlow<LoginState>(LoginState.Idle)
+    val loginState: StateFlow<LoginState> = _loginState.asStateFlow()
+
+    private val _isAuthenticated = MutableStateFlow(false)
+    val isAuthenticated: StateFlow<Boolean> = _isAuthenticated.asStateFlow()
+
     // ── TTS ────────────────────────────────────────────────────────────────────
 
     private var tts: TextToSpeech? = null
@@ -126,6 +139,11 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
     init {
         initTts()
         loadApps()
+        // Restore session cookie if we have one saved
+        if (prefs.sessionCookie.isNotBlank()) {
+            SkippyRestApi.sessionCookie = prefs.sessionCookie
+            _isAuthenticated.value = true
+        }
     }
 
     private fun initTts() {
@@ -531,7 +549,15 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
             _chatLog.update { (it + ChatEntry(role = "user", text = text)).takeLast(40) }
             chatHistory.add(ChatMessage("user", text))
 
-            val reply = SkippyApi.chat(prefs.skippyUrl, chatHistory.toList(), prefs.aiModel)
+            var reply = SkippyApi.chat(prefs.skippyUrl, chatHistory.toList(), prefs.aiModel)
+
+            // If we get an auth error, try re-authenticating once
+            if (reply.startsWith("Error 401") || reply.startsWith("Error 403")) {
+                reAuthenticate()
+                kotlinx.coroutines.delay(1200)
+                reply = SkippyApi.chat(prefs.skippyUrl, chatHistory.toList(), prefs.aiModel)
+            }
+
             chatHistory.add(ChatMessage("assistant", reply))
             while (chatHistory.size > 30) chatHistory.removeAt(0)
 
@@ -554,6 +580,55 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
     fun clearError() { _errorMessage.value = null }
 
     // ── Setup ──────────────────────────────────────────────────────────────────
+
+    /** Full login: URL + credentials → session cookie → load data */
+    fun login(url: String, username: String, password: String, accessCode: String) {
+        viewModelScope.launch {
+            _loginState.value = LoginState.Loading
+            val cleanUrl = url.trim().trimEnd('/')
+            val cookie = SkippyRestApi.login(cleanUrl, username, password, accessCode)
+            if (cookie != null) {
+                prefs.skippyUrl   = cleanUrl
+                prefs.username    = username
+                prefs.password    = password
+                prefs.accessCode  = accessCode
+                prefs.sessionCookie = cookie
+                prefs.isSetupDone = true
+                _isAuthenticated.value = true
+                if (prefs.pinnedApps.isEmpty()) {
+                    prefs.pinnedApps = listOf(
+                        "com.google.android.dialer",
+                        "com.google.android.apps.messaging",
+                        "com.android.chrome",
+                        "com.google.android.apps.photos",
+                    )
+                }
+                refreshHomeData()
+                _loginState.value = LoginState.Success
+            } else {
+                _loginState.value = LoginState.Error("Invalid credentials or server unreachable.")
+            }
+        }
+    }
+
+    /** Re-authenticate using stored credentials (e.g., after session expiry) */
+    fun reAuthenticate() {
+        val url = prefs.skippyUrl
+        val user = prefs.username
+        val pass = prefs.password
+        val code = prefs.accessCode
+        if (url.isBlank() || user.isBlank() || pass.isBlank() || code.isBlank()) return
+        login(url, user, pass, code)
+    }
+
+    fun logout() {
+        prefs.sessionCookie = ""
+        prefs.isSetupDone   = false
+        SkippyRestApi.sessionCookie = ""
+        _isAuthenticated.value = false
+        _loginState.value = LoginState.Idle
+        clearChat()
+    }
 
     fun completeSetup(url: String) {
         prefs.skippyUrl  = url.trimEnd('/')

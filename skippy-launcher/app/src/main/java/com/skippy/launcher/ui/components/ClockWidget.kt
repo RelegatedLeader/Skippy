@@ -16,10 +16,10 @@ import java.text.SimpleDateFormat
 import java.util.*
 
 @Composable
-fun ClockWidget(modifier: Modifier = Modifier) {
-    var time   by remember { mutableStateOf(fmtTime()) }
-    var ampm   by remember { mutableStateOf(fmtAmPm()) }
-    var date   by remember { mutableStateOf(fmtDate()) }
+fun ClockWidget(modifier: Modifier = Modifier, compact: Boolean = false) {
+    var time by remember { mutableStateOf(fmtTime()) }
+    var ampm by remember { mutableStateOf(fmtAmPm()) }
+    var date by remember { mutableStateOf(fmtDate()) }
 
     LaunchedEffect(Unit) {
         while (true) {
@@ -30,39 +30,62 @@ fun ClockWidget(modifier: Modifier = Modifier) {
         }
     }
 
-    Column(
-        modifier = modifier.fillMaxWidth(),
-        horizontalAlignment = Alignment.CenterHorizontally,
-    ) {
-        Row(
-            verticalAlignment = Alignment.Bottom,
-            horizontalArrangement = Arrangement.Center,
+    if (compact) {
+        Column(modifier = modifier) {
+            Row(verticalAlignment = Alignment.Bottom) {
+                Text(
+                    time,
+                    fontSize = 36.sp,
+                    fontWeight = FontWeight.Light,
+                    color = MaterialTheme.colorScheme.onBackground,
+                    letterSpacing = (-1).sp,
+                    lineHeight = 36.sp
+                )
+                Text(
+                    ampm,
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.Light,
+                    color = CyanPrimary,
+                    modifier = Modifier.padding(bottom = 5.dp, start = 4.dp)
+                )
+            }
+            Text(date, fontSize = 11.sp, color = WhiteMuted)
+        }
+    } else {
+        Column(
+            modifier = modifier.fillMaxWidth(),
+            horizontalAlignment = Alignment.CenterHorizontally
         ) {
+            Row(
+                verticalAlignment = Alignment.Bottom,
+                horizontalArrangement = Arrangement.Center
+            ) {
+                Text(
+                    time,
+                    fontSize = 88.sp,
+                    fontWeight = FontWeight.Thin,
+                    color = MaterialTheme.colorScheme.onBackground,
+                    letterSpacing = (-3).sp,
+                    lineHeight = 88.sp
+                )
+                Text(
+                    ampm,
+                    fontSize = 22.sp,
+                    fontWeight = FontWeight.Light,
+                    color = CyanPrimary,
+                    modifier = Modifier.padding(bottom = 14.dp, start = 6.dp)
+                )
+            }
             Text(
-                text = time,
-                fontSize = 88.sp,
-                fontWeight = FontWeight.Thin,
-                color = MaterialTheme.colorScheme.onBackground,
-                letterSpacing = (-3).sp,
-                lineHeight = 88.sp,
-            )
-            Text(
-                text = ampm,
-                fontSize = 22.sp,
-                fontWeight = FontWeight.Light,
-                color = CyanPrimary,
-                modifier = Modifier.padding(bottom = 14.dp, start = 6.dp),
+                date,
+                fontSize = 16.sp,
+                color = WhiteMuted,
+                letterSpacing = 1.sp
             )
         }
-        Text(
-            text = date,
-            fontSize = 16.sp,
-            color = WhiteMuted,
-            letterSpacing = 1.sp,
-        )
     }
 }
 
-private fun fmtTime()  = SimpleDateFormat("h:mm",    Locale.getDefault()).format(Date())
-private fun fmtAmPm()  = SimpleDateFormat("a",       Locale.getDefault()).format(Date())
-private fun fmtDate()  = SimpleDateFormat("EEEE, MMMM d", Locale.getDefault()).format(Date())
+private fun fmtTime() = SimpleDateFormat("h:mm", Locale.getDefault()).format(Date())
+private fun fmtAmPm() = SimpleDateFormat("a", Locale.getDefault()).format(Date())
+private fun fmtDate() = SimpleDateFormat("EEEE, MMMM d", Locale.getDefault()).format(Date())

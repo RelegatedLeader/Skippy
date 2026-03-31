@@ -13,6 +13,52 @@ class AppPreferences(context: Context) {
         get() = prefs.getBoolean("setup_done", false)
         set(value) = prefs.edit().putBoolean("setup_done", value).apply()
 
+    // ── Auth credentials ───────────────────────────────────────────────────
+    var username: String
+        get() = prefs.getString("auth_username", "") ?: ""
+        set(value) = prefs.edit().putString("auth_username", value).apply()
+
+    var password: String
+        get() = prefs.getString("auth_password", "") ?: ""
+        set(value) = prefs.edit().putString("auth_password", value).apply()
+
+    var accessCode: String
+        get() = prefs.getString("auth_access_code", "") ?: ""
+        set(value) = prefs.edit().putString("auth_access_code", value).apply()
+
+    /** Raw "skippy_session=<token>" cookie string — sent with every request */
+    var sessionCookie: String
+        get() = prefs.getString("session_cookie", "") ?: ""
+        set(value) = prefs.edit().putString("session_cookie", value).apply()
+
+    val isLoggedIn: Boolean
+        get() = sessionCookie.isNotBlank() && skippyUrl.isNotBlank()
+
+    // ── Widget visibility prefs ────────────────────────────────────────────
+    var showClockWidget: Boolean
+        get() = prefs.getBoolean("widget_clock", true)
+        set(v) = prefs.edit().putBoolean("widget_clock", v).apply()
+
+    var showWeatherWidget: Boolean
+        get() = prefs.getBoolean("widget_weather", true)
+        set(v) = prefs.edit().putBoolean("widget_weather", v).apply()
+
+    var showTodosWidget: Boolean
+        get() = prefs.getBoolean("widget_todos", true)
+        set(v) = prefs.edit().putBoolean("widget_todos", v).apply()
+
+    var showRemindersWidget: Boolean
+        get() = prefs.getBoolean("widget_reminders", true)
+        set(v) = prefs.edit().putBoolean("widget_reminders", v).apply()
+
+    var showMemoriesWidget: Boolean
+        get() = prefs.getBoolean("widget_memories", true)
+        set(v) = prefs.edit().putBoolean("widget_memories", v).apply()
+
+    var showRecentChatWidget: Boolean
+        get() = prefs.getBoolean("widget_recent_chat", true)
+        set(v) = prefs.edit().putBoolean("widget_recent_chat", v).apply()
+
     var temperatureUnit: String
         get() = prefs.getString("temp_unit", "fahrenheit") ?: "fahrenheit"
         set(value) = prefs.edit().putString("temp_unit", value).apply()

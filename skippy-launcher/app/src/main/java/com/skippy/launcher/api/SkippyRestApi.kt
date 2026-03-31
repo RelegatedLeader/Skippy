@@ -20,11 +20,61 @@ object SkippyRestApi {
 
     private val JSON = "application/json".toMediaType()
 
+    /** Thread-safe session cookie holder — set after successful login */
+    @Volatile var sessionCookie: String = ""
+
+    // ── Auth ───────────────────────────────────────────────────────────────────
+
+    /**
+     * Login to the Skippy backend.
+     * Returns the raw session cookie string on success, null on failure.
+     */
+    suspend fun login(baseUrl: String, username: String, password: String, accessCode: String): String? =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                val body = JSONObject()
+                    .put("username", username)
+                    .put("password", password)
+                    .put("accessCode", accessCode)
+                val req = Request.Builder()
+                    .url("$baseUrl/api/auth/login")
+                    .post(body.toString().toRequestBody(JSON))
+                    .build()
+                val res = client.newCall(req).execute()
+                if (!res.isSuccessful) return@runCatching null
+                // Extract Set-Cookie header
+                val setCookie = res.headers("Set-Cookie")
+                    .firstOrNull { it.startsWith("skippy_session=") }
+                    ?: return@runCatching null
+                // Parse just "skippy_session=<token>" without attributes
+                val cookieValue = setCookie.split(";").first().trim()
+                sessionCookie = cookieValue
+                cookieValue
+            }.getOrNull()
+        }
+
+    /** Check auth status — returns true if the stored cookie is valid */
+    suspend fun checkAuthStatus(baseUrl: String): Boolean = withContext(Dispatchers.IO) {
+        runCatching {
+            val req = Request.Builder()
+                .url("$baseUrl/api/auth/status")
+                .get()
+                .addHeader("Cookie", sessionCookie)
+                .build()
+            val res = client.newCall(req).execute()
+            if (!res.isSuccessful) return@runCatching false
+            val body = res.body?.string() ?: return@runCatching false
+            JSONObject(body).optBoolean("authenticated", false)
+        }.getOrDefault(false)
+    }
+
     // ── Helpers ────────────────────────────────────────────────────────────────
 
     private suspend fun get(url: String): JSONObject? = withContext(Dispatchers.IO) {
         runCatching {
-            val req = Request.Builder().url(url).get().build()
+            val req = Request.Builder().url(url).get()
+                .addHeader("Cookie", sessionCookie)
+                .build()
             val res = client.newCall(req).execute()
             if (!res.isSuccessful) return@runCatching null
             val body = res.body?.string() ?: return@runCatching null
@@ -35,7 +85,9 @@ object SkippyRestApi {
 
     private suspend fun getArray(url: String): JSONArray? = withContext(Dispatchers.IO) {
         runCatching {
-            val req = Request.Builder().url(url).get().build()
+            val req = Request.Builder().url(url).get()
+                .addHeader("Cookie", sessionCookie)
+                .build()
             val res = client.newCall(req).execute()
             if (!res.isSuccessful) return@runCatching null
             val body = res.body?.string() ?: return@runCatching null
@@ -46,7 +98,9 @@ object SkippyRestApi {
 
     private suspend fun post(url: String, body: JSONObject): JSONObject? = withContext(Dispatchers.IO) {
         runCatching {
-            val req = Request.Builder().url(url).post(body.toString().toRequestBody(JSON)).build()
+            val req = Request.Builder().url(url).post(body.toString().toRequestBody(JSON))
+                .addHeader("Cookie", sessionCookie)
+                .build()
             val res = client.newCall(req).execute()
             if (!res.isSuccessful) return@runCatching null
             val b = res.body?.string() ?: return@runCatching null
@@ -56,7 +110,9 @@ object SkippyRestApi {
 
     private suspend fun patch(url: String, body: JSONObject): JSONObject? = withContext(Dispatchers.IO) {
         runCatching {
-            val req = Request.Builder().url(url).patch(body.toString().toRequestBody(JSON)).build()
+            val req = Request.Builder().url(url).patch(body.toString().toRequestBody(JSON))
+                .addHeader("Cookie", sessionCookie)
+                .build()
             val res = client.newCall(req).execute()
             if (!res.isSuccessful) return@runCatching null
             val b = res.body?.string() ?: return@runCatching null
@@ -66,7 +122,9 @@ object SkippyRestApi {
 
     private suspend fun delete(url: String): Boolean = withContext(Dispatchers.IO) {
         runCatching {
-            val req = Request.Builder().url(url).delete().build()
+            val req = Request.Builder().url(url).delete()
+                .addHeader("Cookie", sessionCookie)
+                .build()
             client.newCall(req).execute().isSuccessful
         }.getOrDefault(false)
     }

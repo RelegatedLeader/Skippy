@@ -20,15 +20,20 @@ fun SettingsScreen(
     onResetSetup: () -> Unit,
 ) {
     val prefs = viewModel.prefs
-    var url          by remember { mutableStateOf(prefs.skippyUrl) }
-    var autoSpeak    by remember { mutableStateOf(prefs.autoSpeak) }
-    var tempUnit     by remember { mutableStateOf(prefs.temperatureUnit) }
-    var aiModel      by remember { mutableStateOf(prefs.aiModel) }
-    var speechRate   by remember { mutableFloatStateOf(prefs.speechRate) }
-    var speechPitch  by remember { mutableFloatStateOf(prefs.speechPitch) }
-    var debateRead   by remember { mutableStateOf(prefs.debateAutoRead) }
-    var showStats    by remember { mutableStateOf(prefs.showQuickStats) }
-    var saved        by remember { mutableStateOf(false) }
+    var autoSpeak   by remember { mutableStateOf(prefs.autoSpeak) }
+    var tempUnit    by remember { mutableStateOf(prefs.temperatureUnit) }
+    var aiModel     by remember { mutableStateOf(prefs.aiModel) }
+    var speechRate  by remember { mutableFloatStateOf(prefs.speechRate) }
+    var speechPitch by remember { mutableFloatStateOf(prefs.speechPitch) }
+    var debateRead  by remember { mutableStateOf(prefs.debateAutoRead) }
+    var showStats   by remember { mutableStateOf(prefs.showQuickStats) }
+    var showClock   by remember { mutableStateOf(prefs.showClockWidget) }
+    var showWeather by remember { mutableStateOf(prefs.showWeatherWidget) }
+    var showTodos   by remember { mutableStateOf(prefs.showTodosWidget) }
+    var showRemind  by remember { mutableStateOf(prefs.showRemindersWidget) }
+    var showMem     by remember { mutableStateOf(prefs.showMemoriesWidget) }
+    var showChat    by remember { mutableStateOf(prefs.showRecentChatWidget) }
+    var saved       by remember { mutableStateOf(false) }
 
     Column(
         modifier = Modifier
@@ -36,7 +41,6 @@ fun SettingsScreen(
             .statusBarsPadding()
             .verticalScroll(rememberScrollState()),
     ) {
-        // ── Header ──────────────────────────────────────────────────────────
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -54,36 +58,25 @@ fun SettingsScreen(
             }
         }
 
-        Column(
-            modifier = Modifier.padding(horizontal = 16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
+        Column(modifier = Modifier.padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
 
-            // ── Connection ──────────────────────────────────────────────────
-            SettingsSection(title = "Connection", icon = "🔗") {
-                SettingsLabel("Skippy Server URL")
-                OutlinedTextField(
-                    value = url, onValueChange = { url = it; saved = false },
-                    placeholder = { Text("https://your-skippy.vercel.app", color = WhiteDim, fontSize = 13.sp) },
-                    modifier = Modifier.fillMaxWidth(), singleLine = true,
-                    colors = settingsFieldColors(), shape = RoundedCornerShape(12.dp),
-                )
+            // ── Account ─────────────────────────────────────────────────────
+            SettingsSection(title = "Account", icon = "👤") {
+                if (prefs.username.isNotBlank()) {
+                    InfoRow("Username", prefs.username)
+                    InfoRow("Server", prefs.skippyUrl.removePrefix("https://").take(32))
+                    InfoRow("Status", "✅ Connected")
+                }
+                Spacer(Modifier.height(4.dp))
                 Button(
-                    onClick = {
-                        val trimmed = url.trim().trimEnd('/')
-                        if (trimmed.startsWith("http")) {
-                            prefs.skippyUrl = trimmed
-                            viewModel.refreshHomeData()
-                            saved = true
-                        }
-                    },
+                    onClick = { viewModel.reAuthenticate(); saved = true },
                     modifier = Modifier.fillMaxWidth().height(46.dp),
                     colors = ButtonDefaults.buttonColors(containerColor = CyanPrimary, contentColor = NavyDeep),
                     shape = RoundedCornerShape(12.dp),
                 ) {
-                    Icon(Icons.Default.CloudUpload, null, modifier = Modifier.size(16.dp))
+                    Icon(Icons.Default.Refresh, null, modifier = Modifier.size(16.dp))
                     Spacer(Modifier.width(6.dp))
-                    Text("Save & Reconnect", fontWeight = FontWeight.Bold)
+                    Text("Refresh Session", fontWeight = FontWeight.Bold)
                 }
             }
 
@@ -94,15 +87,13 @@ fun SettingsScreen(
                     listOf("auto", "grok", "claude").forEach { m ->
                         val sel = aiModel == m
                         Surface(
-                            modifier = Modifier.weight(1f).clickable {
-                                aiModel = m; prefs.aiModel = m; saved = false
-                            },
+                            modifier = Modifier.weight(1f).clickable { aiModel = m; prefs.aiModel = m },
                             shape = RoundedCornerShape(10.dp),
                             color = if (sel) CyanPrimary.copy(alpha = 0.18f) else NavyCard,
                             border = BorderStroke(1.dp, if (sel) CyanPrimary.copy(alpha = 0.6f) else SurfaceBorder),
                         ) {
                             Text(
-                                text = m.replaceFirstChar { it.uppercase() },
+                                m.replaceFirstChar { it.uppercase() },
                                 modifier = Modifier.padding(vertical = 10.dp).fillMaxWidth().wrapContentWidth(),
                                 color = if (sel) CyanPrimary else WhiteMuted,
                                 fontSize = 13.sp, fontWeight = if (sel) FontWeight.Bold else FontWeight.Normal,
@@ -114,55 +105,61 @@ fun SettingsScreen(
 
             // ── Voice ────────────────────────────────────────────────────────
             SettingsSection(title = "Voice", icon = "🎙") {
-                SettingsSwitchRow(
-                    label    = "Auto-speak responses",
-                    sublabel = "Skippy reads its answers aloud",
-                    checked  = autoSpeak,
-                    onChange = { autoSpeak = it; prefs.autoSpeak = it; saved = false },
-                )
+                SettingsSwitchRow("Auto-speak responses", "Skippy reads its answers aloud", autoSpeak)
+                    { autoSpeak = it; prefs.autoSpeak = it }
                 Spacer(Modifier.height(4.dp))
-                SettingsSwitchRow(
-                    label    = "Debate auto-read",
-                    sublabel = "Read AI debate arguments aloud",
-                    checked  = debateRead,
-                    onChange = { debateRead = it; prefs.debateAutoRead = it; saved = false },
-                )
+                SettingsSwitchRow("Debate auto-read", "Read AI debate arguments aloud", debateRead)
+                    { debateRead = it; prefs.debateAutoRead = it }
                 Spacer(Modifier.height(8.dp))
                 SettingsLabel("Speech rate: ${String.format("%.2f", speechRate)}x")
                 Slider(
-                    value = speechRate, onValueChange = { speechRate = it; prefs.speechRate = it; saved = false },
+                    value = speechRate, onValueChange = { speechRate = it; prefs.speechRate = it },
                     valueRange = 0.4f..2.0f,
                     colors = SliderDefaults.colors(thumbColor = CyanPrimary, activeTrackColor = CyanPrimary, inactiveTrackColor = CyanGlow),
                 )
                 SettingsLabel("Voice pitch: ${String.format("%.2f", speechPitch)}x")
                 Slider(
-                    value = speechPitch, onValueChange = { speechPitch = it; prefs.speechPitch = it; saved = false },
+                    value = speechPitch, onValueChange = { speechPitch = it; prefs.speechPitch = it },
                     valueRange = 0.5f..1.5f,
                     colors = SliderDefaults.colors(thumbColor = CyanPrimary, activeTrackColor = CyanPrimary, inactiveTrackColor = CyanGlow),
                 )
             }
 
+            // ── Home Widgets ─────────────────────────────────────────────────
+            SettingsSection(title = "Home Widgets", icon = "🧩") {
+                SettingsLabel("Toggle which widgets appear on your home screen")
+                Spacer(Modifier.height(4.dp))
+                SettingsSwitchRow("Clock & Date", "Large clock on home", showClock)
+                    { showClock = it; prefs.showClockWidget = it }
+                SettingsSwitchRow("Weather", "Current weather conditions", showWeather)
+                    { showWeather = it; prefs.showWeatherWidget = it }
+                SettingsSwitchRow("Todos", "Pending todo items", showTodos)
+                    { showTodos = it; prefs.showTodosWidget = it }
+                SettingsSwitchRow("Reminders", "Upcoming reminders", showRemind)
+                    { showRemind = it; prefs.showRemindersWidget = it }
+                SettingsSwitchRow("Memory count", "How many memories Skippy has", showMem)
+                    { showMem = it; prefs.showMemoriesWidget = it }
+                SettingsSwitchRow("Last Skippy reply", "Preview of last response", showChat)
+                    { showChat = it; prefs.showRecentChatWidget = it }
+            }
+
             // ── Display ──────────────────────────────────────────────────────
             SettingsSection(title = "Display", icon = "🎨") {
-                SettingsSwitchRow(
-                    label    = "Show quick stats on home",
-                    sublabel = "Todos, reminders, memory count",
-                    checked  = showStats,
-                    onChange = { showStats = it; prefs.showQuickStats = it; saved = false },
-                )
+                SettingsSwitchRow("Show quick stats on home", "Todos, reminders, memory count", showStats)
+                    { showStats = it; prefs.showQuickStats = it }
                 Spacer(Modifier.height(8.dp))
                 SettingsLabel("Temperature unit")
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
                     listOf("fahrenheit" to "°F", "celsius" to "°C").forEach { (key, label) ->
                         val sel = tempUnit == key
                         Surface(
-                            modifier = Modifier.weight(1f).clickable { tempUnit = key; prefs.temperatureUnit = key; saved = false },
+                            modifier = Modifier.weight(1f).clickable { tempUnit = key; prefs.temperatureUnit = key },
                             shape = RoundedCornerShape(10.dp),
                             color = if (sel) CyanPrimary.copy(alpha = 0.18f) else NavyCard,
                             border = BorderStroke(1.dp, if (sel) CyanPrimary.copy(alpha = 0.6f) else SurfaceBorder),
                         ) {
                             Text(
-                                text = label,
+                                label,
                                 modifier = Modifier.padding(vertical = 10.dp).fillMaxWidth().wrapContentWidth(),
                                 color = if (sel) CyanPrimary else WhiteMuted,
                                 fontSize = 14.sp, fontWeight = if (sel) FontWeight.Bold else FontWeight.Normal,
@@ -175,18 +172,16 @@ fun SettingsScreen(
             // ── About ────────────────────────────────────────────────────────
             SettingsSection(title = "About", icon = "ℹ️") {
                 InfoRow("App", "Skippy Launcher")
-                InfoRow("Version", "2.0.0")
+                InfoRow("Version", "3.0.0")
                 InfoRow("Engine", "Grok + Claude (auto)")
-                InfoRow("Memory", "15 categories")
+                InfoRow("Sync", "Live — shares your Skippy backend")
                 InfoRow("Features", "Chat · Memory · Notes · Debates · Learn")
             }
 
-            // ── Danger zone ──────────────────────────────────────────────────
+            // ── Danger Zone ──────────────────────────────────────────────────
             SettingsSection(title = "Danger Zone", icon = "⚠️") {
                 OutlinedButton(
-                    onClick = {
-                        viewModel.clearChat()
-                    },
+                    onClick = { viewModel.clearChat() },
                     modifier = Modifier.fillMaxWidth().height(46.dp),
                     border = BorderStroke(1.dp, AmberWarning.copy(alpha = 0.5f)),
                     shape = RoundedCornerShape(12.dp),
@@ -197,17 +192,14 @@ fun SettingsScreen(
                 }
                 Spacer(Modifier.height(8.dp))
                 OutlinedButton(
-                    onClick = {
-                        prefs.isSetupDone = false
-                        prefs.skippyUrl = ""
-                    },
+                    onClick = { onResetSetup() },
                     modifier = Modifier.fillMaxWidth().height(46.dp),
                     border = BorderStroke(1.dp, ErrorRed.copy(alpha = 0.4f)),
                     shape = RoundedCornerShape(12.dp),
                 ) {
-                    Icon(Icons.Default.RestartAlt, null, tint = ErrorRed, modifier = Modifier.size(16.dp))
+                    Icon(Icons.Default.Logout, null, tint = ErrorRed, modifier = Modifier.size(16.dp))
                     Spacer(Modifier.width(6.dp))
-                    Text("Reset Setup", color = ErrorRed, fontWeight = FontWeight.Medium)
+                    Text("Sign Out", color = ErrorRed, fontWeight = FontWeight.Medium)
                 }
             }
 
@@ -219,10 +211,8 @@ fun SettingsScreen(
 @Composable
 private fun SettingsSection(title: String, icon: String, content: @Composable ColumnScope.() -> Unit) {
     Surface(
-        shape  = RoundedCornerShape(16.dp),
-        color  = NavyCard,
-        border = BorderStroke(1.dp, SurfaceBorder),
-        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp), color = NavyCard,
+        border = BorderStroke(1.dp, SurfaceBorder), modifier = Modifier.fillMaxWidth(),
     ) {
         Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -242,11 +232,7 @@ private fun SettingsLabel(text: String) {
 
 @Composable
 private fun SettingsSwitchRow(label: String, sublabel: String, checked: Boolean, onChange: (Boolean) -> Unit) {
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.SpaceBetween,
-    ) {
+    Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
         Column(modifier = Modifier.weight(1f)) {
             Text(label, color = WhiteText, fontSize = 13.sp)
             Text(sublabel, color = WhiteMuted.copy(alpha = 0.6f), fontSize = 11.sp)
@@ -254,10 +240,8 @@ private fun SettingsSwitchRow(label: String, sublabel: String, checked: Boolean,
         Switch(
             checked = checked, onCheckedChange = onChange,
             colors = SwitchDefaults.colors(
-                checkedThumbColor = NavyDeep,
-                checkedTrackColor = CyanPrimary,
-                uncheckedThumbColor = WhiteMuted,
-                uncheckedTrackColor = NavyMid,
+                checkedThumbColor = NavyDeep, checkedTrackColor = CyanPrimary,
+                uncheckedThumbColor = WhiteMuted, uncheckedTrackColor = NavyMid,
             ),
         )
     }
@@ -270,11 +254,3 @@ private fun InfoRow(label: String, value: String) {
         Text(value, color = WhiteText, fontSize = 13.sp, fontWeight = FontWeight.Medium)
     }
 }
-
-@Composable
-private fun settingsFieldColors() = OutlinedTextFieldDefaults.colors(
-    focusedBorderColor = CyanPrimary, unfocusedBorderColor = CyanGlow,
-    focusedTextColor = WhiteText, unfocusedTextColor = WhiteText, cursorColor = CyanPrimary,
-    focusedContainerColor = NavyDeep.copy(alpha = 0.5f), unfocusedContainerColor = NavyDeep.copy(alpha = 0.5f),
-)
-
