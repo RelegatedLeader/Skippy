@@ -534,11 +534,12 @@ export function VoiceMode({ onTranscript, chatBusy, autoActivate, className }: V
   const generationRef  = useRef(0)
   const holdingRef     = useRef(false)
 
-  const recogRef       = useRef<SpeechRecognition | null>(null)
-  const utteranceRef   = useRef<SpeechSynthesisUtterance | null>(null)
-  const audioElRef     = useRef<HTMLAudioElement | null>(null)
-  const audioBlobRef   = useRef<string | null>(null)   // current object URL
-  const streamRef      = useRef<MediaStream | null>(null)
+  const recogRef          = useRef<SpeechRecognition | null>(null)
+  const utteranceRef      = useRef<SpeechSynthesisUtterance | null>(null)
+  const audioElRef        = useRef<HTMLAudioElement | null>(null)
+  const audioBlobRef      = useRef<string | null>(null)   // current object URL
+  const audioUnlockedRef  = useRef(false)                  // mobile unlock flag
+  const streamRef         = useRef<MediaStream | null>(null)
   const animFrameRef   = useRef<number | null>(null)
   const loopTimerRef   = useRef<ReturnType<typeof setTimeout> | null>(null)
   const wordTimersRef  = useRef<ReturnType<typeof setTimeout>[]>([])
@@ -559,6 +560,15 @@ export function VoiceMode({ onTranscript, chatBusy, autoActivate, className }: V
   const setPhaseSync = useCallback((p: Phase) => { phaseRef.current = p; setPhase(p) }, [])
 
   useEffect(() => setMounted(true), [])
+
+  // ── Create persistent Audio element on mount (mobile unlock requires reuse) ─
+  useEffect(() => {
+    const el = new Audio()
+    el.preload = 'none'
+    audioElRef.current = el
+    return () => { el.pause(); el.src = '' }
+  }, [])
+
   useEffect(() => {
     const id = setInterval(() => setTick((t) => t + 1), 80)
     return () => clearInterval(id)
@@ -658,28 +668,48 @@ export function VoiceMode({ onTranscript, chatBusy, autoActivate, className }: V
       clearWordTimers()
 
       const doPlay = async () => {
-        // Stop any currently playing audio
+        // Stop any currently playing audio — do NOT null the ref so the
+        // gesture-unlocked element is preserved for reuse.
         if (audioElRef.current) {
           audioElRef.current.pause()
           audioElRef.current.src = ''
-          audioElRef.current = null
         }
         revokeBlobUrl()
 
         // Get pre-fetched Blob URL (or fetch now if not ready)
         const blobUrl = await preFetchTTS(clean)
         if (!blobUrl) {
-          console.warn('[VoiceMode] TTS unavailable for:', clean.slice(0, 40))
-          setSpeakingText('')
-          onEnd()
+          // Neural TTS failed — fall back to Web Speech API so the user
+          // always hears Skippy rather than silence.
+          console.warn('[VoiceMode] Neural TTS unavailable, falling back to Web Speech for:', clean.slice(0, 40))
+          try {
+            window.speechSynthesis?.cancel()
+            const utt = new SpeechSynthesisUtterance(clean)
+            const voice = pickMaleVoice()
+            if (voice) utt.voice = voice
+            utt.rate  = 0.92
+            utt.pitch = 0.88
+            utt.volume = 1
+            utt.onend   = () => { setSpeakingText(''); onEnd() }
+            utt.onerror = () => { setSpeakingText(''); onEnd() }
+            utteranceRef.current = utt
+            window.speechSynthesis.speak(utt)
+          } catch {
+            setSpeakingText('')
+            onEnd()
+          }
           return
         }
 
         audioBlobRef.current = blobUrl
 
-        const audio = new Audio(blobUrl)
-        audio.volume = 1.0
+        // Reuse the persistent audio element (already unlocked by orbTap gesture)
+        const audio = audioElRef.current ?? new Audio()
         audioElRef.current = audio
+        audio.pause()
+        audio.volume = 1.0
+        audio.src = blobUrl
+        audio.load()
 
         // Word-boundary sync: distribute words across estimated duration
         // onloadedmetadata fires once we know the real duration
@@ -704,7 +734,6 @@ export function VoiceMode({ onTranscript, chatBusy, autoActivate, className }: V
           clearWordTimers()
           setSpeakingText('')
           setWordBoundary(null)
-          audioElRef.current = null
           revokeBlobUrl()
           setIsNeuralVoice(false)
           onEnd()
@@ -715,7 +744,6 @@ export function VoiceMode({ onTranscript, chatBusy, autoActivate, className }: V
           clearWordTimers()
           setSpeakingText('')
           setWordBoundary(null)
-          audioElRef.current = null
           revokeBlobUrl()
           setIsNeuralVoice(false)
           onEnd()
@@ -748,7 +776,7 @@ export function VoiceMode({ onTranscript, chatBusy, autoActivate, className }: V
     if (audioElRef.current) {
       audioElRef.current.pause()
       audioElRef.current.src = ''
-      audioElRef.current = null
+      // Do NOT null the ref — we keep the gesture-unlocked element alive.
     }
     revokeBlobUrl()
     window.speechSynthesis?.cancel()
@@ -971,8 +999,23 @@ export function VoiceMode({ onTranscript, chatBusy, autoActivate, className }: V
   // ── Orb tap ──────────────────────────────────────────────────────────────────
 
   const orbTap = useCallback(() => {
+    // Unlock audio on first gesture — MUST be synchronous in the event handler.
+    // On mobile Safari/Chrome, play() from an async chain is always blocked.
+    // Calling play() here (in the tap handler) marks this element as
+    // user-gesture-activated so all future play() calls on it work.
+    if (!audioUnlockedRef.current) {
+      const el = audioElRef.current
+      if (el) {
+        // Tiny silent WAV — just enough to unlock the element
+        el.src = 'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA='
+        el.volume = 0
+        el.play().catch(() => {})
+        el.volume = 1
+      }
+      audioUnlockedRef.current = true
+    }
     const p = phaseRef.current
-    if (p === 'idle')     { pttPress() }
+    if (p === 'idle')           { pttPress() }
     else if (p === 'listening') { pttRelease() }
     else if (p === 'speaking')  { stopSpeaking(); ++generationRef.current; setSpeakingText(''); setWordBoundary(null) }
   }, [pttPress, pttRelease, stopSpeaking])
