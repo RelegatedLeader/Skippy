@@ -7,6 +7,18 @@ const nextConfig = {
   // Reduce bundle size in production
   compress: true,
 
+  // Prevent webpack from trying to bundle native .node binaries used by
+  // kokoro-js (onnxruntime-node). They are server-side only and must run
+  // in the Node.js runtime unchanged.
+  experimental: {
+    serverComponentsExternalPackages: [
+      'kokoro-js',
+      '@huggingface/transformers',
+      'onnxruntime-node',
+      'sharp',
+    ],
+  },
+
   // Security headers for web version
   async headers() {
     return [
