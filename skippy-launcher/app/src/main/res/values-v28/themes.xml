@@ -1,11 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <!-- API 28+ override: enable display cutout handling -->
-    <style name="Theme.SkippyLauncher" parent="android:Theme.Material.Light.NoActionBar.Fullscreen">
+    <style name="Theme.SkippyLauncher" parent="android:Theme.Material.Light.NoActionBar">
         <item name="android:windowBackground">@color/navy_deep</item>
         <item name="android:statusBarColor">@android:color/transparent</item>
         <item name="android:navigationBarColor">@android:color/transparent</item>
         <item name="android:windowDrawsSystemBarBackgrounds">true</item>
+        <item name="android:windowFullscreen">false</item>
         <item name="android:windowLayoutInDisplayCutoutMode">shortEdges</item>
     </style>
 </resources>

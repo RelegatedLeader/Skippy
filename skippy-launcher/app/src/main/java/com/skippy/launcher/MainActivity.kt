@@ -32,8 +32,13 @@ class MainActivity : ComponentActivity() {
 
 @Composable
 private fun SkippyApp(viewModel: LauncherViewModel) {
-    var setupDone   by remember { mutableStateOf(viewModel.prefs.isSetupDone) }
-    var showDrawer  by remember { mutableStateOf(false) }
+    var setupDone  by remember { mutableStateOf(viewModel.prefs.isSetupDone && viewModel.prefs.skippyUrl.isNotBlank()) }
+    var showDrawer by remember { mutableStateOf(false) }
+
+    // Observe prefs changes (reset from settings)
+    LaunchedEffect(viewModel.prefs.isSetupDone, viewModel.prefs.skippyUrl) {
+        setupDone = viewModel.prefs.isSetupDone && viewModel.prefs.skippyUrl.isNotBlank()
+    }
 
     if (!setupDone) {
         SetupScreen(onComplete = { url ->
@@ -43,7 +48,7 @@ private fun SkippyApp(viewModel: LauncherViewModel) {
         return
     }
 
-    Box {
+    Box(modifier = Modifier.fillMaxSize()) {
         HomeScreen(
             viewModel    = viewModel,
             onOpenDrawer = { showDrawer = true },

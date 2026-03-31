@@ -13,11 +13,9 @@ import android.speech.tts.UtteranceProgressListener
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.skippy.launcher.api.SkippyApi
+import com.skippy.launcher.api.SkippyRestApi
 import com.skippy.launcher.api.WeatherApi
-import com.skippy.launcher.data.AppInfo
-import com.skippy.launcher.data.ChatEntry
-import com.skippy.launcher.data.ChatMessage
-import com.skippy.launcher.data.WeatherData
+import com.skippy.launcher.data.*
 import com.skippy.launcher.data.prefs.AppPreferences
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -39,7 +37,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
 
     val prefs = AppPreferences(application)
 
-    // ── State flows ────────────────────────────────────────────────────────────
+    // ── Core launcher state ────────────────────────────────────────────────────
 
     private val _apps        = MutableStateFlow<List<AppInfo>>(emptyList())
     val apps: StateFlow<List<AppInfo>> = _apps.asStateFlow()
@@ -53,7 +51,6 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
     private val _lastResponse = MutableStateFlow("")
     val lastResponse: StateFlow<String> = _lastResponse.asStateFlow()
 
-    // On-screen conversation log (capped at 12 entries)
     private val _chatLog     = MutableStateFlow<List<ChatEntry>>(emptyList())
     val chatLog: StateFlow<List<ChatEntry>> = _chatLog.asStateFlow()
 
@@ -61,6 +58,65 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
     val isLoading: StateFlow<Boolean> = _isLoading.asStateFlow()
 
     private val chatHistory  = mutableListOf<ChatMessage>()
+
+    // ── Feature state ──────────────────────────────────────────────────────────
+
+    private val _memories = MutableStateFlow<List<Memory>>(emptyList())
+    val memories: StateFlow<List<Memory>> = _memories.asStateFlow()
+
+    private val _memoriesLoading = MutableStateFlow(false)
+    val memoriesLoading: StateFlow<Boolean> = _memoriesLoading.asStateFlow()
+
+    private val _todos = MutableStateFlow<List<TodoItem>>(emptyList())
+    val todos: StateFlow<List<TodoItem>> = _todos.asStateFlow()
+
+    private val _todosLoading = MutableStateFlow(false)
+    val todosLoading: StateFlow<Boolean> = _todosLoading.asStateFlow()
+
+    private val _reminders = MutableStateFlow<List<Reminder>>(emptyList())
+    val reminders: StateFlow<List<Reminder>> = _reminders.asStateFlow()
+
+    private val _remindersLoading = MutableStateFlow(false)
+    val remindersLoading: StateFlow<Boolean> = _remindersLoading.asStateFlow()
+
+    private val _notes = MutableStateFlow<List<Note>>(emptyList())
+    val notes: StateFlow<List<Note>> = _notes.asStateFlow()
+
+    private val _notesLoading = MutableStateFlow(false)
+    val notesLoading: StateFlow<Boolean> = _notesLoading.asStateFlow()
+
+    private val _summaries = MutableStateFlow<List<Summary>>(emptyList())
+    val summaries: StateFlow<List<Summary>> = _summaries.asStateFlow()
+
+    private val _debates = MutableStateFlow<List<Debate>>(emptyList())
+    val debates: StateFlow<List<Debate>> = _debates.asStateFlow()
+
+    private val _debatesLoading = MutableStateFlow(false)
+    val debatesLoading: StateFlow<Boolean> = _debatesLoading.asStateFlow()
+
+    private val _activeDebate = MutableStateFlow<DebateDetail?>(null)
+    val activeDebate: StateFlow<DebateDetail?> = _activeDebate.asStateFlow()
+
+    private val _debateSubmitting = MutableStateFlow(false)
+    val debateSubmitting: StateFlow<Boolean> = _debateSubmitting.asStateFlow()
+
+    private val _conversations = MutableStateFlow<List<ConversationSummary>>(emptyList())
+    val conversations: StateFlow<List<ConversationSummary>> = _conversations.asStateFlow()
+
+    private val _learnStats = MutableStateFlow<LearnStatsResponse?>(null)
+    val learnStats: StateFlow<LearnStatsResponse?> = _learnStats.asStateFlow()
+
+    private val _learnSession = MutableStateFlow<List<LearnWord>>(emptyList())
+    val learnSession: StateFlow<List<LearnWord>> = _learnSession.asStateFlow()
+
+    private val _learnLoading = MutableStateFlow(false)
+    val learnLoading: StateFlow<Boolean> = _learnLoading.asStateFlow()
+
+    private val _userStats = MutableStateFlow<UserStats?>(null)
+    val userStats: StateFlow<UserStats?> = _userStats.asStateFlow()
+
+    private val _errorMessage = MutableStateFlow<String?>(null)
+    val errorMessage: StateFlow<String?> = _errorMessage.asStateFlow()
 
     // ── TTS ────────────────────────────────────────────────────────────────────
 
@@ -76,7 +132,6 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         tts = TextToSpeech(getApplication()) { status ->
             if (status == TextToSpeech.SUCCESS) {
                 tts?.language = Locale.US
-                // Prefer high-quality offline male voice (Pixel 9a has Google TTS installed)
                 val allVoices = tts?.voices?.filter { v ->
                     v.locale.language == "en" && v.locale.country in listOf("US", "GB")
                 } ?: emptyList()
@@ -92,15 +147,11 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
                 tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
                     override fun onStart(id: String) {}
                     override fun onDone(id: String) {
-                        viewModelScope.launch(Dispatchers.Main) {
-                            _voiceState.value = VoiceState.Idle
-                        }
+                        viewModelScope.launch(Dispatchers.Main) { _voiceState.value = VoiceState.Idle }
                     }
                     @Deprecated("Deprecated in Java")
                     override fun onError(id: String) {
-                        viewModelScope.launch(Dispatchers.Main) {
-                            _voiceState.value = VoiceState.Idle
-                        }
+                        viewModelScope.launch(Dispatchers.Main) { _voiceState.value = VoiceState.Idle }
                     }
                 })
                 ttsReady = true
@@ -108,9 +159,19 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         }
     }
 
-    private fun speak(text: String) {
-        if (!ttsReady) return
+    fun speak(text: String) {
+        if (!ttsReady || !prefs.autoSpeak) return
         tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, "skippy_response")
+    }
+
+    fun speakAlways(text: String) {
+        if (!ttsReady) return
+        tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, "skippy_forced")
+    }
+
+    fun stopSpeaking() {
+        tts?.stop()
+        _voiceState.value = VoiceState.Idle
     }
 
     // ── Apps ───────────────────────────────────────────────────────────────────
@@ -147,19 +208,224 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         }
     }
 
-    // ── System voice commands ──────────────────────────────────────────────────
-    // Returns true if the command was handled locally (no AI call needed).
-    // Handles: open, call, text, navigate, alarm, camera, settings, search.
+    // ── Feature data loading ───────────────────────────────────────────────────
+
+    fun loadMemories() {
+        if (prefs.skippyUrl.isBlank()) return
+        viewModelScope.launch {
+            _memoriesLoading.value = true
+            val result = SkippyRestApi.getMemories(prefs.skippyUrl)
+            _memories.value = result
+            _memoriesLoading.value = false
+        }
+    }
+
+    fun deleteMemory(id: String) {
+        viewModelScope.launch {
+            SkippyRestApi.deleteMemory(prefs.skippyUrl, id)
+            _memories.update { it.filter { m -> m.id != id } }
+        }
+    }
+
+    fun loadTodos() {
+        if (prefs.skippyUrl.isBlank()) return
+        viewModelScope.launch {
+            _todosLoading.value = true
+            val result = SkippyRestApi.getTodos(prefs.skippyUrl)
+            _todos.value = result
+            _todosLoading.value = false
+        }
+    }
+
+    fun toggleTodo(id: String, isDone: Boolean) {
+        viewModelScope.launch {
+            val updated = SkippyRestApi.toggleTodo(prefs.skippyUrl, id, isDone)
+            if (updated != null) {
+                _todos.update { list -> list.map { if (it.id == id) updated else it } }
+            }
+        }
+    }
+
+    fun loadReminders() {
+        if (prefs.skippyUrl.isBlank()) return
+        viewModelScope.launch {
+            _remindersLoading.value = true
+            val result = SkippyRestApi.getReminders(prefs.skippyUrl)
+            _reminders.value = result
+            _remindersLoading.value = false
+        }
+    }
+
+    fun toggleReminder(id: String, isDone: Boolean) {
+        viewModelScope.launch {
+            val updated = SkippyRestApi.toggleReminder(prefs.skippyUrl, id, isDone)
+            if (updated != null) {
+                _reminders.update { list -> list.map { if (it.id == id) updated else it } }
+            }
+        }
+    }
+
+    fun createReminder(content: String, dueDate: String?) {
+        viewModelScope.launch {
+            val created = SkippyRestApi.createReminder(prefs.skippyUrl, content, dueDate)
+            if (created != null) {
+                _reminders.update { listOf(created) + it }
+            }
+        }
+    }
+
+    fun deleteReminder(id: String) {
+        viewModelScope.launch {
+            SkippyRestApi.deleteReminder(prefs.skippyUrl, id)
+            _reminders.update { it.filter { r -> r.id != id } }
+        }
+    }
+
+    fun loadNotes() {
+        if (prefs.skippyUrl.isBlank()) return
+        viewModelScope.launch {
+            _notesLoading.value = true
+            val result = SkippyRestApi.getNotes(prefs.skippyUrl)
+            _notes.value = result
+            _notesLoading.value = false
+        }
+    }
+
+    fun createNote(title: String, content: String) {
+        viewModelScope.launch {
+            val created = SkippyRestApi.createNote(prefs.skippyUrl, title, content)
+            if (created != null) {
+                _notes.update { listOf(created) + it }
+            }
+        }
+    }
+
+    fun deleteNote(id: String) {
+        viewModelScope.launch {
+            SkippyRestApi.deleteNote(prefs.skippyUrl, id)
+            _notes.update { it.filter { n -> n.id != id } }
+        }
+    }
+
+    fun loadSummaries() {
+        if (prefs.skippyUrl.isBlank()) return
+        viewModelScope.launch {
+            val result = SkippyRestApi.getSummaries(prefs.skippyUrl)
+            _summaries.value = result
+        }
+    }
+
+    fun loadDebates() {
+        if (prefs.skippyUrl.isBlank()) return
+        viewModelScope.launch {
+            _debatesLoading.value = true
+            val result = SkippyRestApi.getDebates(prefs.skippyUrl)
+            _debates.value = result
+            _debatesLoading.value = false
+        }
+    }
+
+    fun loadDebateDetail(id: String) {
+        if (prefs.skippyUrl.isBlank()) return
+        viewModelScope.launch {
+            val detail = SkippyRestApi.getDebateDetail(prefs.skippyUrl, id)
+            _activeDebate.value = detail
+        }
+    }
+
+    fun createDebate(topic: String, stance: String?) {
+        if (prefs.skippyUrl.isBlank()) return
+        viewModelScope.launch {
+            _debatesLoading.value = true
+            val created = SkippyRestApi.createDebate(prefs.skippyUrl, topic, stance)
+            if (created != null) {
+                _debates.update { listOf(created) + it }
+                loadDebateDetail(created.id)
+            }
+            _debatesLoading.value = false
+        }
+    }
+
+    fun submitDebateArgument(debateId: String, argument: String) {
+        if (prefs.skippyUrl.isBlank()) return
+        viewModelScope.launch {
+            _debateSubmitting.value = true
+            val detail = SkippyRestApi.submitDebateRound(prefs.skippyUrl, debateId, argument)
+            if (detail != null) {
+                _activeDebate.value = detail
+                _debates.update { list ->
+                    list.map { if (it.id == debateId) detail.debate else it }
+                }
+                if (prefs.debateAutoRead) {
+                    val lastRound = detail.rounds.lastOrNull()
+                    if (lastRound != null) speakAlways(lastRound.aiArgument)
+                }
+            }
+            _debateSubmitting.value = false
+        }
+    }
+
+    fun clearActiveDebate() { _activeDebate.value = null }
+
+    fun loadConversations() {
+        if (prefs.skippyUrl.isBlank()) return
+        viewModelScope.launch {
+            val result = SkippyRestApi.getConversations(prefs.skippyUrl)
+            _conversations.value = result
+        }
+    }
+
+    fun loadLearnStats() {
+        if (prefs.skippyUrl.isBlank()) return
+        viewModelScope.launch {
+            val result = SkippyRestApi.getLearnStats(prefs.skippyUrl)
+            _learnStats.value = result
+        }
+    }
+
+    fun startLearnSession(mode: String = "adaptive") {
+        if (prefs.skippyUrl.isBlank()) return
+        viewModelScope.launch {
+            _learnLoading.value = true
+            val words = SkippyRestApi.getLearnSession(prefs.skippyUrl, mode)
+            _learnSession.value = words
+            _learnLoading.value = false
+        }
+    }
+
+    fun submitLearnAnswer(wordId: String, correct: Boolean, exerciseType: String, quality: Int) {
+        if (prefs.skippyUrl.isBlank()) return
+        viewModelScope.launch {
+            SkippyRestApi.submitLearnAnswer(prefs.skippyUrl, wordId, correct, exerciseType, quality)
+        }
+    }
+
+    fun loadUserStats() {
+        if (prefs.skippyUrl.isBlank()) return
+        viewModelScope.launch {
+            val result = SkippyRestApi.getUserStats(prefs.skippyUrl)
+            _userStats.value = result
+        }
+    }
+
+    // Bulk refresh for home page quick stats
+    fun refreshHomeData() {
+        loadMemories()
+        loadTodos()
+        loadReminders()
+        loadUserStats()
+        loadConversations()
+    }
+
+    // ── Voice commands ─────────────────────────────────────────────────────────
 
     fun handleVoiceCommand(text: String): Boolean {
         val lower = text.trim().lowercase()
         val ctx   = getApplication<Application>()
 
-        // open / launch / start <app>
         val openRx = Regex("""^(?:open|launch|start)\s+(.+)$""").find(lower)
         if (openRx != null && launchAppByName(openRx.groupValues[1].trim())) return true
 
-        // call / phone / dial <name>
         val callRx = Regex("""^(?:call|phone|dial)\s+(.+)$""").find(lower)
         if (callRx != null) {
             val name   = callRx.groupValues[1].trim()
@@ -169,7 +435,6 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
             return true
         }
 
-        // text / message / sms <name> [message body]
         val smsRx = Regex("""^(?:text|message|sms|msg)\s+(\S+)(?:\s+(.+))?$""").find(lower)
         if (smsRx != null) {
             val name   = smsRx.groupValues[1].trim()
@@ -184,7 +449,6 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
             return true
         }
 
-        // navigate / directions / take me to <place>
         val navRx = Regex("""^(?:navigate|directions?|take me|go)\s+(?:to\s+)?(.+)$""").find(lower)
         if (navRx != null) {
             val place = navRx.groupValues[1].trim()
@@ -195,7 +459,6 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
             return true
         }
 
-        // set alarm / wake me up [at/for] <time>
         val alarmRx = Regex("""^(?:set\s+(?:an?\s+)?alarm|wake me(?:\s+up)?)\s+(?:at\s+|for\s+)?(.+)$""").find(lower)
         if (alarmRx != null) {
             val (hour, min) = parseTime(alarmRx.groupValues[1].trim()) ?: (7 to 0)
@@ -208,25 +471,18 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
             return true
         }
 
-        // camera / take a photo / selfie
         if (lower.matches(Regex(".*\\b(?:camera|take (?:a )?photo|selfie|take (?:a )?picture)\\b.*"))) {
             if (!launchAppByName("camera")) {
-                runCatching {
-                    ctx.startActivity(
-                        Intent(MediaStore.ACTION_IMAGE_CAPTURE).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                    )
-                }
+                runCatching { ctx.startActivity(Intent(MediaStore.ACTION_IMAGE_CAPTURE).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
             }
             return true
         }
 
-        // settings
         if (lower.matches(Regex(".*\\bsettings\\b.*"))) {
             ctx.startActivity(Intent(Settings.ACTION_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
             return true
         }
 
-        // search / google <query>
         val searchRx = Regex("""^(?:search|google|look up|find)\s+(?:for\s+)?(.+)$""").find(lower)
         if (searchRx != null) {
             val query = searchRx.groupValues[1].trim()
@@ -265,21 +521,21 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         cursor.use { if (it.moveToFirst()) it.getString(0) else null }
     }.getOrNull()
 
-    // ── Skippy AI chat ─────────────────────────────────────────────────────────
+    // ── AI Chat ────────────────────────────────────────────────────────────────
 
     fun askSkippy(text: String) {
         if (_isLoading.value) return
         viewModelScope.launch {
             _isLoading.value = true
             _voiceState.value = VoiceState.Processing
-            _chatLog.update { (it + ChatEntry(role = "user", text = text)).takeLast(12) }
+            _chatLog.update { (it + ChatEntry(role = "user", text = text)).takeLast(40) }
             chatHistory.add(ChatMessage("user", text))
 
-            val reply = SkippyApi.chat(prefs.skippyUrl, chatHistory.toList())
+            val reply = SkippyApi.chat(prefs.skippyUrl, chatHistory.toList(), prefs.aiModel)
             chatHistory.add(ChatMessage("assistant", reply))
-            while (chatHistory.size > 20) chatHistory.removeAt(0)
+            while (chatHistory.size > 30) chatHistory.removeAt(0)
 
-            _chatLog.update { (it + ChatEntry(role = "skippy", text = reply)).takeLast(12) }
+            _chatLog.update { (it + ChatEntry(role = "skippy", text = reply)).takeLast(40) }
             _lastResponse.value = reply
             _isLoading.value = false
             _voiceState.value = VoiceState.Speaking
@@ -295,6 +551,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
 
     fun setVoiceState(state: VoiceState) { _voiceState.value = state }
     fun onSpeakDone() { _voiceState.value = VoiceState.Idle }
+    fun clearError() { _errorMessage.value = null }
 
     // ── Setup ──────────────────────────────────────────────────────────────────
 
@@ -309,6 +566,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
                 "com.google.android.apps.photos",
             )
         }
+        refreshHomeData()
     }
 
     fun launchApp(packageName: String) {
@@ -319,9 +577,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
     }
 
     fun launchAppByName(name: String): Boolean {
-        val app = _apps.value.firstOrNull {
-            it.name.lowercase().contains(name.lowercase())
-        } ?: return false
+        val app = _apps.value.firstOrNull { it.name.lowercase().contains(name.lowercase()) } ?: return false
         launchApp(app.packageName)
         return true
     }
@@ -331,5 +587,3 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         tts?.shutdown()
     }
 }
-
-
