@@ -311,6 +311,28 @@ object SkippyRestApi {
     suspend fun deleteNote(baseUrl: String, id: String): Boolean =
         delete("$baseUrl/api/notes/$id")
 
+    suspend fun updateNote(baseUrl: String, id: String, title: String, content: String): Note? {
+        val obj = patch("$baseUrl/api/notes/$id", JSONObject().put("title", title).put("content", content)) ?: return null
+        return runCatching {
+            val rawTags = obj.opt("tags")
+            val tags: List<String> = when (rawTags) {
+                is JSONArray -> rawTags.toStringList()
+                is String -> if (rawTags.startsWith("[")) JSONArray(rawTags).toStringList() else emptyList()
+                else -> emptyList()
+            }
+            Note(
+                id = obj.optString("id", id),
+                title = obj.optString("title", title),
+                content = obj.optString("content", content),
+                isPinned = obj.optBoolean("isPinned", false),
+                tags = tags,
+                wordCount = obj.optInt("wordCount", content.split(" ").size),
+                updatedAt = obj.optString("updatedAt", ""),
+                createdAt = obj.optString("createdAt", ""),
+            )
+        }.getOrNull()
+    }
+
     // ── Summaries ──────────────────────────────────────────────────────────────
 
     suspend fun getSummaries(baseUrl: String): List<Summary> {
@@ -426,6 +448,20 @@ object SkippyRestApi {
                     updatedAt = c.optString("updatedAt", ""),
                     createdAt = c.optString("createdAt", ""),
                 )
+            }.getOrNull()
+        }
+    }
+
+    suspend fun getConversationMessages(baseUrl: String, id: String): List<ChatMessage> {
+        val obj = get("$baseUrl/api/conversations/$id") ?: return emptyList()
+        val arr = obj.optJSONArray("messages") ?: obj.optJSONArray("history") ?: return emptyList()
+        return (0 until arr.length()).mapNotNull { i ->
+            runCatching {
+                val m = arr.getJSONObject(i)
+                val role = m.optString("role", "user")
+                val content = m.optString("content", "")
+                if (content.isBlank()) null
+                else ChatMessage(role = role, content = content)
             }.getOrNull()
         }
     }

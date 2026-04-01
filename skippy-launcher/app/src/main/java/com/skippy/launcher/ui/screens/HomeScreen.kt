@@ -34,11 +34,14 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.google.android.gms.location.LocationServices
 import com.skippy.launcher.R
+import com.skippy.launcher.data.AppInfo
 import com.skippy.launcher.ui.components.*
 import com.skippy.launcher.ui.theme.*
 import com.skippy.launcher.viewmodel.LauncherViewModel
 import com.skippy.launcher.viewmodel.VoiceState
 import kotlinx.coroutines.launch
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 
 // Page indices
 private const val PAGE_CHAT     = 0
@@ -308,8 +311,11 @@ fun HomeLandingPage(
     val reminders by viewModel.reminders.collectAsState()
     val memories  by viewModel.memories.collectAsState()
     val userStats by viewModel.userStats.collectAsState()
+    val homeApps  by viewModel.homeApps.collectAsState()
     val prefs     = viewModel.prefs
     var swipeOffset by remember { mutableFloatStateOf(0f) }
+    var editHomeApps by remember { mutableStateOf(false) }
+    var showDockEdit by remember { mutableStateOf(false) }
 
     // Robot float animation
     val floatAnim = rememberInfiniteTransition(label = "rf")
@@ -342,7 +348,7 @@ fun HomeLandingPage(
             modifier = Modifier
                 .fillMaxSize()
                 .statusBarsPadding()
-                .padding(bottom = 100.dp)
+                .padding(bottom = 140.dp)
                 .verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
@@ -417,6 +423,16 @@ fun HomeLandingPage(
 
             // ── Smart Search / Ask Skippy bar ─────────────────────────────
             SkippyWidget(viewModel = viewModel, compact = true)
+
+            // ── Quick-launch apps grid (up to 8, customisable) ────────────
+            HomeAppsSection(
+                homeApps     = homeApps,
+                allApps      = apps,
+                editMode     = editHomeApps,
+                onToggleEdit = { editHomeApps = !editHomeApps },
+                onLaunch     = { pkg -> if (!editHomeApps) viewModel.launchApp(pkg) },
+                onRemove     = { pkg -> viewModel.updateHomeApps(homeApps.filter { it != pkg }) },
+            )
 
             // ── Quick stats strip ─────────────────────────────────────────
             val pendingTodos      = todos.count { !it.isDone }
@@ -571,6 +587,32 @@ fun HomeLandingPage(
             Spacer(Modifier.height(8.dp))
         }
 
+        // ── App picker overlay ────────────────────────────────────────────
+        AnimatedVisibility(
+            visible  = editHomeApps,
+            enter    = fadeIn(tween(180)) + slideInVertically(tween(250)) { it / 2 },
+            exit     = fadeOut(tween(180)) + slideOutVertically(tween(250)) { it / 2 },
+            modifier = Modifier.fillMaxSize(),
+        ) {
+            AppPickerSheet(
+                homeApps      = homeApps,
+                allApps       = apps,
+                usageCounts   = remember(prefs.appUsageCounts) {
+                    prefs.appUsageCounts.split(",").mapNotNull {
+                        val p = it.split("="); if (p.size == 2) p[0] to (p[1].toIntOrNull() ?: 0) else null
+                    }.toMap()
+                },
+                sheetTitle    = "Choose Quick Apps",
+                sheetSubtitle = "${homeApps.size}/12 · tap to toggle",
+                maxItems      = 12,
+                onDismiss     = { editHomeApps = false },
+                onToggle      = { pkg ->
+                    if (homeApps.contains(pkg)) viewModel.updateHomeApps(homeApps.filter { it != pkg })
+                    else if (homeApps.size < 12) viewModel.updateHomeApps(homeApps + pkg)
+                },
+            )
+        }
+
         // ── Fixed bottom dock ─────────────────────────────────────────────
         AppDock(
             apps           = apps,
@@ -578,8 +620,32 @@ fun HomeLandingPage(
             onAppClick     = { pkg -> viewModel.launchApp(pkg) },
             onDrawerClick  = onOpenDrawer,
             pendingCount   = todos.count { !it.isDone },
+            onEditDock     = { showDockEdit = true },
             modifier       = Modifier.align(Alignment.BottomCenter),
         )
+
+        // ── Dock edit overlay ─────────────────────────────────────────────
+        AnimatedVisibility(
+            visible  = showDockEdit,
+            enter    = fadeIn(tween(180)) + slideInVertically(tween(250)) { it / 2 },
+            exit     = fadeOut(tween(180)) + slideOutVertically(tween(250)) { it / 2 },
+            modifier = Modifier.fillMaxSize(),
+        ) {
+            AppPickerSheet(
+                homeApps    = viewModel.prefs.pinnedApps,
+                allApps     = apps,
+                usageCounts = remember(prefs.appUsageCounts) {
+                    prefs.appUsageCounts.split(",").mapNotNull {
+                        val p = it.split("="); if (p.size == 2) p[0] to (p[1].toIntOrNull() ?: 0) else null
+                    }.toMap()
+                },
+                sheetTitle  = "Edit Dock",
+                sheetSubtitle = "${viewModel.prefs.pinnedApps.size} pinned · tap to pin/unpin",
+                maxItems    = 6,
+                onDismiss   = { showDockEdit = false },
+                onToggle    = { pkg -> viewModel.togglePinApp(pkg) },
+            )
+        }
     }
 }
 
@@ -657,3 +723,242 @@ private fun StatPill(icon: String, value: String, label: String) {
         Text(label, color = WhiteMuted, fontSize = 10.sp)
     }
 }
+
+// ── Home Quick-launch Apps ──────────────────────────────────────────────────
+
+@Composable
+private fun HomeAppsSection(
+    homeApps: List<String>,
+    allApps: List<AppInfo>,
+    editMode: Boolean,
+    onToggleEdit: () -> Unit,
+    onLaunch: (String) -> Unit,
+    onRemove: (String) -> Unit,
+) {
+    val appsMap = remember(allApps) { allApps.associateBy { it.packageName } }
+    val appInfos = remember(homeApps, appsMap) { homeApps.mapNotNull { appsMap[it] } }
+
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp),
+        shape  = RoundedCornerShape(16.dp),
+        color  = NavyCard,
+        border = BorderStroke(1.dp, CyanGlow.copy(alpha = 0.25f)),
+    ) {
+        Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            // Header
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text("⚡", fontSize = 14.sp)
+                    Text("Quick Apps", color = CyanPrimary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                    Text("${homeApps.size}/12", color = WhiteMuted.copy(alpha = 0.45f), fontSize = 11.sp)
+                }
+                TextButton(
+                    onClick = onToggleEdit,
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+                ) {
+                    Icon(
+                        if (editMode) Icons.Default.Check else Icons.Default.Edit,
+                        null,
+                        tint = if (editMode) CyanPrimary else WhiteMuted.copy(alpha = 0.6f),
+                        modifier = Modifier.size(14.dp),
+                    )
+                    Spacer(Modifier.width(4.dp))
+                    Text(
+                        if (editMode) "Done" else "Edit",
+                        color = if (editMode) CyanPrimary else WhiteMuted.copy(alpha = 0.6f),
+                        fontSize = 11.sp,
+                    )
+                }
+            }
+
+            if (appInfos.isEmpty()) {
+                Box(
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 12.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text("📱", fontSize = 24.sp)
+                        Text("Tap Edit to add up to 12 quick-launch apps", color = WhiteMuted, fontSize = 12.sp)
+                    }
+                }
+            } else {
+                // 4-column grid
+                val rows = appInfos.chunked(4)
+                rows.forEach { row ->
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
+                        row.forEach { app ->
+                            Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.TopEnd) {
+                                AppIconItem(
+                                    app = app,
+                                    iconSize = 48.dp,
+                                    onClick = { onLaunch(app.packageName) },
+                                )
+                                if (editMode) {
+                                    Box(
+                                        modifier = Modifier
+                                            .offset(x = (-2).dp, y = 2.dp)
+                                            .size(18.dp)
+                                            .clip(CircleShape)
+                                            .background(Color(0xFFEF4444))
+                                            .clickable { onRemove(app.packageName) },
+                                        contentAlignment = Alignment.Center,
+                                    ) {
+                                        Icon(Icons.Default.Close, null, tint = Color.White, modifier = Modifier.size(10.dp))
+                                    }
+                                }
+                            }
+                        }
+                        // Fill remaining slots with empty weight boxes
+                        repeat(4 - row.size) { Spacer(Modifier.weight(1f)) }
+                    }
+                }
+            }
+
+            // Add more button in edit mode when < 8 apps
+            if (editMode && homeApps.size < 12) {
+                OutlinedButton(
+                    onClick = onToggleEdit, // tapping "Edit" again dismisses and shows picker via parent
+                    modifier = Modifier.fillMaxWidth(),
+                    border = BorderStroke(1.dp, CyanPrimary.copy(alpha = 0.4f)),
+                    shape  = RoundedCornerShape(10.dp),
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = CyanPrimary),
+                    contentPadding = PaddingValues(vertical = 8.dp),
+                ) {
+                    Icon(Icons.Default.Add, null, modifier = Modifier.size(14.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("Add apps (${12 - homeApps.size} slots left)", fontSize = 12.sp)
+                }
+            }
+        }
+    }
+}
+
+// ── App Picker Sheet ────────────────────────────────────────────────────────
+
+@Composable
+private fun AppPickerSheet(
+    homeApps: List<String>,
+    allApps: List<AppInfo>,
+    usageCounts: Map<String, Int>,
+    sheetTitle: String = "Choose Apps",
+    sheetSubtitle: String = "${homeApps.size} selected · tap to toggle",
+    maxItems: Int = 12,
+    onDismiss: () -> Unit,
+    onToggle: (String) -> Unit,
+) {
+    var searchQuery by remember { mutableStateOf("") }
+    val sortedApps = remember(allApps, usageCounts) {
+        allApps.sortedWith(compareByDescending<AppInfo> { usageCounts[it.packageName] ?: 0 }.thenBy { it.name.lowercase() })
+    }
+    val filtered = remember(searchQuery, sortedApps) {
+        if (searchQuery.isBlank()) sortedApps
+        else sortedApps.filter { it.name.contains(searchQuery, ignoreCase = true) }
+    }
+
+    Surface(
+        modifier = Modifier.fillMaxSize(),
+        color = NavyDeep.copy(alpha = 0.98f),
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .statusBarsPadding()
+                .padding(horizontal = 16.dp),
+        ) {
+            // Header
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 60.dp, bottom = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Column {
+                    Text(sheetTitle, fontSize = 20.sp, fontWeight = FontWeight.Bold, color = WhiteText)
+                    Text(sheetSubtitle, fontSize = 12.sp, color = WhiteMuted)
+                }
+                IconButton(onClick = onDismiss) {
+                    Icon(Icons.Default.Close, "Close", tint = WhiteMuted, modifier = Modifier.size(22.dp))
+                }
+            }
+
+            // Search
+            OutlinedTextField(
+                value = searchQuery,
+                onValueChange = { searchQuery = it },
+                placeholder = { Text("Search apps…", color = WhiteDim, fontSize = 13.sp) },
+                modifier = Modifier.fillMaxWidth(),
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedBorderColor = CyanPrimary, unfocusedBorderColor = CyanGlow,
+                    focusedTextColor = WhiteText, unfocusedTextColor = WhiteText,
+                    cursorColor = CyanPrimary,
+                    focusedContainerColor = NavyDeep.copy(alpha = 0.3f),
+                    unfocusedContainerColor = NavyDeep.copy(alpha = 0.3f),
+                ),
+                shape = RoundedCornerShape(12.dp),
+                singleLine = true,
+                leadingIcon = { Icon(Icons.Default.Search, null, tint = WhiteMuted, modifier = Modifier.size(18.dp)) },
+                trailingIcon = {
+                    if (searchQuery.isNotBlank()) {
+                        IconButton(onClick = { searchQuery = "" }) {
+                            Icon(Icons.Default.Clear, null, tint = WhiteMuted, modifier = Modifier.size(16.dp))
+                        }
+                    }
+                },
+            )
+
+            Spacer(Modifier.height(12.dp))
+
+            LazyColumn(
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+                contentPadding = PaddingValues(bottom = 80.dp),
+            ) {
+                items(filtered, key = { it.packageName }) { app ->
+                    val isSelected = homeApps.contains(app.packageName)
+                    val canAdd = homeApps.size < maxItems || isSelected
+                    Surface(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable(enabled = canAdd) { onToggle(app.packageName) },
+                        shape  = RoundedCornerShape(12.dp),
+                        color  = if (isSelected) CyanPrimary.copy(alpha = 0.12f) else NavyCard,
+                        border = BorderStroke(1.dp, if (isSelected) CyanPrimary.copy(alpha = 0.5f) else SurfaceBorder),
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        ) {
+                            DrawableImage(
+                                drawable = app.icon, contentDescription = app.name,
+                                modifier = Modifier.size(40.dp).clip(RoundedCornerShape(10.dp)),
+                            )
+                            Text(
+                                app.name, color = if (isSelected) CyanPrimary else WhiteText,
+                                fontSize = 14.sp, fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
+                                modifier = Modifier.weight(1f),
+                            )
+                            if (isSelected) {
+                                Icon(Icons.Default.CheckCircle, "Selected", tint = CyanPrimary, modifier = Modifier.size(20.dp))
+                            } else if (!canAdd) {
+                                Text("Full", color = WhiteMuted.copy(alpha = 0.4f), fontSize = 11.sp)
+                            } else {
+                                Icon(Icons.Default.AddCircleOutline, "Add", tint = WhiteMuted.copy(alpha = 0.4f), modifier = Modifier.size(20.dp))
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+

@@ -114,6 +114,17 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
     private val _conversations = MutableStateFlow<List<ConversationSummary>>(emptyList())
     val conversations: StateFlow<List<ConversationSummary>> = _conversations.asStateFlow()
 
+    private val _conversationsLoading = MutableStateFlow(false)
+    val conversationsLoading: StateFlow<Boolean> = _conversationsLoading.asStateFlow()
+
+    // ── Local launcher intelligence (never sent to Skippy API) ─────────────────
+
+    private val _homeApps = MutableStateFlow<List<String>>(emptyList())
+    val homeApps: StateFlow<List<String>> = _homeApps.asStateFlow()
+
+    private val _searchHistory = MutableStateFlow<List<String>>(emptyList())
+    val searchHistory: StateFlow<List<String>> = _searchHistory.asStateFlow()
+
     private val _learnStats = MutableStateFlow<LearnStatsResponse?>(null)
     val learnStats: StateFlow<LearnStatsResponse?> = _learnStats.asStateFlow()
 
@@ -148,13 +159,24 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
             SkippyRestApi.sessionCookie = prefs.sessionCookie
             _isAuthenticated.value = true
         }
-        // Background periodic sync every 5 minutes
+        // Initialize home apps — pre-populate with pinned apps on first run
+        _homeApps.value = if (prefs.homeApps.isEmpty() && prefs.pinnedApps.isNotEmpty()) {
+            val defaults = prefs.pinnedApps.take(12)
+            prefs.homeApps = defaults
+            defaults
+        } else prefs.homeApps
+        // Load local search history
+        _searchHistory.value = prefs.searchHistory
+        // Background periodic sync every 3 minutes — covers all data types
         viewModelScope.launch {
             while (true) {
-                kotlinx.coroutines.delay(5 * 60 * 1000L)
+                kotlinx.coroutines.delay(3 * 60 * 1000L)
                 if (_isAuthenticated.value) {
                     loadTodos()
                     loadReminders()
+                    loadNotes()
+                    loadMemories()
+                    loadConversations()
                     loadUserStats()
                 }
             }
@@ -350,6 +372,17 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         }
     }
 
+    fun updateNote(id: String, title: String, content: String) {
+        // Optimistic update
+        _notes.update { list -> list.map { if (it.id == id) it.copy(title = title, content = content) else it } }
+        viewModelScope.launch {
+            val updated = SkippyRestApi.updateNote(prefs.skippyUrl, id, title, content)
+            if (updated != null) {
+                _notes.update { list -> list.map { if (it.id == id) updated else it } }
+            }
+        }
+    }
+
     fun loadSummaries() {
         if (prefs.skippyUrl.isBlank()) return
         viewModelScope.launch {
@@ -413,8 +446,10 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
     fun loadConversations() {
         if (prefs.skippyUrl.isBlank()) return
         viewModelScope.launch {
+            _conversationsLoading.value = true
             val result = SkippyRestApi.getConversations(prefs.skippyUrl)
             _conversations.value = result
+            _conversationsLoading.value = false
         }
     }
 
@@ -598,14 +633,15 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
 
     // ── AI Chat ────────────────────────────────────────────────────────────────
 
-    fun askSkippy(text: String) {
+    fun askSkippy(text: String, enableVoice: Boolean = prefs.autoSpeak) {
         if (_isLoading.value) return
         viewModelScope.launch {
             _isLoading.value = true
-            _voiceState.value = VoiceState.Processing
+            if (enableVoice) _voiceState.value = VoiceState.Processing
             _streamingText.value = ""
             _chatLog.update { (it + ChatEntry(role = "user", text = text)).takeLast(40) }
             chatHistory.add(ChatMessage("user", text))
+            addSearchHistory(text.take(80)) // Track locally for smart suggestions
 
             // Ensure we have a conversation ID so messages sync to server memories
             if (currentConversationId == null) {
@@ -620,7 +656,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
                 onChunk = { chunk ->
                     viewModelScope.launch(Dispatchers.Main) {
                         _streamingText.value += chunk
-                        _voiceState.value = VoiceState.Speaking
+                        if (enableVoice) _voiceState.value = VoiceState.Speaking
                     }
                 },
             )
@@ -644,8 +680,8 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
             _chatLog.update { (it + ChatEntry(role = "skippy", text = reply)).takeLast(40) }
             _lastResponse.value = reply
             _isLoading.value = false
-            _voiceState.value = VoiceState.Speaking
-            speak(reply)
+            _voiceState.value = if (enableVoice) VoiceState.Speaking else VoiceState.Idle
+            if (enableVoice) speak(reply)
 
             // Refresh todos/reminders after chat — Skippy may have created some
             loadTodos()
@@ -666,12 +702,27 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         chatHistory.clear()
         currentConversationId = id
         _streamingText.value = ""
+        // Show a loading placeholder immediately
         _chatLog.value = listOf(
-            ChatEntry(
-                role = "skippy",
-                text = "💬 Continuing ${title ?: "your conversation"}. What would you like to say?",
-            )
+            ChatEntry(role = "skippy", text = "💬 Loading ${title ?: "conversation"}…")
         )
+        viewModelScope.launch {
+            val messages = SkippyRestApi.getConversationMessages(prefs.skippyUrl, id)
+            if (messages.isNotEmpty()) {
+                // Restore chat history for context
+                chatHistory.addAll(messages)
+                _chatLog.value = messages.map {
+                    ChatEntry(
+                        role = if (it.role == "assistant") "skippy" else it.role,
+                        text = it.content,
+                    )
+                }
+            } else {
+                _chatLog.value = listOf(
+                    ChatEntry(role = "skippy", text = "💬 Continuing ${title ?: "your conversation"}. What would you like to say?")
+                )
+            }
+        }
     }
 
     fun setVoiceState(state: VoiceState) { _voiceState.value = state }
@@ -748,6 +799,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         ctx.packageManager.getLaunchIntentForPackage(packageName)
             ?.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             ?.let { ctx.startActivity(it) }
+        trackAppUsage(packageName)
     }
 
     fun launchAppByName(name: String): Boolean {
@@ -763,6 +815,35 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
     }
 
     fun refreshApps() { loadApps() }
+
+    // ── Local launcher intelligence ────────────────────────────────────────────
+
+    fun updateHomeApps(packages: List<String>) {
+        val cleaned = packages.take(12)
+        prefs.homeApps = cleaned
+        _homeApps.value = cleaned
+    }
+
+    fun addSearchHistory(query: String) {
+        if (query.isBlank() || query.length < 2) return
+        val current = prefs.searchHistory.toMutableList()
+        current.remove(query)
+        current.add(0, query)
+        val updated = current.take(20)
+        prefs.searchHistory = updated
+        _searchHistory.value = updated
+    }
+
+    fun trackAppUsage(packageName: String) {
+        val raw = prefs.appUsageCounts
+        val counts = if (raw.isBlank()) mutableMapOf()
+        else raw.split(",").mapNotNull {
+            val p = it.split("=")
+            if (p.size == 2) p[0] to (p[1].toIntOrNull() ?: 0) else null
+        }.toMap().toMutableMap()
+        counts[packageName] = (counts[packageName] ?: 0) + 1
+        prefs.appUsageCounts = counts.entries.joinToString(",") { "${it.key}=${it.value}" }
+    }
 
     override fun onCleared() {
         super.onCleared()

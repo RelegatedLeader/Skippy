@@ -50,6 +50,8 @@ import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.AnnotatedString
 import com.skippy.launcher.R
+import com.skippy.launcher.ui.components.MarkdownText
+import androidx.compose.ui.text.input.KeyboardCapitalization
 
 @Composable
 fun ChatPage(viewModel: LauncherViewModel) {
@@ -59,10 +61,12 @@ fun ChatPage(viewModel: LauncherViewModel) {
     val isLoading     by viewModel.isLoading.collectAsState()
     val streamingText by viewModel.streamingText.collectAsState()
     val conversations by viewModel.conversations.collectAsState()
+    val conversationsLoading by viewModel.conversationsLoading.collectAsState()
     val keyboard      = LocalSoftwareKeyboardController.current
     val listState     = rememberLazyListState()
     var textInput     by remember { mutableStateOf("") }
     var showHistory   by remember { mutableStateOf(false) }
+    var callModeEnabled by remember { mutableStateOf(false) }
 
     val speechRecognizer = remember { SpeechRecognizer.createSpeechRecognizer(context) }
     DisposableEffect(Unit) { onDispose { speechRecognizer.destroy() } }
@@ -107,7 +111,8 @@ fun ChatPage(viewModel: LauncherViewModel) {
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .statusBarsPadding(),
+                .statusBarsPadding()
+                .imePadding(), // pushes input bar above keyboard
         ) {
             // ── Header ─────────────────────────────────────────────────────────
             Row(
@@ -189,9 +194,24 @@ fun ChatPage(viewModel: LauncherViewModel) {
                             Icon(Icons.Default.DeleteOutline, "Clear", tint = WhiteMuted.copy(alpha = 0.6f), modifier = Modifier.size(20.dp))
                         }
                     }
+                    // Voice / call-mode toggle — separates text chat from voice call
+                    IconButton(onClick = {
+                        callModeEnabled = !callModeEnabled
+                        if (!callModeEnabled) viewModel.stopSpeaking()
+                    }) {
+                        Icon(
+                            imageVector = if (callModeEnabled) Icons.Default.PhoneInTalk else Icons.Default.Phone,
+                            contentDescription = "Voice mode",
+                            tint = if (callModeEnabled) CyanPrimary else WhiteMuted.copy(alpha = 0.45f),
+                            modifier = Modifier.size(20.dp),
+                        )
+                    }
                     // History button with badge if conversations exist
                     Box {
-                        IconButton(onClick = { showHistory = !showHistory }) {
+                        IconButton(onClick = {
+                            if (!showHistory) viewModel.loadConversations()
+                            showHistory = !showHistory
+                        }) {
                             Icon(Icons.Default.History, "History", tint = if (showHistory) CyanPrimary else WhiteMuted.copy(alpha = 0.6f), modifier = Modifier.size(20.dp))
                         }
                         if (conversations.isNotEmpty()) {
@@ -296,10 +316,10 @@ fun ChatPage(viewModel: LauncherViewModel) {
                                         border = BorderStroke(1.dp, CyanPrimary.copy(alpha = 0.3f)),
                                         modifier = Modifier.widthIn(max = 280.dp),
                                     ) {
-                                        Text(
+                                        MarkdownText(
                                             text = streamingText + "▌",
                                             modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
-                                            color = WhiteText, fontSize = 14.sp, lineHeight = 20.sp,
+                                            baseColor = WhiteText, fontSize = 14.sp, lineHeight = 20.sp,
                                         )
                                     }
                                 }
@@ -329,81 +349,89 @@ fun ChatPage(viewModel: LauncherViewModel) {
             // ── Input bar ──────────────────────────────────────────────────────
             Surface(
                 modifier = Modifier.fillMaxWidth(),
-                color    = NavyDeep.copy(alpha = 0.95f),
+                color    = NavyDeep.copy(alpha = 0.97f),
                 tonalElevation = 0.dp,
             ) {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
                         .navigationBarsPadding()
-                        .padding(horizontal = 12.dp, vertical = 10.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.Bottom,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    // Mic button
-                    Box(
-                        modifier = Modifier
-                            .size(46.dp)
-                            .scale(if (voiceState is VoiceState.Listening) pulseScale else 1f)
-                            .clip(CircleShape)
-                            .background(
-                                when (voiceState) {
-                                    is VoiceState.Listening -> ListeningRed.copy(alpha = 0.25f)
-                                    is VoiceState.Speaking  -> CyanPrimary.copy(alpha = 0.2f)
-                                    else                    -> NavyMid
-                                }
-                            )
-                            .border(1.5.dp,
-                                when (voiceState) {
-                                    is VoiceState.Listening -> ListeningRed
-                                    is VoiceState.Speaking  -> CyanPrimary
-                                    else                    -> CyanGlow
-                                }, CircleShape)
-                            .clickable {
-                                when (voiceState) {
-                                    is VoiceState.Listening -> {
-                                        speechRecognizer.stopListening()
-                                        viewModel.setVoiceState(VoiceState.Idle)
+                    // Mic button — only visible in voice/call mode
+                    AnimatedVisibility(
+                        visible = callModeEnabled,
+                        enter = fadeIn() + scaleIn(),
+                        exit  = fadeOut() + scaleOut(),
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(44.dp)
+                                .scale(if (voiceState is VoiceState.Listening) pulseScale else 1f)
+                                .clip(CircleShape)
+                                .background(
+                                    when (voiceState) {
+                                        is VoiceState.Listening -> ListeningRed.copy(alpha = 0.25f)
+                                        is VoiceState.Speaking  -> CyanPrimary.copy(alpha = 0.2f)
+                                        else                    -> NavyMid
                                     }
-                                    is VoiceState.Speaking -> viewModel.stopSpeaking()
-                                    else -> {
-                                        if (context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
-                                            startChatListening(speechRecognizer, viewModel)
-                                        } else {
-                                            micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                                )
+                                .border(1.5.dp,
+                                    when (voiceState) {
+                                        is VoiceState.Listening -> ListeningRed
+                                        is VoiceState.Speaking  -> CyanPrimary
+                                        else                    -> CyanGlow
+                                    }, CircleShape)
+                                .clickable {
+                                    when (voiceState) {
+                                        is VoiceState.Listening -> {
+                                            speechRecognizer.stopListening()
+                                            viewModel.setVoiceState(VoiceState.Idle)
+                                        }
+                                        is VoiceState.Speaking -> viewModel.stopSpeaking()
+                                        else -> {
+                                            if (context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+                                                startChatListening(speechRecognizer, viewModel)
+                                            } else {
+                                                micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                                            }
                                         }
                                     }
-                                }
-                            },
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Icon(
-                            imageVector = when (voiceState) {
-                                is VoiceState.Listening, is VoiceState.Speaking -> Icons.Default.Stop
-                                else -> Icons.Default.Mic
-                            },
-                            contentDescription = "Voice",
-                            tint = when (voiceState) {
-                                is VoiceState.Listening -> ListeningRed
-                                is VoiceState.Speaking  -> CyanPrimary
-                                else                    -> WhiteText
-                            },
-                            modifier = Modifier.size(22.dp),
-                        )
+                                },
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Icon(
+                                imageVector = when (voiceState) {
+                                    is VoiceState.Listening, is VoiceState.Speaking -> Icons.Default.Stop
+                                    else -> Icons.Default.Mic
+                                },
+                                contentDescription = "Voice",
+                                tint = when (voiceState) {
+                                    is VoiceState.Listening -> ListeningRed
+                                    is VoiceState.Speaking  -> CyanPrimary
+                                    else                    -> WhiteText
+                                },
+                                modifier = Modifier.size(22.dp),
+                            )
+                        }
                     }
 
-                    // Text field
+                    // Text field — multiline, grows up to 5 lines
                     OutlinedTextField(
                         value = textInput,
                         onValueChange = { textInput = it },
                         placeholder = {
                             Text(
-                                text = when (voiceState) {
-                                    is VoiceState.Listening  -> "Listening…"
-                                    is VoiceState.Processing -> "Thinking…"
-                                    is VoiceState.Speaking   -> "Speaking…"
-                                    else                     -> "Message Skippy…"
-                                },
+                                text = if (callModeEnabled) {
+                                    when (voiceState) {
+                                        is VoiceState.Listening  -> "Listening…"
+                                        is VoiceState.Processing -> "Thinking…"
+                                        is VoiceState.Speaking   -> "Speaking…"
+                                        else                     -> "Say something or type…"
+                                    }
+                                } else "Message Skippy…",
                                 color = WhiteDim, fontSize = 14.sp,
                             )
                         },
@@ -418,22 +446,25 @@ fun ChatPage(viewModel: LauncherViewModel) {
                             unfocusedContainerColor = NavyDeep.copy(alpha = 0.3f),
                         ),
                         shape = RoundedCornerShape(14.dp),
-                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
-                        keyboardActions = KeyboardActions(onSend = {
-                            if (textInput.isNotBlank()) {
-                                viewModel.askSkippy(textInput.trim())
-                                textInput = ""
-                                keyboard?.hide()
-                            }
-                        }),
-                        singleLine = true,
-                        enabled = voiceState is VoiceState.Idle || voiceState is VoiceState.Speaking,
+                        keyboardOptions = KeyboardOptions(
+                            imeAction = ImeAction.Default,
+                            capitalization = KeyboardCapitalization.Sentences,
+                        ),
+                        minLines = 1,
+                        maxLines = 5,
+                        enabled = if (callModeEnabled) {
+                            voiceState is VoiceState.Idle || voiceState is VoiceState.Speaking
+                        } else !isLoading,
                     )
 
-                    AnimatedVisibility(visible = textInput.isNotBlank()) {
+                    AnimatedVisibility(
+                        visible = textInput.isNotBlank(),
+                        enter = fadeIn() + scaleIn(),
+                        exit  = fadeOut() + scaleOut(),
+                    ) {
                         IconButton(onClick = {
                             if (textInput.isNotBlank()) {
-                                viewModel.askSkippy(textInput.trim())
+                                viewModel.askSkippy(textInput.trim(), enableVoice = callModeEnabled)
                                 textInput = ""
                                 keyboard?.hide()
                             }
@@ -454,6 +485,7 @@ fun ChatPage(viewModel: LauncherViewModel) {
         ) {
             ConversationHistoryPanel(
                 conversations = conversations,
+                isLoading = conversationsLoading,
                 onDismiss = { showHistory = false },
                 onResume  = { id, title ->
                     viewModel.resumeConversation(id, title)
@@ -519,13 +551,21 @@ private fun ChatBubble(entry: ChatEntry) {
                     },
                 ),
         ) {
-            Text(
-                text = entry.text,
-                modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
-                color    = WhiteText,
-                fontSize = 14.sp,
-                lineHeight = 20.sp,
-            )
+            if (isUser) {
+                Text(
+                    text = entry.text,
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                    color    = WhiteText,
+                    fontSize = 14.sp,
+                    lineHeight = 20.sp,
+                )
+            } else {
+                MarkdownText(
+                    text = entry.text,
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                    baseColor = WhiteText, fontSize = 14.sp, lineHeight = 20.sp,
+                )
+            }
         }
     }
 }
@@ -533,6 +573,7 @@ private fun ChatBubble(entry: ChatEntry) {
 @Composable
 private fun ConversationHistoryPanel(
     conversations: List<ConversationSummary>,
+    isLoading: Boolean = false,
     onDismiss: () -> Unit,
     onResume: (String, String?) -> Unit = { _, _ -> },
     onNewChat: () -> Unit = {},
@@ -561,7 +602,7 @@ private fun ConversationHistoryPanel(
                         fontSize = 20.sp, fontWeight = FontWeight.Bold, color = WhiteText,
                     )
                     Text(
-                        "${conversations.size} conversations",
+                        if (isLoading) "Loading…" else "${conversations.size} conversations",
                         fontSize = 12.sp, color = WhiteMuted,
                     )
                 }
@@ -591,101 +632,112 @@ private fun ConversationHistoryPanel(
             HorizontalDivider(color = SurfaceBorder)
             Spacer(Modifier.height(10.dp))
 
-            if (conversations.isEmpty()) {
-                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Column(
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.spacedBy(12.dp),
-                    ) {
-                        Text("💬", fontSize = 48.sp)
-                        Text(
-                            "No conversations yet",
-                            fontSize = 18.sp, color = WhiteText, fontWeight = FontWeight.Medium,
-                        )
-                        Text(
-                            "Start a chat with Skippy!",
-                            fontSize = 14.sp, color = WhiteMuted,
-                        )
-                        Spacer(Modifier.height(8.dp))
-                        Button(
-                            onClick = onDismiss,
-                            colors = ButtonDefaults.buttonColors(containerColor = CyanPrimary, contentColor = NavyDeep),
-                            shape = RoundedCornerShape(12.dp),
-                        ) {
-                            Icon(Icons.AutoMirrored.Filled.Chat, null, modifier = Modifier.size(16.dp))
-                            Spacer(Modifier.width(6.dp))
-                            Text("Start Chatting", fontWeight = FontWeight.Bold)
+            when {
+                isLoading -> {
+                    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                            CircularProgressIndicator(color = CyanPrimary, modifier = Modifier.size(36.dp), strokeWidth = 2.dp)
+                            Text("Loading conversations…", color = WhiteMuted, fontSize = 14.sp)
                         }
                     }
                 }
-            } else {
-                LazyColumn(
-                    verticalArrangement = Arrangement.spacedBy(10.dp),
-                    contentPadding = PaddingValues(bottom = 80.dp),
-                ) {
-                    items(conversations, key = { it.id }) { conv ->
-                        Surface(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable { onResume(conv.id, conv.title) },
-                            shape  = RoundedCornerShape(14.dp),
-                            color  = NavyCard,
-                            border = BorderStroke(1.dp, SurfaceBorder),
+                conversations.isEmpty() -> {
+                    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(12.dp),
                         ) {
-                            Row(
-                                modifier = Modifier.padding(14.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                            Text("💬", fontSize = 48.sp)
+                            Text(
+                                "No conversations yet",
+                                fontSize = 18.sp, color = WhiteText, fontWeight = FontWeight.Medium,
+                            )
+                            Text(
+                                "Start a chat with Skippy!",
+                                fontSize = 14.sp, color = WhiteMuted,
+                            )
+                            Spacer(Modifier.height(8.dp))
+                            Button(
+                                onClick = onDismiss,
+                                colors = ButtonDefaults.buttonColors(containerColor = CyanPrimary, contentColor = NavyDeep),
+                                shape = RoundedCornerShape(12.dp),
                             ) {
-                                Box(
-                                    modifier = Modifier
-                                        .size(40.dp)
-                                        .clip(CircleShape)
-                                        .background(CyanDim)
-                                        .border(1.dp, CyanGlow, CircleShape),
-                                    contentAlignment = Alignment.Center,
+                                Icon(Icons.AutoMirrored.Filled.Chat, null, modifier = Modifier.size(16.dp))
+                                Spacer(Modifier.width(6.dp))
+                                Text("Start Chatting", fontWeight = FontWeight.Bold)
+                            }
+                        }
+                    }
+                }
+                else -> {
+                    LazyColumn(
+                        verticalArrangement = Arrangement.spacedBy(10.dp),
+                        contentPadding = PaddingValues(bottom = 80.dp),
+                    ) {
+                        items(conversations, key = { it.id }) { conv ->
+                            Surface(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable { onResume(conv.id, conv.title) },
+                                shape  = RoundedCornerShape(14.dp),
+                                color  = NavyCard,
+                                border = BorderStroke(1.dp, SurfaceBorder),
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(14.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(12.dp),
                                 ) {
-                                    Image(
-                                        painter = painterResource(R.drawable.skippy_robot),
-                                        contentDescription = null,
-                                        modifier = Modifier.size(24.dp),
-                                        contentScale = ContentScale.Fit,
-                                    )
-                                }
-                                Column(modifier = Modifier.weight(1f)) {
-                                    Text(
-                                        text  = conv.title ?: "Conversation",
-                                        color = WhiteText, fontSize = 14.sp, fontWeight = FontWeight.Medium,
-                                        maxLines = 1,
-                                    )
-                                    if (!conv.lastMessage.isNullOrBlank()) {
-                                        Text(
-                                            text     = conv.lastMessage,
-                                            color    = WhiteMuted, fontSize = 12.sp, maxLines = 1,
-                                            modifier = Modifier.padding(top = 2.dp),
+                                    Box(
+                                        modifier = Modifier
+                                            .size(40.dp)
+                                            .clip(CircleShape)
+                                            .background(CyanDim)
+                                            .border(1.dp, CyanGlow, CircleShape),
+                                        contentAlignment = Alignment.Center,
+                                    ) {
+                                        Image(
+                                            painter = painterResource(R.drawable.skippy_robot),
+                                            contentDescription = null,
+                                            modifier = Modifier.size(24.dp),
+                                            contentScale = ContentScale.Fit,
                                         )
                                     }
-                                    Row(
-                                        modifier = Modifier.padding(top = 4.dp),
-                                        horizontalArrangement = Arrangement.spacedBy(10.dp),
-                                    ) {
+                                    Column(modifier = Modifier.weight(1f)) {
                                         Text(
-                                            "${conv.messageCount} messages",
-                                            color = CyanPrimary.copy(alpha = 0.7f), fontSize = 11.sp,
+                                            text  = conv.title ?: "Conversation",
+                                            color = WhiteText, fontSize = 14.sp, fontWeight = FontWeight.Medium,
+                                            maxLines = 1,
                                         )
-                                        if (conv.updatedAt.length >= 10) {
+                                        if (!conv.lastMessage.isNullOrBlank()) {
                                             Text(
-                                                conv.updatedAt.take(10),
-                                                color = WhiteMuted.copy(alpha = 0.4f), fontSize = 11.sp,
+                                                text     = conv.lastMessage,
+                                                color    = WhiteMuted, fontSize = 12.sp, maxLines = 1,
+                                                modifier = Modifier.padding(top = 2.dp),
                                             )
                                         }
+                                        Row(
+                                            modifier = Modifier.padding(top = 4.dp),
+                                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                        ) {
+                                            Text(
+                                                "${conv.messageCount} messages",
+                                                color = CyanPrimary.copy(alpha = 0.7f), fontSize = 11.sp,
+                                            )
+                                            if (conv.updatedAt.length >= 10) {
+                                                Text(
+                                                    conv.updatedAt.take(10),
+                                                    color = WhiteMuted.copy(alpha = 0.4f), fontSize = 11.sp,
+                                                )
+                                            }
+                                        }
                                     }
+                                    Icon(
+                                        Icons.Default.ChevronRight, "Open",
+                                        tint = CyanPrimary.copy(alpha = 0.4f),
+                                        modifier = Modifier.size(18.dp),
+                                    )
                                 }
-                                Icon(
-                                    Icons.Default.ChevronRight, "Open",
-                                    tint = CyanPrimary.copy(alpha = 0.4f),
-                                    modifier = Modifier.size(18.dp),
-                                )
                             }
                         }
                     }

@@ -50,8 +50,21 @@ fun SkippyWidget(
     val context        = LocalContext.current
     val voiceState     by viewModel.voiceState.collectAsState()
     val lastResponse   by viewModel.lastResponse.collectAsState()
+    val searchHistory  by viewModel.searchHistory.collectAsState()
+    val apps           by viewModel.apps.collectAsState()
     var textInput      by remember { mutableStateOf("") }
     val keyboard       = LocalSoftwareKeyboardController.current
+
+    // Smart suggestions — history + matching app names
+    val historySuggestions = remember(textInput, searchHistory) {
+        if (textInput.length < 2) emptyList()
+        else searchHistory.filter { it.contains(textInput, ignoreCase = true) && it != textInput.trim() }.take(4)
+    }
+    val appSuggestions = remember(textInput, apps) {
+        if (textInput.length < 2) emptyList()
+        else apps.filter { it.name.contains(textInput, ignoreCase = true) }.take(3)
+    }
+    val showSuggestions = historySuggestions.isNotEmpty() || appSuggestions.isNotEmpty()
 
     val speechRecognizer = remember { SpeechRecognizer.createSpeechRecognizer(context) }
     DisposableEffect(Unit) { onDispose { speechRecognizer.destroy() } }
@@ -264,6 +277,67 @@ fun SkippyWidget(
                 ) {
                     IconButton(onClick = { handleSend() }) {
                         Icon(Icons.AutoMirrored.Filled.Send, "Send", tint = CyanPrimary)
+                    }
+                }
+            }
+        }
+
+        // Smart suggestions dropdown
+        AnimatedVisibility(
+            visible = showSuggestions,
+            enter   = fadeIn() + expandVertically(),
+            exit    = fadeOut() + shrinkVertically(),
+        ) {
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape    = RoundedCornerShape(14.dp),
+                color    = NavyCard,
+                border   = BorderStroke(1.dp, SurfaceBorder),
+            ) {
+                Column(modifier = Modifier.padding(vertical = 4.dp)) {
+                    // App suggestions
+                    if (appSuggestions.isNotEmpty()) {
+                        Text(
+                            "APPS", color = WhiteDim.copy(alpha = 0.45f), fontSize = 9.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 4.dp),
+                        )
+                        appSuggestions.forEach { app ->
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable { viewModel.launchApp(app.packageName); textInput = "" }
+                                    .padding(horizontal = 14.dp, vertical = 9.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            ) {
+                                DrawableImage(app.icon, app.name, Modifier.size(26.dp).clip(androidx.compose.foundation.shape.RoundedCornerShape(7.dp)))
+                                Text(app.name, color = WhiteText, fontSize = 13.sp, modifier = Modifier.weight(1f))
+                                Text("Open →", color = CyanPrimary.copy(alpha = 0.7f), fontSize = 11.sp)
+                            }
+                        }
+                    }
+                    // History suggestions
+                    if (historySuggestions.isNotEmpty()) {
+                        if (appSuggestions.isNotEmpty()) HorizontalDivider(color = SurfaceBorder, modifier = Modifier.padding(horizontal = 14.dp))
+                        Text(
+                            "RECENT", color = WhiteDim.copy(alpha = 0.45f), fontSize = 9.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 4.dp),
+                        )
+                        historySuggestions.forEach { suggestion ->
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable { textInput = suggestion; handleSend() }
+                                    .padding(horizontal = 14.dp, vertical = 9.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            ) {
+                                Icon(Icons.Default.History, null, tint = CyanPrimary.copy(alpha = 0.55f), modifier = Modifier.size(16.dp))
+                                Text(suggestion, color = WhiteMuted, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+                            }
+                        }
                     }
                 }
             }

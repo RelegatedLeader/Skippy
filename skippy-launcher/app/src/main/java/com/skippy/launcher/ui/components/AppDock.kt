@@ -6,6 +6,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Apps
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -26,6 +27,7 @@ fun AppDock(
     onDrawerClick: () -> Unit,
     modifier: Modifier = Modifier,
     pendingCount: Int = 0,
+    onEditDock: (() -> Unit)? = null,
 ) {
     val docked = pinnedPackages.mapNotNull { pkg -> apps.firstOrNull { it.packageName == pkg } }
 
@@ -45,7 +47,7 @@ fun AppDock(
                     )
                 )
                 .border(1.dp, CyanGlow, RoundedCornerShape(26.dp))
-                .padding(horizontal = 16.dp, vertical = 8.dp),
+                .padding(horizontal = 12.dp, vertical = 8.dp),
             horizontalArrangement = Arrangement.SpaceEvenly,
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -90,6 +92,25 @@ fun AppDock(
                             color = NavyDeep,
                         )
                     }
+                }
+            }
+            // Edit dock button
+            if (onEditDock != null) {
+                Box(
+                    modifier = Modifier
+                        .size(40.dp)
+                        .clip(CircleShape)
+                        .background(NavyMid.copy(alpha = 0.5f))
+                        .border(1.dp, SurfaceBorder, CircleShape)
+                        .clickable(onClick = onEditDock),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Edit,
+                        contentDescription = "Edit dock",
+                        tint = WhiteMuted.copy(alpha = 0.6f),
+                        modifier = Modifier.size(16.dp),
+                    )
                 }
             }
         }

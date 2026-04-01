@@ -99,4 +99,19 @@ class AppPreferences(context: Context) {
     var debateAutoRead: Boolean
         get() = prefs.getBoolean("debate_auto_read", false)
         set(value) = prefs.edit().putBoolean("debate_auto_read", value).apply()
+
+    // Home page quick-launch apps (up to 8, separate from dock pinnedApps)
+    var homeApps: List<String>
+        get() = (prefs.getString("home_apps", null) ?: "").split(",").filter { it.isNotBlank() }.take(12)
+        set(value) = prefs.edit().putString("home_apps", value.take(12).joinToString(",")).apply()
+
+    // Local search/command history for smart suggestions (never sent to Skippy API)
+    var searchHistory: List<String>
+        get() = (prefs.getString("search_history", null) ?: "").split("|||").filter { it.isNotBlank() }.take(20)
+        set(value) = prefs.edit().putString("search_history", value.take(20).joinToString("|||")).apply()
+
+    // App launch frequency "pkg=count,..." for suggestion ranking
+    var appUsageCounts: String
+        get() = prefs.getString("app_usage_counts", null) ?: ""
+        set(value) = prefs.edit().putString("app_usage_counts", value).apply()
 }

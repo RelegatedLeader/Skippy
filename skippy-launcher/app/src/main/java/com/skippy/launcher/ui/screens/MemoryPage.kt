@@ -249,6 +249,24 @@ private fun MemoriesTab(
     val cats = remember(memories) {
         listOf("all") + memories.map { it.category }.distinct().sorted()
     }
+    var deleteTarget by remember { mutableStateOf<Memory?>(null) }
+
+    // Confirmation dialog
+    deleteTarget?.let { mem ->
+        AlertDialog(
+            onDismissRequest = { deleteTarget = null },
+            containerColor = NavyCard, tonalElevation = 0.dp,
+            title = { Text("Delete Memory?", color = WhiteText, fontWeight = FontWeight.Bold, fontSize = 17.sp) },
+            text = {
+                Text(
+                    "This memory will be permanently deleted:\n\n\"${mem.content.take(80)}${if (mem.content.length > 80) "…" else ""}\"",
+                    color = WhiteMuted, fontSize = 14.sp, lineHeight = 20.sp,
+                )
+            },
+            confirmButton = { TextButton(onClick = { onDelete(mem.id); deleteTarget = null }) { Text("Delete", color = ErrorRed, fontWeight = FontWeight.SemiBold) } },
+            dismissButton = { TextButton(onClick = { deleteTarget = null }) { Text("Cancel", color = WhiteMuted) } },
+        )
+    }
 
     Column(modifier = Modifier.fillMaxSize()) {
         // Search
@@ -298,11 +316,11 @@ private fun MemoriesTab(
         } else {
             LazyColumn(
                 modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(start = 12.dp, top = 0.dp, end = 12.dp, bottom = 80.dp),
+                contentPadding = PaddingValues(start = 12.dp, top = 0.dp, end = 12.dp, bottom = 120.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 items(filtered, key = { it.id }) { mem ->
-                    MemoryCard(memory = mem, onDelete = onDelete)
+                    MemoryCard(memory = mem, onDeleteRequest = { deleteTarget = mem })
                 }
             }
         }
@@ -310,7 +328,7 @@ private fun MemoriesTab(
 }
 
 @Composable
-private fun MemoryCard(memory: Memory, onDelete: (String) -> Unit) {
+private fun MemoryCard(memory: Memory, onDeleteRequest: () -> Unit) {
     val color = categoryColor(memory.category)
     var expanded by remember { mutableStateOf(false) }
     Surface(
@@ -345,7 +363,7 @@ private fun MemoryCard(memory: Memory, onDelete: (String) -> Unit) {
                         IconButton(onClick = { expanded = !expanded }, modifier = Modifier.size(28.dp)) {
                             Icon(if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore, null, tint = WhiteMuted.copy(alpha = 0.5f), modifier = Modifier.size(16.dp))
                         }
-                        IconButton(onClick = { onDelete(memory.id) }, modifier = Modifier.size(28.dp)) {
+                        IconButton(onClick = { onDeleteRequest() }, modifier = Modifier.size(28.dp)) {
                             Icon(Icons.Default.DeleteOutline, "Delete", tint = ErrorRed.copy(alpha = 0.5f), modifier = Modifier.size(15.dp))
                         }
                     }
@@ -387,7 +405,7 @@ private fun TodosTab(
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(start = 12.dp, top = 0.dp, end = 12.dp, bottom = 80.dp),
+        contentPadding = PaddingValues(start = 12.dp, top = 0.dp, end = 12.dp, bottom = 120.dp),
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
         // Priority order
@@ -472,6 +490,19 @@ private fun RemindersTab(
     val pending = reminders.filter { !it.isDone }
     val done    = reminders.filter { it.isDone }
     var showDone by remember { mutableStateOf(false) }
+    var deleteTarget by remember { mutableStateOf<Reminder?>(null) }
+
+    // Confirmation dialog
+    deleteTarget?.let { rem ->
+        AlertDialog(
+            onDismissRequest = { deleteTarget = null },
+            containerColor = NavyCard, tonalElevation = 0.dp,
+            title = { Text("Delete Reminder?", color = WhiteText, fontWeight = FontWeight.Bold, fontSize = 17.sp) },
+            text = { Text("\"${rem.content.take(80)}\" will be permanently deleted.", color = WhiteMuted, fontSize = 14.sp, lineHeight = 20.sp) },
+            confirmButton = { TextButton(onClick = { onDelete(rem.id); deleteTarget = null }) { Text("Delete", color = ErrorRed, fontWeight = FontWeight.SemiBold) } },
+            dismissButton = { TextButton(onClick = { deleteTarget = null }) { Text("Cancel", color = WhiteMuted) } },
+        )
+    }
 
     Column(modifier = Modifier.fillMaxSize()) {
         Row(
@@ -522,11 +553,11 @@ private fun RemindersTab(
 
         LazyColumn(
             modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(start = 12.dp, top = 0.dp, end = 12.dp, bottom = 80.dp),
+            contentPadding = PaddingValues(start = 12.dp, top = 0.dp, end = 12.dp, bottom = 120.dp),
             verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
             items(pending, key = { it.id }) { rem ->
-                ReminderCard(reminder = rem, onToggle = onToggle, onDelete = onDelete)
+                ReminderCard(reminder = rem, onToggle = onToggle, onDeleteRequest = { deleteTarget = rem })
             }
             if (done.isNotEmpty()) {
                 item {
@@ -536,7 +567,7 @@ private fun RemindersTab(
                 }
                 if (showDone) {
                     items(done.take(10), key = { "rdone_${it.id}" }) { rem ->
-                        ReminderCard(reminder = rem, onToggle = onToggle, onDelete = onDelete)
+                        ReminderCard(reminder = rem, onToggle = onToggle, onDeleteRequest = { deleteTarget = rem })
                     }
                 }
             }
@@ -548,7 +579,7 @@ private fun RemindersTab(
 private fun ReminderCard(
     reminder: Reminder,
     onToggle: (String, Boolean) -> Unit,
-    onDelete: (String) -> Unit,
+    onDeleteRequest: () -> Unit,
 ) {
     val overdue = reminder.dueDate != null && isOverdue(reminder.dueDate)
     Surface(
@@ -581,7 +612,7 @@ private fun ReminderCard(
                     Text(reminder.timeframeLabel, color = WhiteMuted.copy(alpha = 0.5f), fontSize = 11.sp)
                 }
             }
-            IconButton(onClick = { onDelete(reminder.id) }, modifier = Modifier.size(28.dp)) {
+            IconButton(onClick = { onDeleteRequest() }, modifier = Modifier.size(28.dp)) {
                 Icon(Icons.Default.DeleteOutline, "Delete", tint = ErrorRed.copy(alpha = 0.4f), modifier = Modifier.size(15.dp))
             }
         }
