@@ -76,6 +76,15 @@ fun ChatPage(viewModel: LauncherViewModel) {
     var showClearConfirm by remember { mutableStateOf(false) }
     var showAiSwitcher by remember { mutableStateOf(false) }
 
+    // ── Lockscreen pending message — auto-send when this page becomes visible ──
+    val pendingLockscreenMessage by viewModel.pendingLockscreenMessage.collectAsState()
+    LaunchedEffect(pendingLockscreenMessage) {
+        if (pendingLockscreenMessage.isNotBlank()) {
+            viewModel.askSkippy(pendingLockscreenMessage)
+            viewModel.consumePendingLockscreenMessage()
+        }
+    }
+
     // Clear chat confirmation dialog
     if (showClearConfirm) {
         AlertDialog(

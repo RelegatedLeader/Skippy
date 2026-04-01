@@ -111,6 +111,16 @@ fun HomeScreen(
             }
         }
     }
+
+    // ── Lockscreen → Chat navigation ───────────────────────────────────────────
+    val navigateToChatSignal by viewModel.navigateToChatSignal.collectAsState()
+    LaunchedEffect(navigateToChatSignal) {
+        if (navigateToChatSignal) {
+            pagerState.animateScrollToPage(PAGE_CHAT)
+            viewModel.consumeNavigateToChatSignal()
+        }
+    }
+
     LaunchedEffect(Unit) {
         if (context.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION)
             == PackageManager.PERMISSION_GRANTED) {

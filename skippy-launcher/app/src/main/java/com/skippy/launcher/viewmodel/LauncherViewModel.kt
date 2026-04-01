@@ -84,6 +84,32 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         prefs.forcedAiMode = mode
     }
 
+    // ── Lockscreen → Chat handoff ──────────────────────────────────────────────
+    // When the user types a message on the lockscreen and unlocks, this carries
+    // the message through to ChatPage for auto-send.
+    private val _pendingLockscreenMessage = MutableStateFlow("")
+    val pendingLockscreenMessage: StateFlow<String> = _pendingLockscreenMessage.asStateFlow()
+
+    /** Signal that HomeScreen should scroll to the Chat tab (PAGE_CHAT). */
+    private val _navigateToChatSignal = MutableStateFlow(false)
+    val navigateToChatSignal: StateFlow<Boolean> = _navigateToChatSignal.asStateFlow()
+
+    /** Call from lockscreen before triggering auth to queue message + navigation. */
+    fun queueLockscreenMessage(message: String) {
+        _pendingLockscreenMessage.value = message.trim()
+        _navigateToChatSignal.value = true
+    }
+
+    /** Call from ChatPage once the pending message has been consumed. */
+    fun consumePendingLockscreenMessage() {
+        _pendingLockscreenMessage.value = ""
+    }
+
+    /** Call from HomeScreen once the navigation signal has been acted on. */
+    fun consumeNavigateToChatSignal() {
+        _navigateToChatSignal.value = false
+    }
+
     private val chatHistory  = mutableListOf<ChatMessage>()
     private var currentConversationId: String? = null
 

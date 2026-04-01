@@ -8,6 +8,9 @@ import android.os.Bundle
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.biometric.BiometricManager
+import androidx.biometric.BiometricPrompt
+import androidx.core.content.ContextCompat
 import androidx.compose.animation.*
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.*
@@ -110,7 +113,6 @@ class SkippyLockScreenActivity : FragmentActivity() {
                     LockScreenContent(
                         viewModel       = viewModel,
                         onUnlockRequest = ::triggerAuth,
-                        onDismiss       = ::finish,
                     )
                 } else {
                     Box(Modifier.fillMaxSize().background(Color.Black))
@@ -162,19 +164,42 @@ class SkippyLockScreenActivity : FragmentActivity() {
 
     /**
      * The ONE and ONLY unlock trigger — called when the user taps the fingerprint
-     * button or swipes up.  Uses the system's native requestDismissKeyguard which
-     * presents a single unified dialog (face / fingerprint / PIN / pattern).
+     * button or swipes up.
+     *
+     * Uses BiometricPrompt (BIOMETRIC_STRONG | DEVICE_CREDENTIAL) which shows the
+     * fingerprint sensor UI first on devices that have one (e.g. Pixel 9a under-
+     * display FPS), falling back to PIN/pattern/password only if biometrics fail or
+     * are not enrolled.  This is a single unified prompt — no double dialog.
      */
     fun triggerAuth() {
         if (isFinishing || isDestroyed) return
         if (!keyguardManager.isKeyguardLocked) { unlockAndGo(); return }
 
-        keyguardManager.requestDismissKeyguard(this, object : KeyguardManager.KeyguardDismissCallback() {
-            override fun onDismissSucceeded() = unlockAndGo()
-            // User cancelled or error — stay on lockscreen; they can tap again.
-            override fun onDismissCancelled() = Unit
-            override fun onDismissError()     = Unit
-        })
+        val executor = ContextCompat.getMainExecutor(this)
+        val callback = object : BiometricPrompt.AuthenticationCallback() {
+            override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
+                unlockAndGo()
+            }
+            override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
+                // Cancelled or hardware error — stay on lockscreen; user can tap again.
+            }
+            override fun onAuthenticationFailed() {
+                // Biometric not recognised — stay on lockscreen.
+            }
+        }
+
+        val prompt = BiometricPrompt(this, executor, callback)
+        val promptInfo = BiometricPrompt.PromptInfo.Builder()
+            .setTitle("Unlock Skippy")
+            .setSubtitle("Use fingerprint or device credentials")
+            // BIOMETRIC_STRONG shows fingerprint/face first; DEVICE_CREDENTIAL is the fallback.
+            .setAllowedAuthenticators(
+                BiometricManager.Authenticators.BIOMETRIC_STRONG or
+                BiometricManager.Authenticators.DEVICE_CREDENTIAL
+            )
+            .build()
+
+        prompt.authenticate(promptInfo)
     }
 
     private fun unlockAndGo() {
@@ -198,7 +223,6 @@ class SkippyLockScreenActivity : FragmentActivity() {
 private fun LockScreenContent(
     viewModel:       LauncherViewModel,
     onUnlockRequest: () -> Unit,
-    onDismiss:       () -> Unit,
 ) {
     val lastResponse by viewModel.lastResponse.collectAsState()
     val weather      by viewModel.weather.collectAsState()
@@ -369,10 +393,12 @@ private fun LockScreenContent(
                                 .border(1.dp, CyanPrimary.copy(0.6f), CircleShape)
                                 .clickable {
                                     if (quickInput.isNotBlank()) {
-                                        viewModel.askSkippy(quickInput.trim())
+                                        // Queue message and trigger auth — after unlock, ChatPage
+                                        // will auto-send the message and the pager scrolls to Chat.
+                                        viewModel.queueLockscreenMessage(quickInput.trim())
                                         quickInput = ""
                                         keyboard?.hide()
-                                        onDismiss()
+                                        onUnlockRequest()
                                     }
                                 },
                             contentAlignment = Alignment.Center,
