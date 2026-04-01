@@ -8,9 +8,6 @@ import android.os.Bundle
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
-import androidx.biometric.BiometricManager
-import androidx.biometric.BiometricPrompt
-import androidx.core.content.ContextCompat
 import androidx.compose.animation.*
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.*
@@ -91,10 +88,10 @@ class SkippyLockScreenActivity : FragmentActivity() {
 
         setShowWhenLocked(true)
         @Suppress("DEPRECATION")
-        window.addFlags(
-            android.view.WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
-            android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
-        )
+        window.addFlags(android.view.WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED)
+        // NOTE: FLAG_KEEP_SCREEN_ON is intentionally NOT set — it would prevent the phone
+        // from sleeping and drain the battery. FLAG_TURN_SCREEN_ON is set only in enterShowMode()
+        // so the screen wakes up when the lockscreen fires, but can sleep normally otherwise.
 
         // Block back — cannot escape the lockscreen without auth.
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
@@ -166,40 +163,28 @@ class SkippyLockScreenActivity : FragmentActivity() {
      * The ONE and ONLY unlock trigger — called when the user taps the fingerprint
      * button or swipes up.
      *
-     * Uses BiometricPrompt (BIOMETRIC_STRONG | DEVICE_CREDENTIAL) which shows the
-     * fingerprint sensor UI first on devices that have one (e.g. Pixel 9a under-
-     * display FPS), falling back to PIN/pattern/password only if biometrics fail or
-     * are not enrolled.  This is a single unified prompt — no double dialog.
+     * Uses KeyguardManager.requestDismissKeyguard() which fires the system's native
+     * auth UI (Pixel 9a under-display fingerprint sensor first, PIN as fallback).
+     * This is a SINGLE step that both authenticates AND dismisses the system keyguard —
+     * no double-dialog, no Pixel lockscreen appearing after Skippy's auth.
      */
     fun triggerAuth() {
         if (isFinishing || isDestroyed) return
         if (!keyguardManager.isKeyguardLocked) { unlockAndGo(); return }
 
-        val executor = ContextCompat.getMainExecutor(this)
-        val callback = object : BiometricPrompt.AuthenticationCallback() {
-            override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
+        keyguardManager.requestDismissKeyguard(this, object : KeyguardManager.KeyguardDismissCallback() {
+            override fun onDismissSucceeded() {
+                // System keyguard dismissed — we're now in the clear.
                 unlockAndGo()
             }
-            override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
-                // Cancelled or hardware error — stay on lockscreen; user can tap again.
+            override fun onDismissError() {
+                // Keyguard cannot be dismissed (e.g. admin policy, emergency call).
+                // Nothing we can do — stay on lockscreen.
             }
-            override fun onAuthenticationFailed() {
-                // Biometric not recognised — stay on lockscreen.
+            override fun onDismissCancelled() {
+                // User cancelled (pressed back on the system auth dialog) — stay on lockscreen.
             }
-        }
-
-        val prompt = BiometricPrompt(this, executor, callback)
-        val promptInfo = BiometricPrompt.PromptInfo.Builder()
-            .setTitle("Unlock Skippy")
-            .setSubtitle("Use fingerprint or device credentials")
-            // BIOMETRIC_STRONG shows fingerprint/face first; DEVICE_CREDENTIAL is the fallback.
-            .setAllowedAuthenticators(
-                BiometricManager.Authenticators.BIOMETRIC_STRONG or
-                BiometricManager.Authenticators.DEVICE_CREDENTIAL
-            )
-            .build()
-
-        prompt.authenticate(promptInfo)
+        })
     }
 
     private fun unlockAndGo() {
