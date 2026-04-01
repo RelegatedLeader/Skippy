@@ -61,12 +61,8 @@ private fun SkippyApp(viewModel: LauncherViewModel) {
                 apps           = apps,
                 pinnedPackages = viewModel.prefs.pinnedApps,
                 onAppClick     = { pkg -> viewModel.launchApp(pkg) },
-                onPinToggle    = { pkg ->
-                    val current = viewModel.prefs.pinnedApps.toMutableList()
-                    if (current.contains(pkg)) current.remove(pkg) else current.add(pkg)
-                    viewModel.prefs.pinnedApps = current
-                },
-                onDismiss = { showDrawer = false },
+                onPinToggle    = { pkg -> viewModel.togglePinApp(pkg) },
+                onDismiss      = { showDrawer = false },
             )
         }
     }

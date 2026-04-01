@@ -15,6 +15,8 @@ import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Article
+import androidx.compose.material.icons.automirrored.filled.Chat
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -27,6 +29,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.google.android.gms.location.LocationServices
@@ -48,12 +51,12 @@ private const val PAGE_COUNT    = 6
 
 private data class PageMeta(val icon: ImageVector, val label: String, val tint: Color)
 private val PAGE_META = listOf(
-    PageMeta(Icons.Default.Chat,       "Chat",     CyanPrimary),
-    PageMeta(Icons.Default.Home,       "Home",     CyanPrimary),
-    PageMeta(Icons.Default.Psychology, "Memory",   PurpleAccent),
-    PageMeta(Icons.Default.Article,    "Notes",    AccentGold),
-    PageMeta(Icons.Default.Explore,    "Explore",  GreenSuccess),
-    PageMeta(Icons.Default.Settings,   "Settings", WhiteMuted),
+    PageMeta(Icons.AutoMirrored.Filled.Chat,       "Chat",     CyanPrimary),
+    PageMeta(Icons.Default.Home,                   "Home",     CyanPrimary),
+    PageMeta(Icons.Default.Psychology,             "Memory",   PurpleAccent),
+    PageMeta(Icons.AutoMirrored.Filled.Article,    "Notes",    AccentGold),
+    PageMeta(Icons.Default.Explore,                "Explore",  GreenSuccess),
+    PageMeta(Icons.Default.Settings,               "Settings", WhiteMuted),
 )
 
 @SuppressLint("MissingPermission")
@@ -115,7 +118,11 @@ fun HomeScreen(
         ) { page ->
             when (page) {
                 PAGE_CHAT    -> ChatPage(viewModel = viewModel)
-                PAGE_HOME    -> HomeLandingPage(viewModel = viewModel, onOpenDrawer = onOpenDrawer)
+                PAGE_HOME    -> HomeLandingPage(
+                    viewModel      = viewModel,
+                    onOpenDrawer   = onOpenDrawer,
+                    onNavigateTo   = { idx -> scope.launch { pagerState.animateScrollToPage(idx) } },
+                )
                 PAGE_MEMORY  -> MemoryPage(viewModel = viewModel)
                 PAGE_NOTES   -> NotesPage(viewModel = viewModel)
                 PAGE_EXPLORE -> ExplorePage(viewModel = viewModel)
@@ -180,25 +187,31 @@ fun HomeScreen(
             }
         }
 
-        // Bottom page dots
-        Row(
+        // Bottom page dots — only on home page, positioned above dock
+        AnimatedVisibility(
+            visible = currentPage == PAGE_HOME,
+            enter   = fadeIn(),
+            exit    = fadeOut(),
             modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .navigationBarsPadding()
-                .padding(bottom = 6.dp),
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
-            verticalAlignment     = Alignment.CenterVertically,
+                .padding(bottom = 100.dp),
         ) {
-            repeat(PAGE_COUNT) { idx ->
-                val selected = pagerState.currentPage == idx
-                val meta     = PAGE_META[idx]
-                Box(
-                    modifier = Modifier
-                        .size(if (selected) 8.dp else 5.dp)
-                        .clip(CircleShape)
-                        .background(if (selected) meta.tint else WhiteDim.copy(alpha = 0.25f))
-                        .clickable { scope.launch { pagerState.animateScrollToPage(idx) } }
-                )
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalAlignment     = Alignment.CenterVertically,
+            ) {
+                repeat(PAGE_COUNT) { idx ->
+                    val selected = pagerState.currentPage == idx
+                    val meta     = PAGE_META[idx]
+                    Box(
+                        modifier = Modifier
+                            .size(if (selected) 8.dp else 5.dp)
+                            .clip(CircleShape)
+                            .background(if (selected) meta.tint else WhiteDim.copy(alpha = 0.25f))
+                            .clickable { scope.launch { pagerState.animateScrollToPage(idx) } }
+                    )
+                }
             }
         }
 
@@ -287,6 +300,7 @@ private fun StarFieldBackground() {
 fun HomeLandingPage(
     viewModel: LauncherViewModel,
     onOpenDrawer: () -> Unit,
+    onNavigateTo: (Int) -> Unit = {},
 ) {
     val weather   by viewModel.weather.collectAsState()
     val apps      by viewModel.apps.collectAsState()
@@ -414,9 +428,9 @@ fun HomeLandingPage(
                         .padding(horizontal = 16.dp),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    if (memories.isNotEmpty()) QuickStatChip("🧠", "${memories.size}", "memories", PurpleAccent, Modifier.weight(1f))
-                    if (pendingTodos > 0) QuickStatChip("✅", "$pendingTodos", "todos", AccentGold, Modifier.weight(1f))
-                    if (pendingReminders > 0) QuickStatChip("🔔", "$pendingReminders", "reminders", OrangeAccent, Modifier.weight(1f))
+                    if (memories.isNotEmpty()) QuickStatChip("🧠", "${memories.size}", "memories", PurpleAccent, Modifier.weight(1f), onClick = { onNavigateTo(PAGE_MEMORY) })
+                    if (pendingTodos > 0) QuickStatChip("✅", "$pendingTodos", "todos", AccentGold, Modifier.weight(1f), onClick = { onNavigateTo(PAGE_MEMORY) })
+                    if (pendingReminders > 0) QuickStatChip("🔔", "$pendingReminders", "reminders", OrangeAccent, Modifier.weight(1f), onClick = { onNavigateTo(PAGE_MEMORY) })
                 }
             }
 
@@ -426,16 +440,55 @@ fun HomeLandingPage(
                     title = "Today's Todos",
                     icon = "✅",
                     accentColor = AccentGold,
+                    onViewAll = { onNavigateTo(PAGE_MEMORY) },
                 ) {
-                    todos.filter { !it.isDone }.take(3).forEach { todo ->
+                    val pending = todos.filter { !it.isDone }
+                    pending.take(4).forEach { todo ->
+                        val pColor = when (todo.priority) {
+                            "urgent" -> Color(0xFFEF4444)
+                            "high"   -> OrangeAccent
+                            "normal" -> CyanPrimary
+                            else     -> WhiteMuted.copy(alpha = 0.4f)
+                        }
                         Row(
-                            modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(6.dp))
+                                .clickable { viewModel.toggleTodo(todo.id, true) }
+                                .padding(vertical = 5.dp, horizontal = 2.dp),
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(8.dp),
                         ) {
-                            Box(modifier = Modifier.size(6.dp).clip(CircleShape).background(AccentGold.copy(alpha = 0.7f)))
-                            Text(todo.content, color = WhiteMuted, fontSize = 13.sp, maxLines = 1)
+                            Icon(
+                                imageVector = Icons.Default.RadioButtonUnchecked,
+                                contentDescription = "Mark done",
+                                tint = pColor,
+                                modifier = Modifier.size(17.dp),
+                            )
+                            Text(
+                                text = todo.content,
+                                color = WhiteMuted, fontSize = 13.sp, maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f),
+                            )
+                            if (todo.priority == "urgent" || todo.priority == "high") {
+                                Box(
+                                    modifier = Modifier
+                                        .size(7.dp)
+                                        .clip(CircleShape)
+                                        .background(pColor),
+                                )
+                            }
                         }
+                    }
+                    val remaining = pending.size - 4
+                    if (remaining > 0) {
+                        Text(
+                            text = "+ $remaining more",
+                            color = AccentGold.copy(alpha = 0.55f),
+                            fontSize = 11.sp,
+                            modifier = Modifier.padding(start = 25.dp, top = 3.dp),
+                        )
                     }
                 }
             }
@@ -446,18 +499,35 @@ fun HomeLandingPage(
                     title = "Reminders",
                     icon = "🔔",
                     accentColor = OrangeAccent,
+                    onViewAll = { onNavigateTo(PAGE_MEMORY) },
                 ) {
-                    reminders.filter { !it.isDone }.take(3).forEach { r ->
+                    reminders.filter { !it.isDone }.take(4).forEach { r ->
                         Row(
-                            modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(6.dp))
+                                .clickable { viewModel.toggleReminder(r.id, true) }
+                                .padding(vertical = 5.dp, horizontal = 2.dp),
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(8.dp),
                         ) {
-                            Box(modifier = Modifier.size(6.dp).clip(CircleShape).background(OrangeAccent.copy(alpha = 0.7f)))
-                            Text(r.content, color = WhiteMuted, fontSize = 13.sp, maxLines = 1)
+                            Icon(
+                                imageVector = Icons.Default.NotificationsActive,
+                                contentDescription = "Dismiss",
+                                tint = OrangeAccent.copy(alpha = 0.75f),
+                                modifier = Modifier.size(15.dp),
+                            )
+                            Text(
+                                text = r.content,
+                                color = WhiteMuted, fontSize = 13.sp, maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f),
+                            )
                             r.timeframeLabel?.let {
-                                Spacer(Modifier.weight(1f))
-                                Text(it, color = OrangeAccent.copy(alpha = 0.7f), fontSize = 11.sp)
+                                Text(
+                                    text = it,
+                                    color = OrangeAccent.copy(alpha = 0.7f), fontSize = 11.sp,
+                                )
                             }
                         }
                     }
@@ -469,7 +539,12 @@ fun HomeLandingPage(
             if (prefs.showRecentChatWidget && chatLog.isNotEmpty()) {
                 val last = chatLog.last()
                 if (last.role == "skippy") {
-                    HomeWidgetCard(title = "Last from Skippy", icon = "⚡", accentColor = CyanPrimary) {
+                    HomeWidgetCard(
+                        title = "Last from Skippy",
+                        icon = "💬",
+                        accentColor = CyanPrimary,
+                        onViewAll = { onNavigateTo(PAGE_CHAT) },
+                    ) {
                         Text(
                             last.text, color = WhiteMuted, fontSize = 13.sp,
                             maxLines = 3, lineHeight = 18.sp,
@@ -502,6 +577,7 @@ fun HomeLandingPage(
             pinnedPackages = viewModel.prefs.pinnedApps,
             onAppClick     = { pkg -> viewModel.launchApp(pkg) },
             onDrawerClick  = onOpenDrawer,
+            pendingCount   = todos.count { !it.isDone },
             modifier       = Modifier.align(Alignment.BottomCenter),
         )
     }
@@ -512,6 +588,7 @@ private fun HomeWidgetCard(
     title: String,
     icon: String,
     accentColor: Color,
+    onViewAll: (() -> Unit)? = null,
     content: @Composable ColumnScope.() -> Unit,
 ) {
     Surface(
@@ -524,11 +601,25 @@ private fun HomeWidgetCard(
     ) {
         Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Row(
+                modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
             ) {
-                Text(icon, fontSize = 14.sp)
-                Text(title, color = accentColor, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    Text(icon, fontSize = 14.sp)
+                    Text(title, color = accentColor, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                }
+                if (onViewAll != null) {
+                    TextButton(
+                        onClick = onViewAll,
+                        contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp),
+                    ) {
+                        Text("See all →", color = accentColor.copy(alpha = 0.7f), fontSize = 11.sp)
+                    }
+                }
             }
             content()
         }
@@ -537,10 +628,12 @@ private fun HomeWidgetCard(
 
 @Composable
 private fun QuickStatChip(
-    icon: String, value: String, label: String, color: Color, modifier: Modifier = Modifier,
+    icon: String, value: String, label: String, color: Color,
+    modifier: Modifier = Modifier,
+    onClick: (() -> Unit)? = null,
 ) {
     Surface(
-        modifier  = modifier,
+        modifier  = modifier.then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier),
         shape     = RoundedCornerShape(12.dp),
         color     = color.copy(alpha = 0.1f),
         border    = BorderStroke(1.dp, color.copy(alpha = 0.3f)),

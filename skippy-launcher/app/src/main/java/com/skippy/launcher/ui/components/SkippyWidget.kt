@@ -90,7 +90,7 @@ fun SkippyWidget(
         val trimmed = textInput.trim()
         if (trimmed.isBlank()) return
         // Check if it's an "open <app>" command first
-        val openMatch = Regex("""^(?:openlaunchstart)\s+(.+)$""", RegexOption.IGNORE_CASE).find(trimmed)
+        val openMatch = Regex("""^(?:open|launch|start)\s+(.+)$""", RegexOption.IGNORE_CASE).find(trimmed)
         if (openMatch != null) {
             val appName = openMatch.groupValues[1]
             if (viewModel.launchAppByName(appName)) {

@@ -2,15 +2,21 @@ package com.skippy.launcher.ui.screens
 
 import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Logout
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.*
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.skippy.launcher.R
 import com.skippy.launcher.ui.theme.*
 import com.skippy.launcher.viewmodel.LauncherViewModel
 
@@ -41,11 +47,34 @@ fun SettingsScreen(
             .statusBarsPadding()
             .verticalScroll(rememberScrollState()),
     ) {
+        // ── Robot hero banner ─────────────────────────────────────────────
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = 60.dp, bottom = 4.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(70.dp)
+                    .clip(CircleShape)
+                    .background(CyanDim)
+                    .border(1.5.dp, CyanGlow, CircleShape),
+                contentAlignment = Alignment.Center,
+            ) {
+                Image(
+                    painter = painterResource(R.drawable.skippy_robot),
+                    contentDescription = "Skippy",
+                    modifier = Modifier.size(50.dp),
+                    contentScale = ContentScale.Fit,
+                )
+            }
+        }
+
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 10.dp)
-                .padding(top = 48.dp),
+                .padding(horizontal = 16.dp, vertical = 4.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceBetween,
         ) {
@@ -197,7 +226,7 @@ fun SettingsScreen(
                     border = BorderStroke(1.dp, ErrorRed.copy(alpha = 0.4f)),
                     shape = RoundedCornerShape(12.dp),
                 ) {
-                    Icon(Icons.Default.Logout, null, tint = ErrorRed, modifier = Modifier.size(16.dp))
+                    Icon(Icons.AutoMirrored.Filled.Logout, null, tint = ErrorRed, modifier = Modifier.size(16.dp))
                     Spacer(Modifier.width(6.dp))
                     Text("Sign Out", color = ErrorRed, fontWeight = FontWeight.Medium)
                 }
@@ -219,7 +248,7 @@ private fun SettingsSection(title: String, icon: String, content: @Composable Co
                 Text(icon, fontSize = 16.sp)
                 Text(title, color = WhiteText, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
             }
-            Divider(color = SurfaceBorder.copy(alpha = 0.5f))
+            HorizontalDivider(color = SurfaceBorder.copy(alpha = 0.5f))
             content()
         }
     }

@@ -66,6 +66,8 @@ fun MemoryPage(viewModel: LauncherViewModel) {
     var activeTab by remember { mutableStateOf(0) }
     var memorySearch by remember { mutableStateOf("") }
     var selectedCategory by remember { mutableStateOf("all") }
+    var showFab by remember { mutableStateOf(false) }
+    var fabInput by remember { mutableStateOf("") }
 
     LaunchedEffect(Unit) {
         viewModel.loadMemories()
@@ -73,39 +75,81 @@ fun MemoryPage(viewModel: LauncherViewModel) {
         viewModel.loadReminders()
     }
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .statusBarsPadding(),
-    ) {
-        // ── Header ──────────────────────────────────────────────────────────
-        Row(
+    Box(modifier = Modifier.fillMaxSize()) {
+        Column(
             modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 10.dp)
-                .padding(top = 48.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween,
+                .fillMaxSize()
+                .statusBarsPadding(),
         ) {
-            Column {
-                Text("Memory Vault", fontSize = 20.sp, fontWeight = FontWeight.Bold, color = WhiteText)
-                val pending = reminders.count { !it.isDone }
-                val urgent  = todos.count { !it.isDone && (it.priority == "urgent" || it.priority == "high") }
-                Text(
-                    text  = buildString {
-                        append("${memories.size} memories")
-                        if (pending > 0) append(" · $pending reminders")
-                        if (urgent > 0) append(" · $urgent urgent")
-                    },
-                    fontSize = 12.sp, color = WhiteMuted,
-                )
+            // ── Header ──────────────────────────────────────────────────────────
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 10.dp)
+                    .padding(top = 48.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Column {
+                    Text("Memory Vault", fontSize = 20.sp, fontWeight = FontWeight.Bold, color = WhiteText)
+                    val pending = reminders.count { !it.isDone }
+                    val urgent  = todos.count { !it.isDone && (it.priority == "urgent" || it.priority == "high") }
+                    Text(
+                        text  = buildString {
+                            append("${memories.size} memories")
+                            if (pending > 0) append(" · $pending reminders")
+                            if (urgent > 0) append(" · $urgent urgent")
+                        },
+                        fontSize = 12.sp, color = WhiteMuted,
+                    )
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    IconButton(onClick = { showFab = !showFab }) {
+                        Icon(Icons.Default.Add, "Add", tint = when(activeTab) { 1 -> AccentGold; 2 -> OrangeAccent; else -> PurpleAccent }, modifier = Modifier.size(22.dp))
+                    }
+                    IconButton(onClick = {
+                        viewModel.loadMemories(); viewModel.loadTodos(); viewModel.loadReminders()
+                    }) {
+                        Icon(Icons.Default.Refresh, "Refresh", tint = CyanPrimary, modifier = Modifier.size(20.dp))
+                    }
+                }
             }
-            IconButton(onClick = {
-                viewModel.loadMemories(); viewModel.loadTodos(); viewModel.loadReminders()
-            }) {
-                Icon(Icons.Default.Refresh, "Refresh", tint = CyanPrimary, modifier = Modifier.size(20.dp))
+
+        // Quick add bar
+        AnimatedVisibility(visible = showFab) {
+                val label = when(activeTab) { 1 -> "New todo…"; 2 -> "New reminder…"; else -> "Ask Skippy to remember…" }
+                val accentColor = when(activeTab) { 1 -> AccentGold; 2 -> OrangeAccent; else -> PurpleAccent }
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    OutlinedTextField(
+                        value = fabInput, onValueChange = { fabInput = it },
+                        placeholder = { Text(label, color = WhiteDim, fontSize = 13.sp) },
+                        modifier = Modifier.weight(1f), singleLine = true,
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = accentColor, unfocusedBorderColor = accentColor.copy(alpha = 0.4f),
+                            focusedTextColor = WhiteText, unfocusedTextColor = WhiteText,
+                            cursorColor = accentColor, focusedContainerColor = NavyCard, unfocusedContainerColor = NavyCard,
+                        ),
+                        shape = androidx.compose.foundation.shape.RoundedCornerShape(10.dp),
+                    )
+                    IconButton(onClick = {
+                        val content = fabInput.trim()
+                        if (content.isNotBlank()) {
+                            when (activeTab) {
+                                1 -> viewModel.askSkippy("Add a todo: $content")
+                                2 -> viewModel.createReminder(content, null)
+                                else -> viewModel.askSkippy("Remember this: $content")
+                            }
+                            fabInput = ""; showFab = false
+                        }
+                    }) {
+                        Icon(Icons.Default.Check, "Save", tint = accentColor)
+                    }
+                }
             }
-        }
 
         // ── Tabs ────────────────────────────────────────────────────────────
         val tabs = listOf(
@@ -178,8 +222,9 @@ fun MemoryPage(viewModel: LauncherViewModel) {
                 onCreate  = { content, date -> viewModel.createReminder(content, date) },
             )
         }
-    }
-}
+        } // end Column
+    } // end Box
+} // end MemoryPage
 
 // ── Memories Tab ──────────────────────────────────────────────────────────────
 

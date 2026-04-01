@@ -7,11 +7,14 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Apps
 import androidx.compose.material3.Icon
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.*
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.skippy.launcher.data.AppInfo
 import com.skippy.launcher.ui.theme.*
 
@@ -22,6 +25,7 @@ fun AppDock(
     onAppClick: (String) -> Unit,
     onDrawerClick: () -> Unit,
     modifier: Modifier = Modifier,
+    pendingCount: Int = 0,
 ) {
     val docked = pinnedPackages.mapNotNull { pkg -> apps.firstOrNull { it.packageName == pkg } }
 
@@ -52,22 +56,41 @@ fun AppDock(
                     onClick  = { onAppClick(app.packageName) },
                 )
             }
-            // App drawer button
-            Box(
-                modifier = Modifier
-                    .size(56.dp)
-                    .clip(CircleShape)
-                    .background(CyanDim)
-                    .border(1.5.dp, CyanPrimary, CircleShape)
-                    .clickable(onClick = onDrawerClick),
-                contentAlignment = Alignment.Center,
-            ) {
-                Icon(
-                    imageVector       = Icons.Default.Apps,
-                    contentDescription = "All apps",
-                    tint              = CyanPrimary,
-                    modifier          = Modifier.size(28.dp),
-                )
+            // App drawer button with optional badge
+            Box(contentAlignment = Alignment.TopEnd) {
+                Box(
+                    modifier = Modifier
+                        .size(56.dp)
+                        .clip(CircleShape)
+                        .background(CyanDim)
+                        .border(1.5.dp, CyanPrimary, CircleShape)
+                        .clickable(onClick = onDrawerClick),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        imageVector        = Icons.Default.Apps,
+                        contentDescription = "All apps",
+                        tint               = CyanPrimary,
+                        modifier           = Modifier.size(28.dp),
+                    )
+                }
+                if (pendingCount > 0) {
+                    Box(
+                        modifier = Modifier
+                            .size(18.dp)
+                            .offset(x = 2.dp, y = (-2).dp)
+                            .clip(CircleShape)
+                            .background(AccentGold),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(
+                            text = if (pendingCount > 9) "9+" else "$pendingCount",
+                            fontSize = 8.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = NavyDeep,
+                        )
+                    }
+                }
             }
         }
     }

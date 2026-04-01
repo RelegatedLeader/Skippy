@@ -64,7 +64,11 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
     private val _isLoading   = MutableStateFlow(false)
     val isLoading: StateFlow<Boolean> = _isLoading.asStateFlow()
 
+    private val _streamingText = MutableStateFlow("")
+    val streamingText: StateFlow<String> = _streamingText.asStateFlow()
+
     private val chatHistory  = mutableListOf<ChatMessage>()
+    private var currentConversationId: String? = null
 
     // ── Feature state ──────────────────────────────────────────────────────────
 
@@ -143,6 +147,17 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         if (prefs.sessionCookie.isNotBlank()) {
             SkippyRestApi.sessionCookie = prefs.sessionCookie
             _isAuthenticated.value = true
+        }
+        // Background periodic sync every 5 minutes
+        viewModelScope.launch {
+            while (true) {
+                kotlinx.coroutines.delay(5 * 60 * 1000L)
+                if (_isAuthenticated.value) {
+                    loadTodos()
+                    loadReminders()
+                    loadUserStats()
+                }
+            }
         }
     }
 
@@ -256,10 +271,15 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
     }
 
     fun toggleTodo(id: String, isDone: Boolean) {
+        // Optimistic update — immediate UI feedback
+        _todos.update { list -> list.map { if (it.id == id) it.copy(isDone = isDone) else it } }
         viewModelScope.launch {
             val updated = SkippyRestApi.toggleTodo(prefs.skippyUrl, id, isDone)
             if (updated != null) {
                 _todos.update { list -> list.map { if (it.id == id) updated else it } }
+            } else {
+                // Revert on API failure
+                _todos.update { list -> list.map { if (it.id == id) it.copy(isDone = !isDone) else it } }
             }
         }
     }
@@ -275,10 +295,15 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
     }
 
     fun toggleReminder(id: String, isDone: Boolean) {
+        // Optimistic update — immediate UI feedback
+        _reminders.update { list -> list.map { if (it.id == id) it.copy(isDone = isDone) else it } }
         viewModelScope.launch {
             val updated = SkippyRestApi.toggleReminder(prefs.skippyUrl, id, isDone)
             if (updated != null) {
                 _reminders.update { list -> list.map { if (it.id == id) updated else it } }
+            } else {
+                // Revert on API failure
+                _reminders.update { list -> list.map { if (it.id == id) it.copy(isDone = !isDone) else it } }
             }
         }
     }
@@ -444,6 +469,38 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         val openRx = Regex("""^(?:open|launch|start)\s+(.+)$""").find(lower)
         if (openRx != null && launchAppByName(openRx.groupValues[1].trim())) return true
 
+        // Add todo command: "add todo buy groceries" / "todo: X"
+        val todoRx = Regex("""^(?:add (?:a )?todo|add (?:a )?task|todo:?)\s+(.+)$""").find(lower)
+        if (todoRx != null) {
+            val content = todoRx.groupValues[1].trim()
+            if (content.isNotBlank()) {
+                askSkippy("Add a todo: $content")
+                return true
+            }
+        }
+
+        // Add reminder command: "remind me to X" / "set reminder for X"
+        val reminderRx = Regex("""^(?:remind me to|set (?:a )?reminder(?:\s+for)?|reminder:?)\s+(.+)$""").find(lower)
+        if (reminderRx != null) {
+            val content = reminderRx.groupValues[1].trim()
+            if (content.isNotBlank()) {
+                viewModelScope.launch { SkippyRestApi.createReminder(prefs.skippyUrl, content, null); loadReminders() }
+                speakAlways("Reminder set: $content")
+                return true
+            }
+        }
+
+        // Add note command: "take note X" / "note: X"
+        val noteRx = Regex("""^(?:take (?:a )?note|note:?|add (?:a )?note)\s+(.+)$""").find(lower)
+        if (noteRx != null) {
+            val content = noteRx.groupValues[1].trim()
+            if (content.isNotBlank()) {
+                viewModelScope.launch { SkippyRestApi.createNote(prefs.skippyUrl, "Quick Note", content); loadNotes() }
+                speakAlways("Note saved!")
+                return true
+            }
+        }
+
         val callRx = Regex("""^(?:call|phone|dial)\s+(.+)$""").find(lower)
         if (callRx != null) {
             val name   = callRx.groupValues[1].trim()
@@ -546,26 +603,53 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         viewModelScope.launch {
             _isLoading.value = true
             _voiceState.value = VoiceState.Processing
+            _streamingText.value = ""
             _chatLog.update { (it + ChatEntry(role = "user", text = text)).takeLast(40) }
             chatHistory.add(ChatMessage("user", text))
 
-            var reply = SkippyApi.chat(prefs.skippyUrl, chatHistory.toList(), prefs.aiModel)
+            // Ensure we have a conversation ID so messages sync to server memories
+            if (currentConversationId == null) {
+                currentConversationId = SkippyApi.createConversation(prefs.skippyUrl)
+            }
 
-            // If we get an auth error, try re-authenticating once
-            if (reply.startsWith("Error 401") || reply.startsWith("Error 403")) {
+            var reply = SkippyApi.chat(
+                baseUrl = prefs.skippyUrl,
+                messages = chatHistory.toList(),
+                model = prefs.aiModel,
+                conversationId = currentConversationId,
+                onChunk = { chunk ->
+                    viewModelScope.launch(Dispatchers.Main) {
+                        _streamingText.value += chunk
+                        _voiceState.value = VoiceState.Speaking
+                    }
+                },
+            )
+
+            // If we get an auth error, re-authenticate and retry once
+            if (reply == "__AUTH_ERROR__" || reply.startsWith("Error 401") || reply.startsWith("Error 403")) {
                 reAuthenticate()
-                kotlinx.coroutines.delay(1200)
+                kotlinx.coroutines.delay(1500)
                 reply = SkippyApi.chat(prefs.skippyUrl, chatHistory.toList(), prefs.aiModel)
+                // If still auth error after retry, show friendly message
+                if (reply == "__AUTH_ERROR__") {
+                    reply = "Session expired — signing you back in. Please try again in a moment."
+                    _isAuthenticated.value = false
+                }
             }
 
             chatHistory.add(ChatMessage("assistant", reply))
             while (chatHistory.size > 30) chatHistory.removeAt(0)
 
+            _streamingText.value = ""
             _chatLog.update { (it + ChatEntry(role = "skippy", text = reply)).takeLast(40) }
             _lastResponse.value = reply
             _isLoading.value = false
             _voiceState.value = VoiceState.Speaking
             speak(reply)
+
+            // Refresh todos/reminders after chat — Skippy may have created some
+            loadTodos()
+            loadReminders()
         }
     }
 
@@ -573,6 +657,21 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         chatHistory.clear()
         _chatLog.value = emptyList()
         _lastResponse.value = ""
+        _streamingText.value = ""
+        currentConversationId = null
+    }
+
+    /** Resume an existing conversation — loads context so next message continues it server-side */
+    fun resumeConversation(id: String, title: String?) {
+        chatHistory.clear()
+        currentConversationId = id
+        _streamingText.value = ""
+        _chatLog.value = listOf(
+            ChatEntry(
+                role = "skippy",
+                text = "💬 Continuing ${title ?: "your conversation"}. What would you like to say?",
+            )
+        )
     }
 
     fun setVoiceState(state: VoiceState) { _voiceState.value = state }
@@ -656,6 +755,14 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         launchApp(app.packageName)
         return true
     }
+
+    fun togglePinApp(packageName: String) {
+        val current = prefs.pinnedApps.toMutableList()
+        if (current.contains(packageName)) current.remove(packageName) else current.add(packageName)
+        prefs.pinnedApps = current
+    }
+
+    fun refreshApps() { loadApps() }
 
     override fun onCleared() {
         super.onCleared()

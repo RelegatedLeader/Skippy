@@ -6,16 +6,21 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.*
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.text.HtmlCompat
 import com.skippy.launcher.data.Note
 import com.skippy.launcher.data.Summary
 import com.skippy.launcher.ui.theme.*
@@ -33,6 +38,16 @@ fun NotesPage(viewModel: LauncherViewModel) {
     var showNewNote  by remember { mutableStateOf(false) }
     var newTitle     by remember { mutableStateOf("") }
     var newContent   by remember { mutableStateOf("") }
+    var noteSearch   by remember { mutableStateOf("") }
+
+    // Filter notes by search query
+    val filteredNotes = remember(notes, noteSearch) {
+        if (noteSearch.isBlank()) notes
+        else {
+            val q = noteSearch.trim().lowercase()
+            notes.filter { it.title.lowercase().contains(q) || it.content.lowercase().contains(q) || it.tags.any { t -> t.contains(q) } }
+        }
+    }
 
     LaunchedEffect(Unit) {
         viewModel.loadNotes()
@@ -98,6 +113,38 @@ fun NotesPage(viewModel: LauncherViewModel) {
 
         Spacer(Modifier.height(8.dp))
 
+        // ── Search bar (Notes tab only) ─────────────────────────────────────
+        if (activeTab == 0 && (notes.isNotEmpty() || noteSearch.isNotBlank())) {
+            OutlinedTextField(
+                value = noteSearch,
+                onValueChange = { noteSearch = it },
+                placeholder = { Text("Search notes…", color = WhiteDim, fontSize = 13.sp) },
+                leadingIcon = { Icon(Icons.Default.Search, null, tint = WhiteMuted, modifier = Modifier.size(18.dp)) },
+                trailingIcon = {
+                    if (noteSearch.isNotBlank()) {
+                        IconButton(onClick = { noteSearch = "" }, modifier = Modifier.size(32.dp)) {
+                            Icon(Icons.Default.Close, "Clear", tint = WhiteMuted, modifier = Modifier.size(16.dp))
+                        }
+                    }
+                },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp),
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedBorderColor = AccentGold.copy(alpha = 0.7f),
+                    unfocusedBorderColor = SurfaceBorder,
+                    focusedTextColor = WhiteText,
+                    unfocusedTextColor = WhiteText,
+                    cursorColor = AccentGold,
+                    focusedContainerColor = NavyCard,
+                    unfocusedContainerColor = NavyCard,
+                ),
+                shape = RoundedCornerShape(12.dp),
+                singleLine = true,
+            )
+            Spacer(Modifier.height(6.dp))
+        }
+
         // ── New note form ───────────────────────────────────────────────────
         AnimatedVisibility(visible = showNewNote && activeTab == 0) {
             Column(
@@ -145,9 +192,25 @@ fun NotesPage(viewModel: LauncherViewModel) {
 
         // ── Content ─────────────────────────────────────────────────────────
         when (activeTab) {
-            0 -> NotesTab(notes = notes, loading = notesLoading, onDelete = { viewModel.deleteNote(it) })
+            0 -> NotesTab(notes = filteredNotes, loading = notesLoading, onDelete = { viewModel.deleteNote(it) },
+                emptyHint = if (noteSearch.isNotBlank()) "No notes match \"$noteSearch\"" else null)
             1 -> SummariesTab(summaries = summaries)
         }
+    }
+}
+
+// Strips HTML tags and converts common HTML to readable plain text
+private fun String.toDisplayText(): String {
+    if (!this.contains('<')) return this
+    return try {
+        HtmlCompat.fromHtml(this, HtmlCompat.FROM_HTML_MODE_COMPACT)
+            .toString()
+            .replace(Regex("\n{3,}"), "\n\n")
+            .trim()
+    } catch (e: Exception) {
+        this.replace(Regex("<[^>]+>"), " ")
+            .replace(Regex("\\s{2,}"), " ")
+            .trim()
     }
 }
 
@@ -159,9 +222,12 @@ private fun noteFieldColors() = OutlinedTextFieldDefaults.colors(
 )
 
 @Composable
-private fun NotesTab(notes: List<Note>, loading: Boolean, onDelete: (String) -> Unit) {
+private fun NotesTab(notes: List<Note>, loading: Boolean, onDelete: (String) -> Unit, emptyHint: String? = null) {
     if (loading) { LoadingState("📝", "Loading notes…"); return }
-    if (notes.isEmpty()) { EmptyState("📝", "No notes yet", "Create a note or ask Skippy to take notes for you."); return }
+    if (notes.isEmpty()) {
+        EmptyState("📝", emptyHint ?: "No notes yet", if (emptyHint != null) "Try a different search term." else "Create a note or ask Skippy to take notes for you.")
+        return
+    }
 
     val pinned   = notes.filter { it.isPinned }
     val unpinned = notes.filter { !it.isPinned }
@@ -179,7 +245,7 @@ private fun NotesTab(notes: List<Note>, loading: Boolean, onDelete: (String) -> 
             items(pinned, key = { it.id }) { note ->
                 NoteCard(note = note, onDelete = onDelete)
             }
-            item { Divider(color = SurfaceBorder, modifier = Modifier.padding(vertical = 4.dp)) }
+            item { HorizontalDivider(color = SurfaceBorder, modifier = Modifier.padding(vertical = 4.dp)) }
         }
         items(unpinned, key = { it.id }) { note ->
             NoteCard(note = note, onDelete = onDelete)
@@ -220,7 +286,7 @@ private fun NoteCard(note: Note, onDelete: (String) -> Unit) {
             if (note.content.isNotBlank()) {
                 Spacer(Modifier.height(6.dp))
                 Text(
-                    text     = note.content,
+                    text     = note.content.toDisplayText(),
                     color    = WhiteMuted, fontSize = 13.sp, lineHeight = 18.sp,
                     maxLines = if (expanded) Int.MAX_VALUE else 3,
                     overflow = TextOverflow.Ellipsis,
@@ -287,7 +353,7 @@ private fun SummaryCard(summary: Summary) {
             }
             Spacer(Modifier.height(8.dp))
             Text(
-                text = summary.content,
+                text = summary.content.toDisplayText(),
                 color = WhiteMuted, fontSize = 13.sp, lineHeight = 18.sp,
                 maxLines = if (expanded) Int.MAX_VALUE else 4,
                 overflow = TextOverflow.Ellipsis,
