@@ -171,7 +171,7 @@ object GrokApi {
             }
             append("Answer questions about news, current events, stock prices, sports scores, real-time information, world affairs, people, companies, and general factual queries clearly and accurately. ")
             append("Use markdown formatting: **bold** for key facts, bullet points for lists. ")
-            append("Be concise but comprehensive — this is a mobile app. ")
+            append("Be concise — aim for under 150 words unless the user explicitly asks for more detail. This is a mobile app so brevity matters. ")
             append("When discussing news or events, always mention the timeframe (e.g. 'As of $currentDate…'). ")
             append("You have live web search access — always fetch current data rather than relying on training data.")
         }
@@ -199,7 +199,7 @@ object GrokApi {
                     if (useSearch) put("search_parameters", JSONObject().put("mode", "on"))
                     put("messages", messagesJson)
                     put("temperature", 0.7)
-                    put("max_tokens", 1024)
+                    put("max_tokens", 512)   // halved from 1024 — keeps responses tight on mobile
                 }
 
                 val req = Request.Builder()

@@ -1,6 +1,14 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
+}
+
+// Read secrets from local.properties (git-ignored — never committed to source control)
+val localProps = Properties().apply {
+    rootProject.file("local.properties").takeIf { it.exists() }
+        ?.inputStream()?.use(::load)
 }
 
 android {
@@ -15,6 +23,10 @@ android {
         versionName = "1.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables { useSupportLibrary = true }
+
+        // Grok API key injected at build time from local.properties.
+        // Set GROK_API_KEY=xai-... in local.properties (never commit that file).
+        buildConfigField("String", "GROK_API_KEY", "\"${localProps.getProperty("GROK_API_KEY", "")}\"")
     }
 
     buildTypes {
@@ -32,7 +44,10 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
     kotlinOptions { jvmTarget = "17" }
-    buildFeatures { compose = true }
+    buildFeatures {
+        compose = true
+        buildConfig = true   // required for BuildConfig.GROK_API_KEY
+    }
     composeOptions { kotlinCompilerExtensionVersion = "1.5.15" }
     packaging { resources { excludes += "/META-INF/{AL2.0,LGPL2.1}" } }
 }

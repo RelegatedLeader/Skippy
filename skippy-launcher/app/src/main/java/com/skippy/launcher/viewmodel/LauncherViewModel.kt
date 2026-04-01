@@ -656,23 +656,28 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
      * Builds a concise user-profile string from memories, todos, and prefs.
      * Passed as context to both Claude (via Skippy backend) and Grok so both
      * AIs operate as a single coherent system that knows the user.
+     *
+     * Deliberately kept short (5 memories, 3 todos) to minimise token usage —
+     * the full dataset is stored server-side and available via the backend.
      */
     private fun buildUserContext(): String {
         val sb = StringBuilder()
         val userName = prefs.username
         if (userName.isNotBlank()) sb.appendLine("User's name: $userName")
 
+        // Top 5 memories by importance (was 12 — reducing saves ~600 tokens/request)
         val topMemories = _memories.value
             .sortedByDescending { it.importance }
-            .take(12)
+            .take(5)
         if (topMemories.isNotEmpty()) {
             sb.appendLine("Key things I know about this user:")
             topMemories.forEach { m -> sb.appendLine("  • [${m.category}] ${m.content}") }
         }
 
+        // Top 3 urgent todos (was 5)
         val urgentTodos = _todos.value
             .filter { !it.isDone && (it.priority == "urgent" || it.priority == "high") }
-            .take(5)
+            .take(3)
         if (urgentTodos.isNotEmpty()) {
             sb.appendLine("User's urgent/high-priority todos:")
             urgentTodos.forEach { t -> sb.appendLine("  • ${t.content}") }
@@ -735,6 +740,47 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         }
     }
 
+    // ── Chat history auto-compaction ───────────────────────────────────────────
+
+    /**
+     * When the in-memory chat history grows beyond COMPACT_AT messages, summarise
+     * the oldest half into a single "Earlier conversation" context note and discard
+     * them.  This keeps the history tight WITHOUT an extra API call.
+     *
+     * Result: a long conversation of 24 messages becomes ~12 after compaction.
+     * Each subsequent API request then sends at most 10 of those 12 = very cheap.
+     */
+    private val COMPACT_AT   = 20
+    private val COMPACT_KEEP = 10
+
+    private fun autoCompactHistory() {
+        if (chatHistory.size <= COMPACT_AT) return
+
+        val toSummarise = chatHistory.dropLast(COMPACT_KEEP)
+        val toKeep      = chatHistory.takeLast(COMPACT_KEEP)
+
+        // Build a brief plain-text summary of the old messages (no API call)
+        val summary = buildString {
+            append("[Earlier conversation context — ")
+            toSummarise.filter { it.role == "user" }.takeLast(5).forEach { m ->
+                append("User: \"${m.content.take(70).replace('\n', ' ').trim()}\"  ")
+            }
+            append("]")
+        }
+
+        chatHistory.clear()
+        chatHistory.add(ChatMessage("user", summary))   // prepend as context note
+        chatHistory.add(ChatMessage("assistant", "Got it — I have context from our earlier exchange."))
+        chatHistory.addAll(toKeep)
+
+        // Show a subtle info entry in the chat log so the user knows it happened
+        _chatLog.update { log ->
+            if (log.none { it.role == "system" }) {
+                (log + ChatEntry(role = "system", text = "💬 Conversation auto-compacted to keep things fast & affordable")).takeLast(40)
+            } else log
+        }
+    }
+
     // ── AI Chat ────────────────────────────────────────────────────────────────
 
     fun askSkippy(text: String, enableVoice: Boolean = false) {
@@ -746,6 +792,9 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
             _chatLog.update { (it + ChatEntry(role = "user", text = text)).takeLast(40) }
             chatHistory.add(ChatMessage("user", text))
             addSearchHistory(text.take(80)) // Track locally for smart suggestions
+
+            // Auto-compact history before sending to keep API costs low
+            autoCompactHistory()
 
             // Extract user interests asynchronously (non-blocking — fire and forget)
             viewModelScope.launch { maybeExtractInterests(text) }
@@ -772,8 +821,8 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
                 // Add a "Searching…" indicator in streaming text
                 _streamingText.value = ""
                 _isGrokStreaming.value = true
-                // Build a trimmed history for Grok (last 6 messages for context)
-                val grokHistory = chatHistory.takeLast(6)
+            // Build a trimmed history for Grok — 4 messages keeps cost low
+            val grokHistory = chatHistory.takeLast(4)
                 reply = GrokApi.chat(
                     apiKey      = prefs.grokApiKey,
                     messages    = grokHistory,
@@ -797,7 +846,9 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
                 }
                 reply = SkippyApi.chat(
                     baseUrl = prefs.skippyUrl,
-                    messages = chatHistory.toList(),
+                    // Send only the last 10 messages to Claude — cuts ~65% of context tokens
+                    // for long conversations while keeping full recent context.
+                    messages = chatHistory.takeLast(10),
                     model = prefs.aiModel,
                     conversationId = currentConversationId,
                     onChunk = { chunk ->
@@ -812,7 +863,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
                 if (reply == "__AUTH_ERROR__" || reply.startsWith("Error 401") || reply.startsWith("Error 403")) {
                     reAuthenticate()
                     kotlinx.coroutines.delay(1500)
-                    reply = SkippyApi.chat(prefs.skippyUrl, chatHistory.toList(), prefs.aiModel)
+                    reply = SkippyApi.chat(prefs.skippyUrl, chatHistory.takeLast(10), prefs.aiModel)
                     if (reply == "__AUTH_ERROR__") {
                         reply = "Session expired — signing you back in. Please try again in a moment."
                         _isAuthenticated.value = false

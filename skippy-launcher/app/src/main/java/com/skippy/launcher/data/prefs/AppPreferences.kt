@@ -1,6 +1,7 @@
 package com.skippy.launcher.data.prefs
 
 import android.content.Context
+import com.skippy.launcher.BuildConfig
 
 class AppPreferences(context: Context) {
     private val prefs = context.getSharedPreferences("skippy_launcher", Context.MODE_PRIVATE)
@@ -116,9 +117,12 @@ class AppPreferences(context: Context) {
         set(value) = prefs.edit().putString("app_usage_counts", value).apply()
 
     // ── Grok API (xAI) — for real-time news/current events ────────────────────
-    // API key is entered by the user in Settings — never hard-coded here.
+    // Default comes from BuildConfig.GROK_API_KEY which is injected at build
+    // time from local.properties (git-ignored — never in source control).
+    // The user can override it any time via Settings; that stored value wins.
     var grokApiKey: String
-        get() = prefs.getString("grok_api_key", "") ?: ""
+        get() = prefs.getString("grok_api_key", BuildConfig.GROK_API_KEY)
+            ?.takeIf { it.isNotBlank() } ?: BuildConfig.GROK_API_KEY
         set(value) = prefs.edit().putString("grok_api_key", value).apply()
 
     // Whether to use Grok auto-routing for real-time queries

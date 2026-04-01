@@ -8,10 +8,6 @@ import android.os.Bundle
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
-import androidx.biometric.BiometricManager
-import androidx.fragment.app.FragmentActivity
-import androidx.biometric.BiometricManager.Authenticators.BIOMETRIC_STRONG
-import androidx.biometric.BiometricPrompt
 import androidx.compose.animation.*
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.*
@@ -43,7 +39,7 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.core.content.ContextCompat
+import androidx.fragment.app.FragmentActivity
 import com.skippy.launcher.R
 import com.skippy.launcher.SkippyApplication
 import com.skippy.launcher.ui.theme.*
@@ -52,56 +48,37 @@ import java.text.SimpleDateFormat
 import java.util.*
 
 /**
- * SkippyLockScreenActivity — reliable lockscreen replacement
+ * SkippyLockScreenActivity — reliable, single-step lockscreen replacement.
  *
- * ──────────────────────────────────────────────────────────────────────────
- * WHY THE OLD APPROACH FAILED:
- *   LaunchedEffect("auth_trigger") fired BiometricPrompt REGARDLESS of whether
- *   Skippy actually had window focus. When the Google keyguard was on top,
- *   BiometricPrompt appeared ON TOP OF Google's lockscreen — giving two
- *   simultaneous fingerprint UIs. The sensor responded to Google's (which has
- *   priority), so Skippy's prompt got ERROR_CANCELED forever.
+ * ── WHY BIOMETRICPROMPT WAS REMOVED ─────────────────────────────────────────
+ *   The previous implementation used BiometricPrompt (face/fingerprint) and
+ *   then called requestDismissKeyguard() afterward to dismiss the system
+ *   keyguard.  On many devices this caused TWO auth dialogs:
+ *     1. BiometricPrompt — face ID or fingerprint
+ *     2. requestDismissKeyguard — asked for PIN because the system keyguard
+ *        didn't recognise the BiometricPrompt result as satisfying its policy.
  *
- * THE FIX — three pillars:
+ * ── THE FIX ──────────────────────────────────────────────────────────────────
+ *   Use requestDismissKeyguard() ONLY, triggered ONLY by the user tapping the
+ *   fingerprint button.  The system's native dismiss dialog handles face ID,
+ *   fingerprint, PIN, and pattern in a single, unified flow — no double prompt.
+ *   No automatic trigger on focus or screen wake.
  *
- *  1. PRE-WARM from MainActivity.onResume()
- *     The launcher calls startActivity(PREPARE) every time the user is on the
- *     home screen. Since this activity is singleInstance, it's always in the
- *     window stack BEFORE the user presses the power button.
- *     → Eliminates the cold-launch race against the system keyguard entirely.
- *
- *  2. moveTaskToBack(true) in PREPARE mode
- *     On first creation, immediately pushes to background so the user never
- *     sees the black warmup screen. Zero visual flash.
- *
- *  3. BiometricPrompt ONLY from onWindowFocusChanged(hasFocus=true)
- *     onWindowFocusChanged fires ONLY when THIS activity actually has window
- *     focus — meaning WE are on top and Google's keyguard is behind us.
- *     If Google is on top, we never get focus → BiometricPrompt never shows
- *     → requestDismissKeyguard() handles auth via the system's own sensor.
- * ──────────────────────────────────────────────────────────────────────────
+ * ── UNLOCK FLOW ──────────────────────────────────────────────────────────────
+ *   1. Device wakes → this activity is shown (pre-warmed from MainActivity)
+ *   2. User sees clock, weather, last AI response, chat input
+ *   3. User can type a quick message and send it (goes to AI history)
+ *   4. When ready to unlock → user taps the fingerprint button
+ *   5. requestDismissKeyguard → ONE native dialog → success → finish()
  */
 class SkippyLockScreenActivity : FragmentActivity() {
 
-    // Shared Application-level ViewModel — avoids a second copy of all app icons in
-    // memory (would otherwise cause OOM — confirmed by the java_pid*.hprof in the project).
     private val viewModel: LauncherViewModel by lazy {
         (application as SkippyApplication).sharedViewModel
     }
 
     private lateinit var keyguardManager: KeyguardManager
-
     private val showFullUi = mutableStateOf(false)
-    private var activePrompt: BiometricPrompt? = null
-
-    // Retry counter for requestDismissKeyguard's onDismissCancelled — prevents the
-    // unlimited retry loop that could spam authentication requests indefinitely.
-    private var dismissRetryCount = 0
-    private val maxDismissRetries = 3
-
-    // Debounce for onWindowFocusChanged — prevents rapid re-triggering of BiometricPrompt
-    // when notifications or other windows briefly steal and return focus.
-    private var lastFocusAuthMs = 0L
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -116,15 +93,12 @@ class SkippyLockScreenActivity : FragmentActivity() {
             android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
         )
 
-        // Block back — cannot escape the lockscreen.
-        // Using the current OnBackPressedDispatcher API instead of the deprecated
-        // onBackPressed() override.
+        // Block back — cannot escape the lockscreen without auth.
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() { /* intentionally blocked */ }
         })
 
-        // Cancel the trigger notification instantly — it was only used to bypass
-        // Android 12+ background-launch restrictions. We don't want it in the shade.
+        // Cancel the trigger notification — only used to bypass background-launch limits.
         getSystemService(NotificationManager::class.java)
             .cancel(SkippyLockService.TRIGGER_NOTIF_ID)
 
@@ -145,8 +119,7 @@ class SkippyLockScreenActivity : FragmentActivity() {
         }
 
         if (mode == MODE_PREPARE) {
-            // Stay in background — onResume() will call moveTaskToBack() once safe to do so.
-            // No visual content is shown because showFullUi stays false (black box).
+            // Warm-up — stay in background, no UI shown.
         } else {
             enterShowMode()
         }
@@ -158,8 +131,6 @@ class SkippyLockScreenActivity : FragmentActivity() {
         when (intent.getStringExtra(EXTRA_MODE)) {
             MODE_SHOW    -> enterShowMode()
             MODE_PREPARE -> {
-                // Called from MainActivity.onResume() when the activity already exists.
-                // The singleInstance task was brought to front — push it back quietly.
                 if (!showFullUi.value) {
                     @Suppress("DEPRECATION")
                     overridePendingTransition(0, 0)
@@ -172,131 +143,37 @@ class SkippyLockScreenActivity : FragmentActivity() {
     override fun onResume() {
         super.onResume()
         if (!showFullUi.value) {
-            // PREPARE mode: we're only here to warm up. Push the task to background
-            // immediately. onResume is the earliest safe place to call moveTaskToBack().
             @Suppress("DEPRECATION")
             overridePendingTransition(0, 0)
             moveTaskToBack(true)
             return
         }
-        // SHOW mode: auto-dismiss if device is already unlocked
+        // Already unlocked while we were in the background — just close.
         if (!keyguardManager.isKeyguardLocked) finish()
     }
 
-    /**
-     * PRIMARY fingerprint trigger.
-     * ONLY called when THIS window actually has focus — meaning we are the top visible
-     * window and the system keyguard is behind us. Safe to show BiometricPrompt here.
-     * If Google's keyguard is on top, we never receive focus → this never fires →
-     * requestDismissKeyguard() (called in enterShowMode) handles auth instead.
-     *
-     * Debounced to 1.5 s so rapid focus-change events (notifications, etc.) don't
-     * spam-cancel and restart the BiometricPrompt in quick succession.
-     */
-    override fun onWindowFocusChanged(hasFocus: Boolean) {
-        super.onWindowFocusChanged(hasFocus)
-        if (hasFocus && showFullUi.value && keyguardManager.isKeyguardLocked) {
-            val now = System.currentTimeMillis()
-            if (now - lastFocusAuthMs > 1_500L) {
-                lastFocusAuthMs = now
-                triggerAuth()
-            }
-        }
-    }
-
-    override fun onDestroy() {
-        runCatching { activePrompt?.cancelAuthentication() }
-        activePrompt = null
-        super.onDestroy()
-    }
-
     private fun enterShowMode() {
-        dismissRetryCount = 0       // reset retry counter every time we enter show mode
-        lastFocusAuthMs   = 0L      // allow immediate focus-triggered auth on next focus event
         setTurnScreenOn(true)
         @Suppress("DEPRECATION")
         window.addFlags(android.view.WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON)
         showFullUi.value = true
-
-        // Arm the system-dismiss callback immediately.
-        // Scenario A (we won the race): onWindowFocusChanged fires → BiometricPrompt handles it.
-        //   requestDismissKeyguard silently completes after BiometricPrompt succeeds.
-        // Scenario B (keyguard is on top): we never get focus → BiometricPrompt never shows.
-        //   System keyguard handles the fingerprint → dismisses → onDismissSucceeded → finish().
-        requestSystemDismiss()
+        // ✦ Do NOT auto-trigger auth here — wait for the user to tap the button.
     }
 
     /**
-     * Called when focus is confirmed (onWindowFocusChanged) or from the fingerprint button.
-     * Always cancels any stale prompt before starting fresh.
+     * The ONE and ONLY unlock trigger — called when the user taps the fingerprint
+     * button or swipes up.  Uses the system's native requestDismissKeyguard which
+     * presents a single unified dialog (face / fingerprint / PIN / pattern).
      */
     fun triggerAuth() {
         if (isFinishing || isDestroyed) return
         if (!keyguardManager.isKeyguardLocked) { unlockAndGo(); return }
 
-        activePrompt?.cancelAuthentication()
-        activePrompt = null
-
-        val canBiometric = BiometricManager.from(this)
-            .canAuthenticate(BIOMETRIC_STRONG) == BiometricManager.BIOMETRIC_SUCCESS
-
-        if (canBiometric) showBiometricPrompt() else requestSystemDismiss()
-    }
-
-    private fun showBiometricPrompt() {
-        if (isFinishing || isDestroyed) return
-
-        val callback = object : BiometricPrompt.AuthenticationCallback() {
-            override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
-                activePrompt = null
-                requestSystemDismiss()   // tells system keyguard to step aside → finish via callback
-            }
-
-            override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
-                activePrompt = null
-                when (errorCode) {
-                    // "Use PIN" tapped, user swiped away, or too many failures
-                    BiometricPrompt.ERROR_NEGATIVE_BUTTON,
-                    BiometricPrompt.ERROR_USER_CANCELED,
-                    BiometricPrompt.ERROR_LOCKOUT,
-                    BiometricPrompt.ERROR_LOCKOUT_PERMANENT -> requestSystemDismiss()
-
-                    // System cancelled (e.g. keyguard briefly reclaiming the sensor).
-                    // Fall back to system dismiss — it still has the sensor.
-                    BiometricPrompt.ERROR_CANCELED -> requestSystemDismiss()
-
-                    // HW unavailable / timeout: stay on screen; button triggers manual retry.
-                }
-            }
-
-            override fun onAuthenticationFailed() { /* wrong finger — prompt stays open */ }
-        }
-
-        val promptInfo = BiometricPrompt.PromptInfo.Builder()
-            .setTitle("Unlock Skippy")
-            .setSubtitle("Use your fingerprint to unlock")
-            .setNegativeButtonText("Use PIN / Pattern")
-            .setAllowedAuthenticators(BIOMETRIC_STRONG)
-            .build()
-
-        activePrompt = BiometricPrompt(this, ContextCompat.getMainExecutor(this), callback)
-        activePrompt!!.authenticate(promptInfo)
-    }
-
-    private fun requestSystemDismiss() {
-        if (isFinishing || isDestroyed) return
-        if (!keyguardManager.isKeyguardLocked) { unlockAndGo(); return }
-
         keyguardManager.requestDismissKeyguard(this, object : KeyguardManager.KeyguardDismissCallback() {
             override fun onDismissSucceeded() = unlockAndGo()
-            override fun onDismissError()     = unlockAndGo()
-            override fun onDismissCancelled() {
-                // Guard against infinite retry loop — only retry up to maxDismissRetries times.
-                if (!isFinishing && !isDestroyed && dismissRetryCount < maxDismissRetries) {
-                    dismissRetryCount++
-                    window.decorView.postDelayed(::triggerAuth, 400L)
-                }
-            }
+            // User cancelled or error — stay on lockscreen; they can tap again.
+            override fun onDismissCancelled() = Unit
+            override fun onDismissError()     = Unit
         })
     }
 
@@ -314,7 +191,7 @@ class SkippyLockScreenActivity : FragmentActivity() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Compose UI  (NO LaunchedEffect auth trigger here — only onWindowFocusChanged)
+// Compose UI
 // ─────────────────────────────────────────────────────────────────────────────
 
 @Composable
@@ -330,8 +207,6 @@ private fun LockScreenContent(
     var dateStr  by remember { mutableStateOf(SimpleDateFormat("EEEE, MMMM d", Locale.US).format(Date())) }
     var greetStr by remember { mutableStateOf("") }
 
-    // Clock tick — this is the ONLY LaunchedEffect here.
-    // BiometricPrompt is triggered by onWindowFocusChanged in the Activity, NOT here.
     LaunchedEffect("clock_tick") {
         while (true) {
             val now  = Calendar.getInstance()
@@ -470,7 +345,7 @@ private fun LockScreenContent(
                 Spacer(Modifier.height(12.dp))
             }
 
-            // Quick chat input
+            // Quick chat input — tap send to queue a message, then tap fingerprint to unlock
             Box(
                 modifier = Modifier.fillMaxWidth()
                     .border(1.5.dp, if (quickInput.isNotBlank()) CyanPrimary.copy(0.7f) else CyanGlow.copy(0.32f), RoundedCornerShape(28.dp))
@@ -492,7 +367,14 @@ private fun LockScreenContent(
                             modifier = Modifier.size(34.dp).clip(CircleShape)
                                 .background(Brush.radialGradient(listOf(CyanPrimary.copy(0.3f), CyanPrimary.copy(0.1f))))
                                 .border(1.dp, CyanPrimary.copy(0.6f), CircleShape)
-                                .clickable { if (quickInput.isNotBlank()) { viewModel.askSkippy(quickInput.trim()); quickInput = ""; keyboard?.hide(); onDismiss() } },
+                                .clickable {
+                                    if (quickInput.isNotBlank()) {
+                                        viewModel.askSkippy(quickInput.trim())
+                                        quickInput = ""
+                                        keyboard?.hide()
+                                        onDismiss()
+                                    }
+                                },
                             contentAlignment = Alignment.Center,
                         ) { Icon(Icons.AutoMirrored.Filled.Send, "Send", tint = CyanPrimary, modifier = Modifier.size(15.dp)) }
                     }
@@ -501,14 +383,13 @@ private fun LockScreenContent(
 
             Spacer(Modifier.weight(1f))
 
-            // Fingerprint / swipe-up hint
+            // Fingerprint button — the ONLY unlock trigger
             Column(modifier = Modifier.padding(bottom = 28.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 val arrowAnim = rememberInfiniteTransition(label = "arr")
                 val arrowAlpha by arrowAnim.animateFloat(0.3f, 0.9f, infiniteRepeatable(tween(850, easing = FastOutSlowInEasing), RepeatMode.Reverse), label = "aa")
                 Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy((-8).dp)) {
                     repeat(3) { i -> Icon(Icons.Default.KeyboardArrowUp, null, tint = CyanPrimary.copy(arrowAlpha * (1f - i * 0.25f)), modifier = Modifier.size(22.dp)) }
                 }
-                // Fingerprint button — tapping re-arms the system dismiss callback
                 Box(
                     modifier = Modifier.size(62.dp).clip(CircleShape)
                         .background(Brush.radialGradient(listOf(CyanPrimary.copy(0.18f), Color(0xFF02040C))))
