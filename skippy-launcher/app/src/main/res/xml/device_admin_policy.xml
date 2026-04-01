@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Declares the device-admin policies Skippy needs to replace the system lockscreen -->
+<device-admin>
+    <uses-policies>
+        <disable-keyguard />
+    </uses-policies>
+</device-admin>
+

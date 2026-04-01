@@ -14,7 +14,9 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.skippy.launcher.api.SkippyApi
 import com.skippy.launcher.api.SkippyRestApi
+import com.skippy.launcher.api.GrokApi
 import com.skippy.launcher.api.WeatherApi
+import com.skippy.launcher.widget.SkippyWidgetProvider
 import com.skippy.launcher.data.*
 import com.skippy.launcher.data.prefs.AppPreferences
 import kotlinx.coroutines.Dispatchers
@@ -66,6 +68,21 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
 
     private val _streamingText = MutableStateFlow("")
     val streamingText: StateFlow<String> = _streamingText.asStateFlow()
+
+    private val _isGrokStreaming = MutableStateFlow(false)
+    val isGrokStreaming: StateFlow<Boolean> = _isGrokStreaming.asStateFlow()
+
+    // Tracks whether the current conversation has been using Grok — sticky routing
+    private var conversationUsesGrok = false
+
+    // Forced AI override for current session (persisted across app restarts)
+    private val _forcedAiMode = MutableStateFlow(prefs.forcedAiMode) // "" | "claude" | "grok"
+    val forcedAiMode: StateFlow<String?> = _forcedAiMode.asStateFlow()
+
+    fun setForcedAiMode(mode: String) {
+        _forcedAiMode.value = mode
+        prefs.forcedAiMode = mode
+    }
 
     private val chatHistory  = mutableListOf<ChatMessage>()
     private var currentConversationId: String? = null
@@ -215,6 +232,8 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
     }
 
     fun speak(text: String) {
+        // speak() is only called when enableVoice=true (call mode) — text queries always have enableVoice=false
+        // The autoSpeak setting lets users opt out of TTS even in call mode
         if (!ttsReady || !prefs.autoSpeak) return
         tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, "skippy_response")
     }
@@ -631,9 +650,94 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         cursor.use { if (it.moveToFirst()) it.getString(0) else null }
     }.getOrNull()
 
+    // ── Shared user context — injected into both Claude and Grok ──────────────
+
+    /**
+     * Builds a concise user-profile string from memories, todos, and prefs.
+     * Passed as context to both Claude (via Skippy backend) and Grok so both
+     * AIs operate as a single coherent system that knows the user.
+     */
+    private fun buildUserContext(): String {
+        val sb = StringBuilder()
+        val userName = prefs.username
+        if (userName.isNotBlank()) sb.appendLine("User's name: $userName")
+
+        val topMemories = _memories.value
+            .sortedByDescending { it.importance }
+            .take(12)
+        if (topMemories.isNotEmpty()) {
+            sb.appendLine("Key things I know about this user:")
+            topMemories.forEach { m -> sb.appendLine("  • [${m.category}] ${m.content}") }
+        }
+
+        val urgentTodos = _todos.value
+            .filter { !it.isDone && (it.priority == "urgent" || it.priority == "high") }
+            .take(5)
+        if (urgentTodos.isNotEmpty()) {
+            sb.appendLine("User's urgent/high-priority todos:")
+            urgentTodos.forEach { t -> sb.appendLine("  • ${t.content}") }
+        }
+
+        return sb.toString().trim()
+    }
+
+    // ── Auto-interest extraction ───────────────────────────────────────────────
+    // Pattern map: Regex → (category, tagList, importanceBoost)
+    private val INTEREST_PATTERNS = listOf(
+        Triple(Regex("""(?i)\bi (?:love|adore|am obsessed with|am passionate about)\s+([a-zA-Z0-9 ',]+)"""), "preference", listOf("auto-learned", "interest")),
+        Triple(Regex("""(?i)\bi (?:hate|despise|can't stand|dislike)\s+([a-zA-Z0-9 ',]+)"""), "preference", listOf("auto-learned", "dislike")),
+        Triple(Regex("""(?i)\bi (?:enjoy|like|really like|am into)\s+([a-zA-Z0-9 ',]+)"""), "preference", listOf("auto-learned", "interest")),
+        Triple(Regex("""(?i)\bmy (?:favorite|favourite)\s+\w+\s+is\s+([a-zA-Z0-9 ',]+)"""), "preference", listOf("auto-learned", "favorite")),
+        Triple(Regex("""(?i)\bi(?:'m| am) a[n]? ([a-zA-Z ]+?) (?:by profession|by trade|professionally|developer|designer|engineer|artist|writer|doctor|teacher|musician|student)\b"""), "identity", listOf("auto-learned", "profession")),
+        Triple(Regex("""(?i)\bi work (?:as|in)\s+([a-zA-Z0-9 ',]+)"""), "work", listOf("auto-learned", "career")),
+        Triple(Regex("""(?i)\bi live in\s+([a-zA-Z ,]+)"""), "fact", listOf("auto-learned", "location")),
+        Triple(Regex("""(?i)\bmy name is\s+([a-zA-Z ]+)"""), "identity", listOf("auto-learned", "name")),
+        Triple(Regex("""(?i)\bi(?:'m| am) (?:learning|studying|practicing)\s+([a-zA-Z0-9 ',]+)"""), "learning", listOf("auto-learned", "skill")),
+        Triple(Regex("""(?i)\bi(?:'m| am) training for\s+([a-zA-Z0-9 ',]+)"""), "goal", listOf("auto-learned", "training")),
+        Triple(Regex("""(?i)\bmy goal is (?:to\s+)?([a-zA-Z0-9 ',]+)"""), "goal", listOf("auto-learned", "goal")),
+    )
+
+    // Cooldown: only save up to 3 auto-memories per conversation to avoid spam
+    private var autoMemoriesThisConversation = 0
+
+    /**
+     * Analyzes user message for interest/preference signals and stores them
+     * as memories. Called after each user message if auto-learn is enabled.
+     */
+    private suspend fun maybeExtractInterests(userMessage: String) {
+        if (!prefs.autoLearnMemories) return
+        if (prefs.skippyUrl.isBlank()) return
+        if (autoMemoriesThisConversation >= 3) return // cap per conversation
+
+        for ((regex, category, tags) in INTEREST_PATTERNS) {
+            val match = regex.find(userMessage) ?: continue
+            val detail = match.groupValues.getOrNull(1)?.trim()?.take(80) ?: continue
+            if (detail.length < 3) continue
+
+            // Skip if very similar memory already exists
+            val alreadyKnown = _memories.value.any {
+                it.content.contains(detail, ignoreCase = true) ||
+                detail.contains(it.content.take(30), ignoreCase = true)
+            }
+            if (alreadyKnown) continue
+
+            val memContent = buildString {
+                append("From conversation — User said: \"")
+                append(userMessage.take(140))
+                append("\"")
+            }
+            val created = SkippyRestApi.createMemory(prefs.skippyUrl, memContent, category, tags, importance = 7)
+            if (created != null) {
+                _memories.update { listOf(created) + it }
+                autoMemoriesThisConversation++
+                if (autoMemoriesThisConversation >= 3) break
+            }
+        }
+    }
+
     // ── AI Chat ────────────────────────────────────────────────────────────────
 
-    fun askSkippy(text: String, enableVoice: Boolean = prefs.autoSpeak) {
+    fun askSkippy(text: String, enableVoice: Boolean = false) {
         if (_isLoading.value) return
         viewModelScope.launch {
             _isLoading.value = true
@@ -643,49 +747,103 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
             chatHistory.add(ChatMessage("user", text))
             addSearchHistory(text.take(80)) // Track locally for smart suggestions
 
-            // Ensure we have a conversation ID so messages sync to server memories
-            if (currentConversationId == null) {
-                currentConversationId = SkippyApi.createConversation(prefs.skippyUrl)
+            // Extract user interests asynchronously (non-blocking — fire and forget)
+            viewModelScope.launch { maybeExtractInterests(text) }
+
+            // ── Smart routing ────────────────────────────────────────────────────
+            // Priority: forced mode > emotional override > auto-route
+            val forced = _forcedAiMode.value
+            val useGrok = when {
+                forced == "grok"   -> true
+                forced == "claude" -> false
+                // Emotional/reasoning queries → always Claude (even in Grok conversation)
+                GrokApi.isEmotionalQuery(text) -> false
+                // Auto-route: real-time query or sticky Grok conversation
+                prefs.grokAutoRoute && (
+                    GrokApi.isRealTimeQuery(text) ||
+                    GrokApi.shouldContinueWithGrok(text, conversationUsesGrok)
+                ) -> true
+                else -> false
             }
 
-            var reply = SkippyApi.chat(
-                baseUrl = prefs.skippyUrl,
-                messages = chatHistory.toList(),
-                model = prefs.aiModel,
-                conversationId = currentConversationId,
-                onChunk = { chunk ->
-                    viewModelScope.launch(Dispatchers.Main) {
-                        _streamingText.value += chunk
-                        if (enableVoice) _voiceState.value = VoiceState.Speaking
-                    }
-                },
-            )
+            var reply: String
 
-            // If we get an auth error, re-authenticate and retry once
-            if (reply == "__AUTH_ERROR__" || reply.startsWith("Error 401") || reply.startsWith("Error 403")) {
-                reAuthenticate()
-                kotlinx.coroutines.delay(1500)
-                reply = SkippyApi.chat(prefs.skippyUrl, chatHistory.toList(), prefs.aiModel)
-                // If still auth error after retry, show friendly message
-                if (reply == "__AUTH_ERROR__") {
-                    reply = "Session expired — signing you back in. Please try again in a moment."
-                    _isAuthenticated.value = false
+            if (useGrok) {
+                // Add a "Searching…" indicator in streaming text
+                _streamingText.value = ""
+                _isGrokStreaming.value = true
+                // Build a trimmed history for Grok (last 6 messages for context)
+                val grokHistory = chatHistory.takeLast(6)
+                reply = GrokApi.chat(
+                    apiKey      = prefs.grokApiKey,
+                    messages    = grokHistory,
+                    userContext = buildUserContext(),
+                    onChunk     = { chunk ->
+                        viewModelScope.launch(Dispatchers.Main) {
+                            _streamingText.value += chunk
+                            if (enableVoice) _voiceState.value = VoiceState.Speaking
+                        }
+                    },
+                )
+                _isGrokStreaming.value = false
+                // Annotate the reply so user knows it's live from Grok
+                if (!reply.startsWith("⚠")) {
+                    reply = "$reply\n\n*— Grok (live)*"
+                }
+            } else {
+                // ── Default: route to Skippy backend (Claude) ────────────────────
+                if (currentConversationId == null) {
+                    currentConversationId = SkippyApi.createConversation(prefs.skippyUrl)
+                }
+                reply = SkippyApi.chat(
+                    baseUrl = prefs.skippyUrl,
+                    messages = chatHistory.toList(),
+                    model = prefs.aiModel,
+                    conversationId = currentConversationId,
+                    onChunk = { chunk ->
+                        viewModelScope.launch(Dispatchers.Main) {
+                            _streamingText.value += chunk
+                            if (enableVoice) _voiceState.value = VoiceState.Speaking
+                        }
+                    },
+                )
+
+                // If we get an auth error, re-authenticate and retry once
+                if (reply == "__AUTH_ERROR__" || reply.startsWith("Error 401") || reply.startsWith("Error 403")) {
+                    reAuthenticate()
+                    kotlinx.coroutines.delay(1500)
+                    reply = SkippyApi.chat(prefs.skippyUrl, chatHistory.toList(), prefs.aiModel)
+                    if (reply == "__AUTH_ERROR__") {
+                        reply = "Session expired — signing you back in. Please try again in a moment."
+                        _isAuthenticated.value = false
+                    }
                 }
             }
 
             chatHistory.add(ChatMessage("assistant", reply))
             while (chatHistory.size > 30) chatHistory.removeAt(0)
 
+            // Update sticky Grok mode for this conversation
+            conversationUsesGrok = useGrok
+
             _streamingText.value = ""
-            _chatLog.update { (it + ChatEntry(role = "skippy", text = reply)).takeLast(40) }
+            _chatLog.update { (it + ChatEntry(role = "skippy", text = reply, isGrok = useGrok)).takeLast(40) }
             _lastResponse.value = reply
+
+            // Cache last response for home-screen widget
+            prefs.lastAiResponse = reply.take(200).replace(Regex("""\*[^*]*\*"""), "").trim()
+            // Push update to any placed Skippy widgets
+            SkippyWidgetProvider.updateAll(getApplication())
+
             _isLoading.value = false
             _voiceState.value = if (enableVoice) VoiceState.Speaking else VoiceState.Idle
             if (enableVoice) speak(reply)
 
             // Refresh todos/reminders after chat — Skippy may have created some
-            loadTodos()
-            loadReminders()
+            if (!useGrok) {
+                loadTodos()
+                loadReminders()
+            }
         }
     }
 
@@ -694,7 +852,10 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         _chatLog.value = emptyList()
         _lastResponse.value = ""
         _streamingText.value = ""
+        _isGrokStreaming.value = false
+        conversationUsesGrok = false
         currentConversationId = null
+        autoMemoriesThisConversation = 0
     }
 
     /** Resume an existing conversation — loads context so next message continues it server-side */

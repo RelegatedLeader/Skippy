@@ -26,6 +26,7 @@ data class ChatEntry(
     val role: String,
     val text: String,
     val id: String = System.nanoTime().toString(),
+    val isGrok: Boolean = false,   // true when answered by Grok (live data)
 )
 
 // ── Skippy Feature Models ──────────────────────────────────────────────────

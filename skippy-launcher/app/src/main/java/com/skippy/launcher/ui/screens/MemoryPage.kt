@@ -55,7 +55,7 @@ private val PRIORITY_CONFIG = mapOf(
 )
 
 @Composable
-fun MemoryPage(viewModel: LauncherViewModel) {
+fun MemoryPage(viewModel: LauncherViewModel, initialTab: Int = 0) {
     val memories         by viewModel.memories.collectAsState()
     val memoriesLoading  by viewModel.memoriesLoading.collectAsState()
     val todos            by viewModel.todos.collectAsState()
@@ -63,7 +63,9 @@ fun MemoryPage(viewModel: LauncherViewModel) {
     val reminders        by viewModel.reminders.collectAsState()
     val remindersLoading by viewModel.remindersLoading.collectAsState()
 
-    var activeTab by remember { mutableStateOf(0) }
+    // remember(initialTab) ensures re-composition switches to the correct tab
+    // when the caller navigates here with a specific tab (e.g. tapping "Todos")
+    var activeTab by remember(initialTab) { mutableStateOf(initialTab) }
     var memorySearch by remember { mutableStateOf("") }
     var selectedCategory by remember { mutableStateOf("all") }
     var showFab by remember { mutableStateOf(false) }

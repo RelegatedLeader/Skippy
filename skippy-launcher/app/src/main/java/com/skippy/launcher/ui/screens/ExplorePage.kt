@@ -22,6 +22,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
@@ -477,7 +478,7 @@ private fun StatItem(value: String, label: String, icon: String) {
     }
 }
 
-// ── Flashcard session ─────────────────────────────────────────────────────────
+// ── Flashcard/Exercise session ────────────────────────────────────────────────
 
 @Composable
 private fun FlashcardSession(
@@ -486,70 +487,356 @@ private fun FlashcardSession(
     onDone: () -> Unit,
 ) {
     var currentIdx by remember { mutableStateOf(0) }
-    var flipped    by remember { mutableStateOf(false) }
-    var answered   by remember { mutableStateOf<Boolean?>(null) }
     var score      by remember { mutableStateOf(0) }
     val scope      = rememberCoroutineScope()
 
-    val current    = words.getOrNull(currentIdx)
+    val current = words.getOrNull(currentIdx)
 
     if (current == null) {
-        // Session complete
+        // Session complete screen
         Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(16.dp)) {
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(16.dp),
+                modifier = Modifier.padding(24.dp),
+            ) {
                 Text("🎉", fontSize = 64.sp)
-                Text("Session Complete!", color = WhiteText, fontSize = 20.sp, fontWeight = FontWeight.Bold)
-                Text("$score/${words.size} correct", color = GreenSuccess, fontSize = 16.sp)
+                Text("Session Complete!", color = WhiteText, fontSize = 22.sp, fontWeight = FontWeight.Bold)
+                Text("$score / ${words.size} correct", color = GreenSuccess, fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
+                Spacer(Modifier.height(8.dp))
+                LinearProgressIndicator(
+                    progress = { score.toFloat() / words.size },
+                    modifier = Modifier.fillMaxWidth().height(8.dp).clip(RoundedCornerShape(4.dp)),
+                    color = GreenSuccess, trackColor = GreenDim,
+                )
+                Text(
+                    when {
+                        score == words.size -> "Perfect score! 🏆"
+                        score >= words.size * 0.8 -> "Great job! Keep it up!"
+                        score >= words.size * 0.5 -> "Good effort! Practice makes perfect."
+                        else -> "Keep practicing — you'll get there!"
+                    },
+                    color = WhiteMuted, fontSize = 14.sp, textAlign = TextAlign.Center,
+                )
+                Spacer(Modifier.height(8.dp))
                 Button(
                     onClick = onDone,
                     colors = ButtonDefaults.buttonColors(containerColor = GreenSuccess, contentColor = NavyDeep),
                     shape = RoundedCornerShape(14.dp),
-                ) {
-                    Text("Practice Again", fontWeight = FontWeight.Bold)
-                }
+                    modifier = Modifier.fillMaxWidth().height(52.dp),
+                ) { Text("Practice Again", fontWeight = FontWeight.Bold, fontSize = 16.sp) }
             }
         }
         return
     }
 
-    val flipAnim = remember { Animatable(0f) }
-    LaunchedEffect(flipped) { flipAnim.animateTo(if (flipped) 180f else 0f, tween(300)) }
-
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(horizontal = 16.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp),
-    ) {
-        // Progress
+    // Progress bar
+    Column(modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
+        Spacer(Modifier.height(8.dp))
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-            Text("${currentIdx + 1}/${words.size}", color = WhiteMuted, fontSize = 13.sp)
-            Text("$score correct", color = GreenSuccess, fontSize = 13.sp)
+            Text("${currentIdx + 1} / ${words.size}", color = WhiteMuted, fontSize = 13.sp)
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                Box(modifier = Modifier.clip(RoundedCornerShape(8.dp)).background(GreenSuccess.copy(0.15f)).padding(horizontal = 8.dp, vertical = 3.dp)) {
+                    Text("$score ✓", color = GreenSuccess, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                }
+            }
         }
+        Spacer(Modifier.height(6.dp))
         LinearProgressIndicator(
             progress = { (currentIdx + 1).toFloat() / words.size },
             modifier = Modifier.fillMaxWidth().height(4.dp).clip(RoundedCornerShape(2.dp)),
             color = GreenSuccess, trackColor = GreenDim,
         )
+        Spacer(Modifier.height(12.dp))
 
-        // Card
+        // Exercise type label
+        val exerciseLabel = when {
+            current.exerciseType.contains("mc") || current.exerciseType.contains("multiple") -> "Multiple Choice"
+            current.exerciseType.contains("typing") || current.exerciseType.contains("translation") || current.exerciseType.contains("input") -> "Type the Answer"
+            current.exerciseType.contains("listening") -> "Listening"
+            else -> "Flashcard"
+        }
+        Box(modifier = Modifier.clip(RoundedCornerShape(20.dp)).background(GreenSuccess.copy(0.12f)).padding(horizontal = 10.dp, vertical = 4.dp)) {
+            Text(exerciseLabel, color = GreenSuccess, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+        }
+        Spacer(Modifier.height(12.dp))
+
+        // Route to correct exercise type
+        when {
+            current.exerciseType.contains("mc") || current.exerciseType.contains("multiple") || (current.exerciseType.isBlank() && current.distractors.isNotEmpty()) -> {
+                MultipleChoiceExercise(
+                    word = current,
+                    onAnswer = { correct ->
+                        if (correct) score++
+                        viewModel.submitLearnAnswer(current.id, correct, current.exerciseType, if (correct) 4 else 1)
+                        scope.launch { delay(500); currentIdx++ }
+                    },
+                )
+            }
+            current.exerciseType.contains("typing") || current.exerciseType.contains("translation") || current.exerciseType.contains("input") -> {
+                TypingExercise(
+                    word = current,
+                    onAnswer = { correct ->
+                        if (correct) score++
+                        viewModel.submitLearnAnswer(current.id, correct, current.exerciseType, if (correct) 4 else 1)
+                        scope.launch { delay(800); currentIdx++ }
+                    },
+                )
+            }
+            else -> {
+                FlipCardExercise(
+                    word = current,
+                    onCorrect = {
+                        score++
+                        viewModel.submitLearnAnswer(current.id, true, current.exerciseType, 4)
+                        scope.launch { delay(400); currentIdx++ }
+                    },
+                    onHard = {
+                        viewModel.submitLearnAnswer(current.id, false, current.exerciseType, 1)
+                        scope.launch { delay(400); currentIdx++ }
+                    },
+                )
+            }
+        }
+    }
+}
+
+// ── Multiple Choice Exercise ───────────────────────────────────────────────────
+
+@Composable
+private fun MultipleChoiceExercise(word: LearnWord, onAnswer: (Boolean) -> Unit) {
+    var selectedAnswer by remember(word.id) { mutableStateOf<String?>(null) }
+    val correctAnswer = word.meaning
+
+    // Build options: correct answer + distractors shuffled
+    val options = remember(word.id) {
+        (listOf(correctAnswer) + word.distractors.take(3)).shuffled()
+    }
+
+    Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+        // Character card
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .weight(1f)
                 .clip(RoundedCornerShape(20.dp))
-                .background(
-                    Brush.verticalGradient(
-                        colors = listOf(
-                            NavyCard, NavyDeep,
-                        )
-                    )
+                .background(Brush.verticalGradient(listOf(NavyCard, NavyDeep)))
+                .border(1.dp, GreenSuccess.copy(0.3f), RoundedCornerShape(20.dp))
+                .padding(24.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Box(modifier = Modifier.clip(RoundedCornerShape(8.dp)).background(GreenSuccess.copy(0.12f)).padding(horizontal = 8.dp, vertical = 3.dp)) {
+                        Text("HSK ${word.hsk}", color = GreenSuccess, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                    }
+                    if (word.pos.isNotBlank()) {
+                        Text("[${word.pos}]", color = WhiteMuted.copy(0.5f), fontSize = 12.sp)
+                    }
+                }
+                Text(word.simplified, fontSize = 72.sp, color = WhiteText, textAlign = TextAlign.Center)
+                if (word.pinyin.isNotBlank()) {
+                    Text(word.pinyin, color = CyanPrimary, fontSize = 18.sp, fontWeight = FontWeight.Medium)
+                }
+                Text("What does this mean?", color = WhiteMuted.copy(0.6f), fontSize = 13.sp)
+            }
+        }
+
+        // Answer options
+        options.forEach { option ->
+            val isSelected = selectedAnswer == option
+            val isCorrect = option == correctAnswer
+            val answered = selectedAnswer != null
+
+            val bgColor = when {
+                !answered -> NavyCard
+                isSelected && isCorrect -> GreenSuccess.copy(0.18f)
+                isSelected && !isCorrect -> ErrorRed.copy(0.18f)
+                !isSelected && isCorrect && answered -> GreenSuccess.copy(0.10f)
+                else -> NavyCard
+            }
+            val borderColor = when {
+                !answered -> SurfaceBorder
+                isSelected && isCorrect -> GreenSuccess.copy(0.7f)
+                isSelected && !isCorrect -> ErrorRed.copy(0.7f)
+                !isSelected && isCorrect && answered -> GreenSuccess.copy(0.5f)
+                else -> SurfaceBorder
+            }
+
+            Surface(
+                modifier = Modifier.fillMaxWidth().clickable(enabled = !answered) {
+                    selectedAnswer = option
+                    onAnswer(isCorrect)
+                },
+                shape = RoundedCornerShape(14.dp),
+                color = bgColor,
+                border = BorderStroke(1.5.dp, borderColor),
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                ) {
+                    Text(option, color = WhiteText, fontSize = 14.sp, modifier = Modifier.weight(1f), fontWeight = FontWeight.Medium)
+                    if (answered) {
+                        when {
+                            isCorrect -> Icon(Icons.Default.CheckCircle, null, tint = GreenSuccess, modifier = Modifier.size(20.dp))
+                            isSelected -> Icon(Icons.Default.Cancel, null, tint = ErrorRed, modifier = Modifier.size(20.dp))
+                        }
+                    }
+                }
+            }
+        }
+        Spacer(Modifier.height(16.dp))
+    }
+}
+
+// ── Typing Exercise ────────────────────────────────────────────────────────────
+
+@Composable
+private fun TypingExercise(word: LearnWord, onAnswer: (Boolean) -> Unit) {
+    var userInput by remember(word.id) { mutableStateOf("") }
+    var revealed  by remember(word.id) { mutableStateOf(false) }
+    var answered  by remember(word.id) { mutableStateOf<Boolean?>(null) }
+    val keyboard  = LocalSoftwareKeyboardController.current
+
+    Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+        // Character card
+        Box(
+            modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp))
+                .background(Brush.verticalGradient(listOf(NavyCard, NavyDeep)))
+                .border(1.dp, GreenSuccess.copy(0.3f), RoundedCornerShape(20.dp)).padding(24.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text(word.simplified, fontSize = 72.sp, color = WhiteText, textAlign = TextAlign.Center)
+                if (word.pinyin.isNotBlank()) {
+                    Text(word.pinyin, color = CyanPrimary, fontSize = 18.sp)
+                }
+                if (word.example.isNotBlank()) {
+                    Text(word.example, color = WhiteMuted.copy(0.6f), fontSize = 12.sp, textAlign = TextAlign.Center)
+                }
+                Text("Type the meaning in English", color = WhiteMuted.copy(0.5f), fontSize = 13.sp)
+            }
+        }
+
+        // Input field
+        val isCorrectAnswer = answered == true
+        val isWrong = answered == false
+        OutlinedTextField(
+            value = userInput, onValueChange = { if (answered == null) userInput = it },
+            placeholder = { Text("Type the meaning…", color = WhiteDim, fontSize = 14.sp) },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true, enabled = answered == null,
+            colors = OutlinedTextFieldDefaults.colors(
+                focusedBorderColor = if (isCorrectAnswer) GreenSuccess else if (isWrong) ErrorRed else GreenSuccess.copy(0.6f),
+                unfocusedBorderColor = if (isCorrectAnswer) GreenSuccess else if (isWrong) ErrorRed else GreenSuccess.copy(0.3f),
+                focusedTextColor = WhiteText, unfocusedTextColor = WhiteText, cursorColor = GreenSuccess,
+                focusedContainerColor = NavyCard, unfocusedContainerColor = NavyCard,
+            ),
+            trailingIcon = {
+                if (answered != null) Icon(
+                    if (isCorrectAnswer) Icons.Default.CheckCircle else Icons.Default.Cancel,
+                    null,
+                    tint = if (isCorrectAnswer) GreenSuccess else ErrorRed,
+                    modifier = Modifier.size(20.dp),
                 )
+            },
+            shape = RoundedCornerShape(14.dp),
+            textStyle = TextStyle(fontSize = 15.sp, color = WhiteText, fontWeight = FontWeight.Medium),
+            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+            keyboardActions = KeyboardActions(onDone = {
+                keyboard?.hide()
+                if (answered == null && userInput.isNotBlank()) {
+                    val correct = userInput.trim().lowercase() in word.meaning.lowercase() ||
+                            word.meaning.lowercase() in userInput.trim().lowercase()
+                    answered = correct
+                    onAnswer(correct)
+                }
+            }),
+        )
+
+        if (answered == false) {
+            // Show correct answer on wrong
+            Box(modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp))
+                .background(GreenSuccess.copy(0.10f)).border(1.dp, GreenSuccess.copy(0.3f), RoundedCornerShape(10.dp)).padding(12.dp)) {
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text("Correct answer:", color = GreenSuccess, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                    Text(word.meaning, color = WhiteText, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+                }
+            }
+        }
+
+        if (answered == null) {
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                OutlinedButton(
+                    onClick = { revealed = true },
+                    modifier = Modifier.weight(1f),
+                    border = BorderStroke(1.dp, WhiteMuted.copy(0.3f)),
+                    shape = RoundedCornerShape(12.dp),
+                ) { Text("Show answer", color = WhiteMuted, fontSize = 13.sp) }
+                Button(
+                    onClick = {
+                        keyboard?.hide()
+                        if (userInput.isNotBlank()) {
+                            val correct = userInput.trim().lowercase() in word.meaning.lowercase() ||
+                                    word.meaning.lowercase() in userInput.trim().lowercase()
+                            answered = correct
+                            onAnswer(correct)
+                        }
+                    },
+                    enabled = userInput.isNotBlank(),
+                    modifier = Modifier.weight(1f).height(46.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = GreenSuccess, contentColor = NavyDeep),
+                    shape = RoundedCornerShape(12.dp),
+                ) { Text("Check", fontWeight = FontWeight.Bold) }
+            }
+        }
+
+        if (revealed && answered == null) {
+            Box(modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).background(AmberWarning.copy(0.10f))
+                .border(1.dp, AmberWarning.copy(0.3f), RoundedCornerShape(10.dp)).padding(12.dp)) {
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text("Answer:", color = AmberWarning, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                    Text(word.meaning, color = WhiteText, fontSize = 15.sp)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(top = 8.dp)) {
+                        OutlinedButton(onClick = { answered = false; onAnswer(false) }, modifier = Modifier.weight(1f),
+                            border = BorderStroke(1.dp, ErrorRed.copy(0.4f)), shape = RoundedCornerShape(10.dp)) {
+                            Text("✗  Didn't know", color = ErrorRed, fontSize = 12.sp)
+                        }
+                        Button(onClick = { answered = true; onAnswer(true) }, modifier = Modifier.weight(1f),
+                            colors = ButtonDefaults.buttonColors(containerColor = GreenSuccess.copy(0.2f), contentColor = GreenSuccess),
+                            shape = RoundedCornerShape(10.dp), border = BorderStroke(1.dp, GreenSuccess.copy(0.4f))) {
+                            Text("✓  Knew it", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                        }
+                    }
+                }
+            }
+        }
+        Spacer(Modifier.height(16.dp))
+    }
+}
+
+// ── Flip Card Exercise ─────────────────────────────────────────────────────────
+
+@Composable
+private fun FlipCardExercise(word: LearnWord, onCorrect: () -> Unit, onHard: () -> Unit) {
+    var flipped  by remember(word.id) { mutableStateOf(false) }
+    var answered by remember(word.id) { mutableStateOf<Boolean?>(null) }
+
+    val flipAnim = remember { Animatable(0f) }
+    LaunchedEffect(flipped) { flipAnim.animateTo(if (flipped) 180f else 0f, tween(300)) }
+
+    Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+        Box(
+            modifier = Modifier.fillMaxWidth().weight(1f, false)
+                .aspectRatio(1.5f)
+                .clip(RoundedCornerShape(20.dp))
+                .background(Brush.verticalGradient(listOf(NavyCard, NavyDeep)))
                 .border(1.dp,
                     when (answered) {
-                        true  -> GreenSuccess.copy(alpha = 0.6f)
-                        false -> ErrorRed.copy(alpha = 0.6f)
-                        null  -> GreenSuccess.copy(alpha = 0.3f)
+                        true  -> GreenSuccess.copy(0.6f)
+                        false -> ErrorRed.copy(0.6f)
+                        null  -> GreenSuccess.copy(0.3f)
                     },
                     RoundedCornerShape(20.dp))
                 .clickable(enabled = answered == null) { flipped = !flipped },
@@ -557,34 +844,27 @@ private fun FlashcardSession(
         ) {
             if (flipAnim.value <= 90f) {
                 // Front: Chinese character
-                Column(
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(12.dp),
-                ) {
-                    Box(modifier = Modifier.clip(RoundedCornerShape(8.dp)).background(GreenSuccess.copy(alpha = 0.12f)).padding(horizontal = 10.dp, vertical = 4.dp)) {
-                        Text("HSK ${current.hsk}", color = GreenSuccess, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Box(modifier = Modifier.clip(RoundedCornerShape(8.dp)).background(GreenSuccess.copy(0.12f)).padding(horizontal = 8.dp, vertical = 3.dp)) {
+                        Text("HSK ${word.hsk}", color = GreenSuccess, fontSize = 11.sp, fontWeight = FontWeight.Bold)
                     }
-                    Text(current.simplified, fontSize = 72.sp, color = WhiteText)
-                    Text(if (flipped) current.pinyin else "Tap to reveal", color = CyanPrimary, fontSize = 18.sp)
-                    if (current.example.isNotBlank() && flipped) {
-                        Text(current.example, color = WhiteMuted, fontSize = 13.sp, textAlign = TextAlign.Center)
+                    Text(word.simplified, fontSize = 72.sp, color = WhiteText)
+                    if (!flipped) {
+                        Text("Tap to reveal", color = CyanPrimary.copy(0.7f), fontSize = 15.sp)
                     }
-                    if (!flipped) Text("Tap card to flip", color = WhiteMuted.copy(alpha = 0.4f), fontSize = 12.sp)
                 }
             } else {
                 // Back: meaning
-                Column(
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(12.dp),
-                ) {
-                    Text(current.simplified, fontSize = 40.sp, color = WhiteText.copy(alpha = 0.5f))
-                    Text(current.pinyin, color = CyanPrimary, fontSize = 18.sp)
-                    Text(current.meaning, fontSize = 24.sp, color = WhiteText, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
-                    if (current.pos.isNotBlank()) {
-                        Text("[${current.pos}]", color = WhiteMuted.copy(alpha = 0.6f), fontSize = 13.sp)
+                Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp),
+                    modifier = Modifier.padding(16.dp)) {
+                    Text(word.simplified, fontSize = 36.sp, color = WhiteText.copy(0.4f))
+                    Text(word.pinyin, color = CyanPrimary, fontSize = 18.sp)
+                    Text(word.meaning, fontSize = 24.sp, color = WhiteText, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
+                    if (word.pos.isNotBlank()) {
+                        Text("[${word.pos}]", color = WhiteMuted.copy(0.55f), fontSize = 12.sp)
                     }
-                    if (current.exMeaning.isNotBlank()) {
-                        Text(current.exMeaning, color = WhiteMuted, fontSize = 13.sp, textAlign = TextAlign.Center)
+                    if (word.exMeaning.isNotBlank()) {
+                        Text(word.exMeaning, color = WhiteMuted, fontSize = 13.sp, textAlign = TextAlign.Center)
                     }
                 }
             }
@@ -592,38 +872,24 @@ private fun FlashcardSession(
 
         // Action buttons (shown after flipping)
         AnimatedVisibility(visible = flipped && answered == null) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-            ) {
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 Button(
-                    onClick = {
-                        answered = false
-                        viewModel.submitLearnAnswer(current.id, false, current.exerciseType, 1)
-                        scope.launch {
-                            delay(600)
-                            answered = null; flipped = false; currentIdx++
-                        }
-                    },
-                    modifier = Modifier.weight(1f).height(52.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = ErrorRed.copy(alpha = 0.2f), contentColor = ErrorRed),
-                    shape = RoundedCornerShape(14.dp),
-                    border = BorderStroke(1.dp, ErrorRed.copy(alpha = 0.4f)),
-                ) { Text("✗  Hard", fontWeight = FontWeight.Bold) }
+                    onClick = { answered = false; onHard() },
+                    modifier = Modifier.weight(1f).height(54.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = ErrorRed.copy(0.2f), contentColor = ErrorRed),
+                    shape = RoundedCornerShape(14.dp), border = BorderStroke(1.dp, ErrorRed.copy(0.4f)),
+                ) { Text("✗  Hard", fontWeight = FontWeight.Bold, fontSize = 15.sp) }
                 Button(
-                    onClick = {
-                        answered = true; score++
-                        viewModel.submitLearnAnswer(current.id, true, current.exerciseType, 4)
-                        scope.launch {
-                            delay(600)
-                            answered = null; flipped = false; currentIdx++
-                        }
-                    },
-                    modifier = Modifier.weight(1f).height(52.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = GreenSuccess.copy(alpha = 0.2f), contentColor = GreenSuccess),
-                    shape = RoundedCornerShape(14.dp),
-                    border = BorderStroke(1.dp, GreenSuccess.copy(alpha = 0.4f)),
-                ) { Text("✓  Got it", fontWeight = FontWeight.Bold) }
+                    onClick = { answered = true; onCorrect() },
+                    modifier = Modifier.weight(1f).height(54.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = GreenSuccess.copy(0.2f), contentColor = GreenSuccess),
+                    shape = RoundedCornerShape(14.dp), border = BorderStroke(1.dp, GreenSuccess.copy(0.4f)),
+                ) { Text("✓  Got it", fontWeight = FontWeight.Bold, fontSize = 15.sp) }
+            }
+        }
+        if (!flipped) {
+            Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                Text("Tap the card to flip", color = WhiteMuted.copy(0.45f), fontSize = 13.sp)
             }
         }
 

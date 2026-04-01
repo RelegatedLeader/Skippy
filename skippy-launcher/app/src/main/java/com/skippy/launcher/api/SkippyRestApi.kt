@@ -166,6 +166,40 @@ object SkippyRestApi {
     suspend fun deleteMemory(baseUrl: String, id: String): Boolean =
         delete("$baseUrl/api/memories?id=$id")
 
+    /**
+     * Create a new memory — used for auto-learned interests and preferences
+     * extracted from conversations.
+     */
+    suspend fun createMemory(
+        baseUrl: String,
+        content: String,
+        category: String = "preference",
+        tags: List<String> = emptyList(),
+        importance: Int = 7,
+    ): Memory? {
+        val body = JSONObject()
+            .put("content", content)
+            .put("category", category)
+            .put("importance", importance)
+        if (tags.isNotEmpty()) body.put("tags", JSONArray(tags))
+        val obj = post("$baseUrl/api/memories", body) ?: return null
+        return runCatching {
+            Memory(
+                id = obj.getString("id"),
+                category = obj.optString("category", category),
+                content = obj.optString("content", content),
+                importance = obj.optInt("importance", importance),
+                confidence = obj.optDouble("confidence", 0.8).toFloat(),
+                tags = tags,
+                healthScore = 0.8f,
+                emotionalValence = null,
+                needsReview = false,
+                createdAt = obj.optString("createdAt", ""),
+                updatedAt = obj.optString("updatedAt", ""),
+            )
+        }.getOrNull()
+    }
+
     // ── Todos ──────────────────────────────────────────────────────────────────
 
     suspend fun getTodos(baseUrl: String): List<TodoItem> {

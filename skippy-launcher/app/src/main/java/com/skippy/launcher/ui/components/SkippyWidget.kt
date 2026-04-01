@@ -15,6 +15,7 @@ import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
@@ -26,10 +27,13 @@ import androidx.compose.ui.*
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
@@ -99,6 +103,13 @@ fun SkippyWidget(
         else                     -> CyanGlow
     }
 
+    // Animated border color when active
+    val borderColor by animateColorAsState(
+        targetValue = if (voiceState !is VoiceState.Idle) CyanPrimary else CyanGlow.copy(alpha = 0.5f),
+        animationSpec = tween(300),
+        label = "border",
+    )
+
     fun handleSend() {
         val trimmed = textInput.trim()
         if (trimmed.isBlank()) return
@@ -135,12 +146,12 @@ fun SkippyWidget(
             enter = fadeIn() + expandVertically(),
             exit  = fadeOut() + shrinkVertically(),
         ) {
-            Surface(
+            Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .border(1.dp, CyanGlow, RoundedCornerShape(16.dp)),
-                shape = RoundedCornerShape(16.dp),
-                color = CyanDim,
+                    .border(1.dp, CyanGlow, RoundedCornerShape(16.dp))
+                    .clip(RoundedCornerShape(16.dp))
+                    .background(Brush.verticalGradient(listOf(CyanDim, NavyDeep.copy(alpha = 0.8f)))),
             ) {
                 Row(
                     modifier = Modifier.padding(12.dp),
@@ -166,34 +177,35 @@ fun SkippyWidget(
             }
         }
 
-        // ── Main search/command bar ───────────────────────────────────────
-        Surface(
+        // ── Main glass pill search/command bar ────────────────────────────────
+        Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .border(
-                    1.dp,
-                    if (voiceState !is VoiceState.Idle) CyanPrimary else CyanGlow,
-                    RoundedCornerShape(20.dp),
+                .height(62.dp)
+                .border(1.5.dp, borderColor, RoundedCornerShape(31.dp))
+                .clip(RoundedCornerShape(31.dp))
+                .background(
+                    Brush.verticalGradient(
+                        listOf(Color(0xFF0F2045).copy(alpha = 0.97f), NavyDeep.copy(alpha = 0.95f))
+                    )
                 ),
-            shape = RoundedCornerShape(20.dp),
-            color = NavyMid.copy(alpha = 0.9f),
         ) {
             Row(
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 10.dp, vertical = 8.dp),
+                    .fillMaxSize()
+                    .padding(horizontal = 6.dp),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
             ) {
-                // Mic / robot orb
+                // ── Skippy orb ────────────────────────────────────────────────
                 Box(
                     modifier = Modifier
-                        .size(46.dp)
+                        .size(48.dp)
                         .scale(pulseScale)
                         .clip(CircleShape)
                         .background(
                             Brush.radialGradient(
-                                colors = listOf(orbColor, orbColor.copy(alpha = 0.15f))
+                                colors = listOf(orbColor.copy(alpha = 0.75f), orbColor.copy(alpha = 0.10f))
                             )
                         )
                         .border(1.5.dp, orbColor, CircleShape)
@@ -236,49 +248,61 @@ fun SkippyWidget(
                     }
                 }
 
-                // Text input
-                OutlinedTextField(
+                // ── Glass text input ──────────────────────────────────────────
+                BasicTextField(
                     value = textInput,
                     onValueChange = { textInput = it },
-                    placeholder = {
-                        Text(
-                            text = when (voiceState) {
-                                is VoiceState.Listening  -> "Listening…"
-                                is VoiceState.Processing -> "Thinking…"
-                                is VoiceState.Speaking   -> "Speaking…"
-                                else                     -> "Ask Skippy or open an app…"
-                            },
-                            color = WhiteDim,
-                            fontSize = 13.sp,
-                        )
-                    },
-                    modifier = Modifier.weight(1f),
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor     = CyanPrimary,
-                        unfocusedBorderColor   = androidx.compose.ui.graphics.Color.Transparent,
-                        focusedTextColor       = WhiteText,
-                        unfocusedTextColor     = WhiteText,
-                        cursorColor            = CyanPrimary,
-                        focusedContainerColor  = androidx.compose.ui.graphics.Color.Transparent,
-                        unfocusedContainerColor = androidx.compose.ui.graphics.Color.Transparent,
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(vertical = 4.dp),
+                    textStyle = TextStyle(
+                        color = WhiteText,
+                        fontSize = 14.sp,
+                        lineHeight = 20.sp,
+                        fontWeight = FontWeight.Normal,
                     ),
-                    shape = RoundedCornerShape(12.dp),
+                    cursorBrush = SolidColor(CyanPrimary),
+                    singleLine = true,
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
                     keyboardActions = KeyboardActions(onSend = { handleSend() }),
-                    singleLine = true,
                     enabled = voiceState is VoiceState.Idle,
+                    decorationBox = { innerTextField ->
+                        Box(contentAlignment = Alignment.CenterStart) {
+                            if (textInput.isEmpty()) {
+                                Text(
+                                    text = when (voiceState) {
+                                        is VoiceState.Listening  -> "Listening…"
+                                        is VoiceState.Processing -> "Thinking…"
+                                        is VoiceState.Speaking   -> "Speaking…"
+                                        else -> "Ask Skippy or open an app…"
+                                    },
+                                    color = WhiteDim,
+                                    fontSize = 14.sp,
+                                )
+                            }
+                            innerTextField()
+                        }
+                    },
                 )
 
-                // Send button
+                // ── Send button ───────────────────────────────────────────────
                 AnimatedVisibility(
                     visible = textInput.isNotBlank(),
                     enter   = fadeIn() + scaleIn(),
                     exit    = fadeOut() + scaleOut(),
                 ) {
-                    IconButton(onClick = { handleSend() }) {
-                        Icon(Icons.AutoMirrored.Filled.Send, "Send", tint = CyanPrimary)
+                    Box(
+                        modifier = Modifier
+                            .size(40.dp)
+                            .clip(CircleShape)
+                            .background(CyanPrimary.copy(alpha = 0.15f))
+                            .clickable { handleSend() },
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(Icons.AutoMirrored.Filled.Send, "Send", tint = CyanPrimary, modifier = Modifier.size(18.dp))
                     }
                 }
+                Spacer(Modifier.width(4.dp))
             }
         }
 
@@ -288,11 +312,12 @@ fun SkippyWidget(
             enter   = fadeIn() + expandVertically(),
             exit    = fadeOut() + shrinkVertically(),
         ) {
-            Surface(
-                modifier = Modifier.fillMaxWidth(),
-                shape    = RoundedCornerShape(14.dp),
-                color    = NavyCard,
-                border   = BorderStroke(1.dp, SurfaceBorder),
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .border(1.dp, SurfaceBorder, RoundedCornerShape(14.dp))
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(NavyCard),
             ) {
                 Column(modifier = Modifier.padding(vertical = 4.dp)) {
                     // App suggestions
@@ -311,7 +336,7 @@ fun SkippyWidget(
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(10.dp),
                             ) {
-                                DrawableImage(app.icon, app.name, Modifier.size(26.dp).clip(androidx.compose.foundation.shape.RoundedCornerShape(7.dp)))
+                                DrawableImage(app.icon, app.name, Modifier.size(26.dp).clip(RoundedCornerShape(7.dp)))
                                 Text(app.name, color = WhiteText, fontSize = 13.sp, modifier = Modifier.weight(1f))
                                 Text("Open →", color = CyanPrimary.copy(alpha = 0.7f), fontSize = 11.sp)
                             }
@@ -385,7 +410,8 @@ private fun startListening(recognizer: SpeechRecognizer, viewModel: LauncherView
                     viewModel.setVoiceState(VoiceState.Idle)
                     return
                 }
-                viewModel.askSkippy(text)
+                // Voice-triggered: speak back
+                viewModel.askSkippy(text, enableVoice = true)
             } else {
                 viewModel.setVoiceState(VoiceState.Idle)
             }

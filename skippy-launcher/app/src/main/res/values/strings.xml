@@ -1,4 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">Skippy Launcher</string>
+    <string name="skippy_widget_description">Skippy AI widget — shows your latest response and lets you start a new chat instantly.</string>
+    <string name="widget_new_chat">New Chat</string>
+    <string name="widget_open_home">Open Skippy</string>
 </resources>

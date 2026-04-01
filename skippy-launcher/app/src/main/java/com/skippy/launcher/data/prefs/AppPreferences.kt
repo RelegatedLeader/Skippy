@@ -80,9 +80,9 @@ class AppPreferences(context: Context) {
         get() = prefs.getInt("last_active_page", 1)
         set(value) = prefs.edit().putInt("last_active_page", value).apply()
 
-    // New: voice auto-read responses
+    // New: voice auto-read responses — default OFF; only activates when call/voice mode is enabled
     var autoSpeak: Boolean
-        get() = prefs.getBoolean("auto_speak", true)
+        get() = prefs.getBoolean("auto_speak", false)
         set(value) = prefs.edit().putBoolean("auto_speak", value).apply()
 
     // New: show quick stats on home screen
@@ -114,4 +114,40 @@ class AppPreferences(context: Context) {
     var appUsageCounts: String
         get() = prefs.getString("app_usage_counts", null) ?: ""
         set(value) = prefs.edit().putString("app_usage_counts", value).apply()
+
+    // ── Grok API (xAI) — for real-time news/current events ────────────────────
+    // API key is entered by the user in Settings — never hard-coded here.
+    var grokApiKey: String
+        get() = prefs.getString("grok_api_key", "") ?: ""
+        set(value) = prefs.edit().putString("grok_api_key", value).apply()
+
+    // Whether to use Grok auto-routing for real-time queries
+    var grokAutoRoute: Boolean
+        get() = prefs.getBoolean("grok_auto_route", true)
+        set(value) = prefs.edit().putBoolean("grok_auto_route", value).apply()
+
+    // Auto-learn: extract interests/preferences from conversations and save as memories
+    var autoLearnMemories: Boolean
+        get() = prefs.getBoolean("auto_learn_memories", true)
+        set(value) = prefs.edit().putBoolean("auto_learn_memories", value).apply()
+
+    // Lockscreen / home-screen app widget enabled
+    var lockscreenWidgetEnabled: Boolean
+        get() = prefs.getBoolean("lockscreen_widget_enabled", false)
+        set(value) = prefs.edit().putBoolean("lockscreen_widget_enabled", value).apply()
+
+    // In-app lockscreen page — beautiful overlay shown when app wakes from background
+    var lockscreenPageEnabled: Boolean
+        get() = prefs.getBoolean("lockscreen_page_enabled", false)
+        set(value) = prefs.edit().putBoolean("lockscreen_page_enabled", value).apply()
+
+    // Last AI response — used by the home-screen widget to display a snippet
+    var lastAiResponse: String
+        get() = prefs.getString("last_ai_response", "") ?: ""
+        set(value) = prefs.edit().putString("last_ai_response", value).apply()
+
+    // Forced AI override: "" = auto, "claude" = always Claude, "grok" = always Grok
+    var forcedAiMode: String
+        get() = prefs.getString("forced_ai_mode", "") ?: ""
+        set(value) = prefs.edit().putString("forced_ai_mode", value).apply()
 }

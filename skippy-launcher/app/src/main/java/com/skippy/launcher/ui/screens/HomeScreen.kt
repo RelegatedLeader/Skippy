@@ -13,6 +13,9 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Article
@@ -29,6 +32,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -73,6 +77,29 @@ fun HomeScreen(
     val scope      = rememberCoroutineScope()
     val pagerState = rememberPagerState(initialPage = PAGE_HOME) { PAGE_COUNT }
     val voiceState by viewModel.voiceState.collectAsState()
+    // Tab index to open when navigating to MemoryPage (0=Memories, 1=Todos, 2=Reminders)
+    var memoryInitialTab by remember { mutableStateOf(0) }
+
+    // ── Lockscreen overlay ─────────────────────────────────────────────────────
+    val prefs = viewModel.prefs
+    var lockScreenVisible by remember { mutableStateOf(prefs.lockscreenPageEnabled) }
+    // Re-show lockscreen whenever app comes back to foreground (ON_RESUME),
+    // UNLESS the user just unlocked via SkippyLockScreenActivity (within the last 3 s).
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME && prefs.lockscreenPageEnabled) {
+                val lastUnlock = context.getSharedPreferences("skippy_launcher", android.content.Context.MODE_PRIVATE)
+                    .getLong("last_skippy_unlock", 0L)
+                // Skip if we just came from the activity-level lockscreen (prevents double-lockscreen)
+                if (System.currentTimeMillis() - lastUnlock > 3_000L) {
+                    lockScreenVisible = true
+                }
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
 
     val locLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
@@ -125,8 +152,12 @@ fun HomeScreen(
                     viewModel      = viewModel,
                     onOpenDrawer   = onOpenDrawer,
                     onNavigateTo   = { idx -> scope.launch { pagerState.animateScrollToPage(idx) } },
+                    onNavigateToMemory = { tab ->
+                        memoryInitialTab = tab
+                        scope.launch { pagerState.animateScrollToPage(PAGE_MEMORY) }
+                    },
                 )
-                PAGE_MEMORY  -> MemoryPage(viewModel = viewModel)
+                PAGE_MEMORY  -> MemoryPage(viewModel = viewModel, initialTab = memoryInitialTab)
                 PAGE_NOTES   -> NotesPage(viewModel = viewModel)
                 PAGE_EXPLORE -> ExplorePage(viewModel = viewModel)
                 PAGE_SETTINGS -> SettingsScreen(
@@ -263,6 +294,19 @@ fun HomeScreen(
                 }
             }
         }
+
+        // ── Lockscreen overlay ─────────────────────────────────────────────────
+        AnimatedVisibility(
+            visible  = lockScreenVisible,
+            enter    = fadeIn(tween(300)),
+            exit     = fadeOut(tween(400)) + slideOutVertically(tween(400)) { -it / 2 },
+            modifier = Modifier.fillMaxSize(),
+        ) {
+            LockScreenPage(
+                viewModel = viewModel,
+                onDismiss = { lockScreenVisible = false },
+            )
+        }
     }
 }
 
@@ -304,6 +348,7 @@ fun HomeLandingPage(
     viewModel: LauncherViewModel,
     onOpenDrawer: () -> Unit,
     onNavigateTo: (Int) -> Unit = {},
+    onNavigateToMemory: (tab: Int) -> Unit = {},
 ) {
     val weather   by viewModel.weather.collectAsState()
     val apps      by viewModel.apps.collectAsState()
@@ -373,13 +418,33 @@ fun HomeLandingPage(
                     .padding(horizontal = 16.dp),
                 contentAlignment = Alignment.Center,
             ) {
-                // Glow beneath robot
+                // Animated concentric glow rings
+                repeat(3) { i ->
+                    val ringAlpha by floatAnim.animateFloat(
+                        initialValue = 0.04f + i * 0.02f,
+                        targetValue  = 0.18f + i * 0.04f,
+                        animationSpec = infiniteRepeatable(
+                            tween(1800 + i * 700, delayMillis = i * 500, easing = FastOutSlowInEasing),
+                            RepeatMode.Reverse,
+                        ),
+                        label = "ring$i",
+                    )
+                    Box(
+                        modifier = Modifier
+                            .size((88 + i * 38).dp)
+                            .clip(CircleShape)
+                            .border(1.dp, CyanPrimary.copy(alpha = ringAlpha), CircleShape)
+                            .align(Alignment.Center),
+                    )
+                }
+
+                // Deep glow beneath robot
                 Box(
                     modifier = Modifier
-                        .size(120.dp)
+                        .size(110.dp)
                         .align(Alignment.Center)
-                        .offset(y = 20.dp)
-                        .blur(24.dp)
+                        .offset(y = 22.dp)
+                        .blur(30.dp)
                         .clip(CircleShape)
                         .background(CyanPrimary.copy(alpha = glowAlpha)),
                 )
@@ -407,15 +472,20 @@ fun HomeLandingPage(
                     }
                     Text(
                         greeting,
-                        color = WhiteText,
                         fontSize = 17.sp,
                         fontWeight = FontWeight.SemiBold,
+                        style = TextStyle(
+                            brush = Brush.horizontalGradient(
+                                listOf(WhiteText, WhiteMuted)
+                            )
+                        ),
                     )
                     if (prefs.username.isNotBlank()) {
                         Text(
                             prefs.username,
                             color = CyanPrimary,
                             fontSize = 13.sp,
+                            fontWeight = FontWeight.Medium,
                         )
                     }
                 }
@@ -444,9 +514,9 @@ fun HomeLandingPage(
                         .padding(horizontal = 16.dp),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    if (memories.isNotEmpty()) QuickStatChip("🧠", "${memories.size}", "memories", PurpleAccent, Modifier.weight(1f), onClick = { onNavigateTo(PAGE_MEMORY) })
-                    if (pendingTodos > 0) QuickStatChip("✅", "$pendingTodos", "todos", AccentGold, Modifier.weight(1f), onClick = { onNavigateTo(PAGE_MEMORY) })
-                    if (pendingReminders > 0) QuickStatChip("🔔", "$pendingReminders", "reminders", OrangeAccent, Modifier.weight(1f), onClick = { onNavigateTo(PAGE_MEMORY) })
+                    if (memories.isNotEmpty()) QuickStatChip("🧠", "${memories.size}", "memories", PurpleAccent, Modifier.weight(1f), onClick = { onNavigateToMemory(0) })
+                    if (pendingTodos > 0) QuickStatChip("✅", "$pendingTodos", "todos", AccentGold, Modifier.weight(1f), onClick = { onNavigateToMemory(1) })
+                    if (pendingReminders > 0) QuickStatChip("🔔", "$pendingReminders", "reminders", OrangeAccent, Modifier.weight(1f), onClick = { onNavigateToMemory(2) })
                 }
             }
 
@@ -456,7 +526,7 @@ fun HomeLandingPage(
                     title = "Today's Todos",
                     icon = "✅",
                     accentColor = AccentGold,
-                    onViewAll = { onNavigateTo(PAGE_MEMORY) },
+                    onViewAll = { onNavigateToMemory(1) },
                 ) {
                     val pending = todos.filter { !it.isDone }
                     pending.take(4).forEach { todo ->
@@ -515,7 +585,7 @@ fun HomeLandingPage(
                     title = "Reminders",
                     icon = "🔔",
                     accentColor = OrangeAccent,
-                    onViewAll = { onNavigateTo(PAGE_MEMORY) },
+                    onViewAll = { onNavigateToMemory(2) },
                 ) {
                     reminders.filter { !it.isDone }.take(4).forEach { r ->
                         Row(
@@ -556,16 +626,47 @@ fun HomeLandingPage(
                 val last = chatLog.last()
                 if (last.role == "skippy") {
                     HomeWidgetCard(
-                        title = "Last from Skippy",
-                        icon = "💬",
-                        accentColor = CyanPrimary,
+                        title = if (last.isGrok) "⚡ Live from Grok" else "Last from Skippy",
+                        icon = if (last.isGrok) "⚡" else "💬",
+                        accentColor = if (last.isGrok) Color(0xFFEAB308) else CyanPrimary,
                         onViewAll = { onNavigateTo(PAGE_CHAT) },
                     ) {
                         Text(
-                            last.text, color = WhiteMuted, fontSize = 13.sp,
+                            last.text.removeSuffix("\n\n*— Grok (live)*").trim(),
+                            color = WhiteMuted, fontSize = 13.sp,
                             maxLines = 3, lineHeight = 18.sp,
                         )
                     }
+                }
+            }
+
+            // ── Grok Live News shortcut ───────────────────────────────────
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp)
+                    .border(
+                        1.dp,
+                        Brush.linearGradient(
+                            listOf(Color(0xFFEAB308).copy(0.45f), Color(0xFFEAB308).copy(0.08f))
+                        ),
+                        RoundedCornerShape(14.dp),
+                    )
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(Color(0xFFEAB308).copy(alpha = 0.06f))
+                    .clickable { onNavigateTo(PAGE_CHAT) },
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 11.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    Text("⚡", fontSize = 18.sp)
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("Ask about today's news", color = Color(0xFFEAB308), fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                        Text("Grok · Real-time intelligence", color = Color(0xFFEAB308).copy(alpha = 0.55f), fontSize = 10.sp)
+                    }
+                    Icon(Icons.Default.ChevronRight, null, tint = Color(0xFFEAB308).copy(alpha = 0.5f), modifier = Modifier.size(18.dp))
                 }
             }
 
@@ -657,13 +758,23 @@ private fun HomeWidgetCard(
     onViewAll: (() -> Unit)? = null,
     content: @Composable ColumnScope.() -> Unit,
 ) {
-    Surface(
+    Box(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 16.dp),
-        shape  = RoundedCornerShape(16.dp),
-        color  = NavyCard,
-        border = BorderStroke(1.dp, accentColor.copy(alpha = 0.25f)),
+            .padding(horizontal = 16.dp)
+            .border(
+                1.dp,
+                Brush.linearGradient(
+                    listOf(accentColor.copy(alpha = 0.45f), accentColor.copy(alpha = 0.08f), CyanGlow.copy(alpha = 0.05f))
+                ),
+                RoundedCornerShape(16.dp),
+            )
+            .clip(RoundedCornerShape(16.dp))
+            .background(
+                Brush.verticalGradient(
+                    listOf(Color(0xFF0D1F3C), Color(0xFF080F1E))
+                )
+            ),
     ) {
         Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Row(
@@ -698,11 +809,18 @@ private fun QuickStatChip(
     modifier: Modifier = Modifier,
     onClick: (() -> Unit)? = null,
 ) {
-    Surface(
-        modifier  = modifier.then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier),
-        shape     = RoundedCornerShape(12.dp),
-        color     = color.copy(alpha = 0.1f),
-        border    = BorderStroke(1.dp, color.copy(alpha = 0.3f)),
+    Box(
+        modifier = modifier
+            .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)
+            .border(
+                1.dp,
+                Brush.linearGradient(
+                    listOf(color.copy(alpha = 0.45f), color.copy(alpha = 0.10f))
+                ),
+                RoundedCornerShape(12.dp),
+            )
+            .clip(RoundedCornerShape(12.dp))
+            .background(color.copy(alpha = 0.08f)),
     ) {
         Column(
             modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
@@ -738,13 +856,23 @@ private fun HomeAppsSection(
     val appsMap = remember(allApps) { allApps.associateBy { it.packageName } }
     val appInfos = remember(homeApps, appsMap) { homeApps.mapNotNull { appsMap[it] } }
 
-    Surface(
+    Box(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 16.dp),
-        shape  = RoundedCornerShape(16.dp),
-        color  = NavyCard,
-        border = BorderStroke(1.dp, CyanGlow.copy(alpha = 0.25f)),
+            .padding(horizontal = 16.dp)
+            .border(
+                1.dp,
+                Brush.linearGradient(
+                    listOf(CyanPrimary.copy(alpha = 0.35f), CyanGlow.copy(alpha = 0.08f))
+                ),
+                RoundedCornerShape(16.dp),
+            )
+            .clip(RoundedCornerShape(16.dp))
+            .background(
+                Brush.verticalGradient(
+                    listOf(Color(0xFF0D1F3C), Color(0xFF080F1E))
+                )
+            ),
     ) {
         Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             // Header
