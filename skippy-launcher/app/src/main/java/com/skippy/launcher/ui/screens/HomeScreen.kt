@@ -155,6 +155,9 @@ fun HomeScreen(
             state    = pagerState,
             modifier = Modifier.fillMaxSize(),
             key      = { it },
+            // Pre-compose 1 page on each side so swiping is instant (no cold-compose lag).
+            // Chat page (index 0) is always kept alive while the user is on Home (index 1).
+            beyondViewportPageCount = 1,
         ) { page ->
             when (page) {
                 PAGE_CHAT    -> ChatPage(viewModel = viewModel)

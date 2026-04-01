@@ -180,24 +180,37 @@ fun ChatPage(viewModel: LauncherViewModel) {
         )
     }
 
-    val speechRecognizer = remember { SpeechRecognizer.createSpeechRecognizer(context) }
-    DisposableEffect(Unit) { onDispose { speechRecognizer.destroy() } }
+    val speechRecognizer = remember(context) {
+        // Guard creation: isRecognitionAvailable prevents crashes on devices/emulators
+        // that don't have a speech recognition service. runCatching prevents any
+        // RuntimeException (e.g. called before Looper is ready on some OEM ROMs).
+        if (SpeechRecognizer.isRecognitionAvailable(context)) {
+            runCatching { SpeechRecognizer.createSpeechRecognizer(context) }.getOrNull()
+        } else null
+    }
+    DisposableEffect(Unit) { onDispose { speechRecognizer?.destroy() } }
 
     val micPermissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { granted ->
-        if (granted) startChatListening(speechRecognizer, viewModel)
+        if (granted) speechRecognizer?.let { startChatListening(it, viewModel) }
     }
 
     LaunchedEffect(chatLog.size) {
-        if (chatLog.isNotEmpty()) listState.animateScrollToItem(chatLog.size - 1)
+        if (chatLog.isNotEmpty()) {
+            // Scroll to last message — coerce so index is always valid
+            listState.animateScrollToItem((chatLog.size - 1).coerceAtLeast(0))
+        }
     }
     LaunchedEffect(streamingText.length) {
         if (streamingText.isNotEmpty() && chatLog.isNotEmpty()) {
-            listState.animateScrollToItem(chatLog.size)
+            // The loading item is at chatLog.size only when isLoading=true; safe to clamp
+            listState.animateScrollToItem(chatLog.size.coerceAtLeast(0))
         }
     }
-    LaunchedEffect(Unit) { viewModel.loadConversations() }
+    // Conversations are loaded on-demand when the history panel opens (see history button click).
+    // Removed the LaunchedEffect(Unit) eager load — it fired on every swipe to this tab,
+    // causing a network call + composition freeze mid-swipe.
 
     // Pulse for orb
     val pulseAnim = rememberInfiniteTransition(label = "chat_orb")
@@ -731,13 +744,13 @@ fun ChatPage(viewModel: LauncherViewModel) {
                                 .clickable {
                                     when (voiceState) {
                                         is VoiceState.Listening -> {
-                                            speechRecognizer.stopListening()
+                                            speechRecognizer?.stopListening()
                                             viewModel.setVoiceState(VoiceState.Idle)
                                         }
                                         is VoiceState.Speaking -> viewModel.stopSpeaking()
                                         else -> {
                                             if (context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
-                                                startChatListening(speechRecognizer, viewModel)
+                                                speechRecognizer?.let { startChatListening(it, viewModel) }
                                             } else {
                                                 micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
                                             }
