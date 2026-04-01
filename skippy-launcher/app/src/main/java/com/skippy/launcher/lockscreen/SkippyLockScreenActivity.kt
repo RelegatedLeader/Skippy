@@ -8,6 +8,9 @@ import android.os.Bundle
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.biometric.BiometricManager
+import androidx.biometric.BiometricPrompt
+import androidx.core.content.ContextCompat
 import androidx.compose.animation.*
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.*
@@ -160,31 +163,85 @@ class SkippyLockScreenActivity : FragmentActivity() {
     }
 
     /**
-     * The ONE and ONLY unlock trigger — called when the user taps the fingerprint
-     * button or swipes up.
+     * The ONE and ONLY unlock trigger — called when the user taps the fingerprint button.
      *
-     * Uses KeyguardManager.requestDismissKeyguard() which fires the system's native
-     * auth UI (Pixel 9a under-display fingerprint sensor first, PIN as fallback).
-     * This is a SINGLE step that both authenticates AND dismisses the system keyguard —
-     * no double-dialog, no Pixel lockscreen appearing after Skippy's auth.
+     * Two-step flow that avoids showing ANY part of the Pixel lockscreen UI:
+     *
+     *   Step 1 — BiometricPrompt(BIOMETRIC_STRONG):
+     *     Shows ONLY the small under-display fingerprint circle on Pixel 9a.
+     *     No full-screen Pixel lockscreen, no swipe-up, no PIN screen.
+     *
+     *   Step 2 — requestDismissKeyguard() after successful BIOMETRIC_STRONG:
+     *     Android sees that a Class-3 biometric was just used and dismisses the
+     *     system keyguard SILENTLY — no second auth dialog, no Pixel lockscreen.
+     *
+     *   PIN fallback: user taps "Use PIN" on the biometric prompt → goes straight to
+     *     requestDismissKeyguard() which shows just the system PIN entry (not the
+     *     full Pixel lockscreen).
      */
     fun triggerAuth() {
         if (isFinishing || isDestroyed) return
         if (!keyguardManager.isKeyguardLocked) { unlockAndGo(); return }
 
-        keyguardManager.requestDismissKeyguard(this, object : KeyguardManager.KeyguardDismissCallback() {
-            override fun onDismissSucceeded() {
-                // System keyguard dismissed — we're now in the clear.
-                unlockAndGo()
+        val canBiometric = BiometricManager.from(this)
+            .canAuthenticate(BiometricManager.Authenticators.BIOMETRIC_STRONG)
+
+        if (canBiometric == BiometricManager.BIOMETRIC_SUCCESS) {
+            val executor = ContextCompat.getMainExecutor(this)
+            val callback = object : BiometricPrompt.AuthenticationCallback() {
+                override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
+                    // Class-3 biometric confirmed — keyguard is now satisfied.
+                    // requestDismissKeyguard sees the recent BIOMETRIC_STRONG auth and
+                    // dismisses the system keyguard WITHOUT showing a second prompt.
+                    keyguardManager.requestDismissKeyguard(
+                        this@SkippyLockScreenActivity,
+                        object : KeyguardManager.KeyguardDismissCallback() {
+                            override fun onDismissSucceeded() { unlockAndGo() }
+                            override fun onDismissError()     { unlockAndGo() } // best-effort
+                            override fun onDismissCancelled() { /* stay on lockscreen */ }
+                        }
+                    )
+                }
+                override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
+                    // "Use PIN" button tapped, or hardware temporarily unavailable.
+                    // Fall through to PIN via system keyguard dismiss.
+                    if (errorCode == BiometricPrompt.ERROR_NEGATIVE_BUTTON ||
+                        errorCode == BiometricPrompt.ERROR_USER_CANCELED) {
+                        usePinFallback()
+                    }
+                    // For other error codes (lockout, etc.) stay on lockscreen so user can retry.
+                }
+                override fun onAuthenticationFailed() { /* bad read — sensor tries again automatically */ }
             }
-            override fun onDismissError() {
-                // Keyguard cannot be dismissed (e.g. admin policy, emergency call).
-                // Nothing we can do — stay on lockscreen.
+
+            val prompt = BiometricPrompt(this, executor, callback)
+            val info = BiometricPrompt.PromptInfo.Builder()
+                .setTitle("Skippy")
+                .setSubtitle("Touch the sensor to unlock")
+                // BIOMETRIC_STRONG = Class 3 — shows the under-display FPS circle on Pixel 9a.
+                // Must NOT include DEVICE_CREDENTIAL here, otherwise Android shows the full
+                // Pixel lockscreen instead of just the fingerprint indicator.
+                .setAllowedAuthenticators(BiometricManager.Authenticators.BIOMETRIC_STRONG)
+                .setNegativeButtonText("Use PIN instead")
+                .build()
+            prompt.authenticate(info)
+        } else {
+            // No biometric enrolled or not available — go straight to PIN.
+            usePinFallback()
+        }
+    }
+
+    /** Falls back to system PIN/pattern via requestDismissKeyguard when biometrics unavailable. */
+    private fun usePinFallback() {
+        if (isFinishing || isDestroyed) return
+        keyguardManager.requestDismissKeyguard(
+            this,
+            object : KeyguardManager.KeyguardDismissCallback() {
+                override fun onDismissSucceeded() { unlockAndGo() }
+                override fun onDismissError()     { /* e.g. admin policy blocks dismiss */ }
+                override fun onDismissCancelled() { /* user cancelled — stay on lockscreen */ }
             }
-            override fun onDismissCancelled() {
-                // User cancelled (pressed back on the system auth dialog) — stay on lockscreen.
-            }
-        })
+        )
     }
 
     private fun unlockAndGo() {

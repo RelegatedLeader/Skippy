@@ -35,22 +35,13 @@ class SkippyLockService : Service() {
             if (!prefs.getBoolean("lockscreen_page_enabled", false)) return
 
             when (intent.action) {
-                Intent.ACTION_SCREEN_OFF -> {
-                    // Pre-warm the lockscreen silently while the screen is off.
-                    runCatching {
-                        startActivity(
-                            Intent(context, SkippyLockScreenActivity::class.java).apply {
-                                putExtra(SkippyLockScreenActivity.EXTRA_MODE,
-                                         SkippyLockScreenActivity.MODE_PREPARE)
-                                addFlags(
-                                    Intent.FLAG_ACTIVITY_NEW_TASK or
-                                    Intent.FLAG_ACTIVITY_SINGLE_TOP or
-                                    Intent.FLAG_ACTIVITY_NO_ANIMATION
-                                )
-                            }
-                        )
-                    }
-                }
+                // SCREEN_OFF: intentionally do nothing.
+                // Pre-warming SkippyLockScreenActivity here caused the phone screen
+                // to re-activate immediately after pressing the power/sleep button:
+                // the FLAG_SHOW_WHEN_LOCKED window flag interacted with the screen-off
+                // transition and pulled the display back on. SCREEN_ON (below) is the
+                // only place we need to launch the lockscreen.
+                Intent.ACTION_SCREEN_OFF -> { /* no-op — see comment above */ }
 
                 Intent.ACTION_SCREEN_ON -> {
                     val km = getSystemService(Context.KEYGUARD_SERVICE) as KeyguardManager
