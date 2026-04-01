@@ -83,16 +83,16 @@ fun HomeScreen(
     // ── Lockscreen overlay ─────────────────────────────────────────────────────
     val prefs = viewModel.prefs
     var lockScreenVisible by remember { mutableStateOf(prefs.lockscreenPageEnabled) }
-    // Re-show lockscreen whenever app comes back to foreground (ON_RESUME),
-    // UNLESS the user just unlocked via SkippyLockScreenActivity (within the last 3 s).
+    // Re-show lockscreen on resume ONLY if the user hasn't unlocked within the last 5 minutes.
+    // This prevents the overlay appearing every time the user switches apps briefly.
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_RESUME && prefs.lockscreenPageEnabled) {
                 val lastUnlock = context.getSharedPreferences("skippy_launcher", android.content.Context.MODE_PRIVATE)
                     .getLong("last_skippy_unlock", 0L)
-                // Skip if we just came from the activity-level lockscreen (prevents double-lockscreen)
-                if (System.currentTimeMillis() - lastUnlock > 3_000L) {
+                // 5-minute grace period — re-lock after 5 min of inactivity
+                if (System.currentTimeMillis() - lastUnlock > 5 * 60 * 1_000L) {
                     lockScreenVisible = true
                 }
             }
@@ -314,7 +314,12 @@ fun HomeScreen(
         ) {
             LockScreenPage(
                 viewModel = viewModel,
-                onDismiss = { lockScreenVisible = false },
+                onDismiss = {
+                    lockScreenVisible = false
+                    // Stamp the unlock time so the 5-min grace period starts now
+                    context.getSharedPreferences("skippy_launcher", android.content.Context.MODE_PRIVATE)
+                        .edit().putLong("last_skippy_unlock", System.currentTimeMillis()).apply()
+                },
             )
         }
     }

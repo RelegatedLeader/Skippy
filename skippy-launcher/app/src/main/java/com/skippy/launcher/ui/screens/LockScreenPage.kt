@@ -35,7 +35,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.appcompat.app.AppCompatActivity
 import androidx.biometric.BiometricManager
-import androidx.biometric.BiometricManager.Authenticators.BIOMETRIC_STRONG
 import androidx.biometric.BiometricPrompt
 import androidx.core.content.ContextCompat
 import com.skippy.launcher.R
@@ -93,8 +92,6 @@ fun LockScreenPage(
 
     fun triggerBiometric() {
         activity ?: return
-        val mgr = BiometricManager.from(activity)
-        if (mgr.canAuthenticate(BIOMETRIC_STRONG) != BiometricManager.BIOMETRIC_SUCCESS) return
         activePrompt?.cancelAuthentication()
         val executor = ContextCompat.getMainExecutor(activity)
         val prompt = BiometricPrompt(activity, executor, object : BiometricPrompt.AuthenticationCallback() {
@@ -104,15 +101,21 @@ fun LockScreenPage(
             }
             override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
                 activePrompt = null
-                // Any error except lockout is fine — user can tap fingerprint button to retry
+                // User cancelled or hardware error — they can tap the sensor button to retry
             }
             override fun onAuthenticationFailed() { /* wrong finger — prompt stays open */ }
         })
+        // BIOMETRIC_STRONG | DEVICE_CREDENTIAL:
+        //   • Shows the Pixel 9a under-display fingerprint circle first
+        //   • Falls back to PIN/pattern automatically if biometrics fail
+        //   • setNegativeButtonText must NOT be used with DEVICE_CREDENTIAL
         val info = BiometricPrompt.PromptInfo.Builder()
             .setTitle("Unlock Skippy")
             .setSubtitle("Touch the fingerprint sensor")
-            .setNegativeButtonText("Use PIN / Pattern")
-            .setAllowedAuthenticators(BIOMETRIC_STRONG)
+            .setAllowedAuthenticators(
+                BiometricManager.Authenticators.BIOMETRIC_STRONG or
+                BiometricManager.Authenticators.DEVICE_CREDENTIAL
+            )
             .build()
         activePrompt = prompt
         prompt.authenticate(info)

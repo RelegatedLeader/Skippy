@@ -1,8 +1,5 @@
 package com.skippy.launcher
 
-import android.app.admin.DevicePolicyManager
-import android.content.Context
-import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -12,8 +9,6 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
-import com.skippy.launcher.lockscreen.SkippyDeviceAdminReceiver
-import com.skippy.launcher.lockscreen.SkippyLockService
 import com.skippy.launcher.ui.screens.*
 import com.skippy.launcher.ui.theme.SkippyTheme
 import com.skippy.launcher.viewmodel.LauncherViewModel
@@ -28,21 +23,10 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        maybeStartLockService()
         setContent {
             SkippyTheme {
                 SkippyApp(viewModel = viewModel)
             }
-        }
-    }
-
-    private fun maybeStartLockService() {
-        val prefs = viewModel.prefs
-        if (!prefs.lockscreenPageEnabled) return
-        val dpm   = getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
-        val admin = SkippyDeviceAdminReceiver.getComponentName(this)
-        if (dpm.isAdminActive(admin)) {
-            startForegroundService(Intent(this, SkippyLockService::class.java))
         }
     }
 }
