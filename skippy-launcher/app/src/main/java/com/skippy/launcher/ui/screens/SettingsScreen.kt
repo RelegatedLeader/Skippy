@@ -264,7 +264,26 @@ fun SettingsScreen(
                     ),
                     shape = RoundedCornerShape(10.dp), textStyle = TextStyle(fontSize = 12.sp),
                 )
-                Text("Get your key at console.x.ai", color = Color(0xFFEAB308).copy(0.5f), fontSize = 10.sp)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        if (grokConnected) "✓ Key loaded from project config"
+                        else "Get your key at console.x.ai",
+                        color = if (grokConnected) GreenSuccess.copy(0.6f) else Color(0xFFEAB308).copy(0.5f),
+                        fontSize = 10.sp,
+                    )
+                    if (grokApiKey.isNotBlank()) {
+                        TextButton(
+                            onClick = { grokApiKey = ""; prefs.grokApiKey = "" },
+                            contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp),
+                        ) {
+                            Text("Clear", color = ErrorRed.copy(0.6f), fontSize = 10.sp)
+                        }
+                    }
+                }
             }
 
             // ── 3. Voice & Speech ─────────────────────────────────────────────

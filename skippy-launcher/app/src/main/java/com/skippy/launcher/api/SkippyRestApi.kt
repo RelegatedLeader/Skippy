@@ -226,6 +226,25 @@ object SkippyRestApi {
         }
     }
 
+    suspend fun createTodo(baseUrl: String, content: String, priority: String = "normal"): TodoItem? {
+        val body = JSONObject().put("content", content).put("priority", priority)
+        val obj = post("$baseUrl/api/todos", body) ?: return null
+        return runCatching {
+            TodoItem(
+                id = obj.getString("id"),
+                content = obj.optString("content", content),
+                isDone = false,
+                priority = obj.optString("priority", priority),
+                dueDate = obj.optString("dueDate").takeIf { it.isNotEmpty() && it != "null" },
+                tags = emptyList(),
+                createdAt = obj.optString("createdAt", ""),
+            )
+        }.getOrNull()
+    }
+
+    suspend fun deleteTodo(baseUrl: String, id: String): Boolean =
+        delete("$baseUrl/api/todos/$id")
+
     suspend fun toggleTodo(baseUrl: String, id: String, isDone: Boolean): TodoItem? {
         val obj = patch("$baseUrl/api/todos/$id", JSONObject().put("isDone", isDone)) ?: return null
         return runCatching {

@@ -11,6 +11,27 @@ val localProps = Properties().apply {
         ?.inputStream()?.use(::load)
 }
 
+// Also try to read from the parent Skippy project .env file as a fallback.
+// This lets the launcher inherit keys from the main project without duplication.
+val envProps = Properties().apply {
+    // Try ../.env (Skippy root) relative to skippy-launcher/
+    val envFile = rootProject.file("../.env").takeIf { it.exists() }
+    envFile?.readLines()?.forEach { line ->
+        val trimmed = line.trim()
+        if (trimmed.isNotBlank() && !trimmed.startsWith("#")) {
+            val eqIdx = trimmed.indexOf('=')
+            if (eqIdx > 0) {
+                setProperty(trimmed.substring(0, eqIdx).trim(), trimmed.substring(eqIdx + 1).trim())
+            }
+        }
+    }
+}
+
+/** Resolve a secret: local.properties wins, then .env, then empty string. */
+fun getSecret(key: String): String =
+    localProps.getProperty(key, "").takeIf { it.isNotBlank() }
+        ?: envProps.getProperty(key, "")
+
 android {
     namespace = "com.skippy.launcher"
     compileSdk = 35
@@ -24,9 +45,10 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables { useSupportLibrary = true }
 
-        // Grok API key injected at build time from local.properties.
+        // Grok API key injected at build time.
+        // Priority: local.properties > ../.env (Skippy root) > empty.
         // Set GROK_API_KEY=xai-... in local.properties (never commit that file).
-        buildConfigField("String", "GROK_API_KEY", "\"${localProps.getProperty("GROK_API_KEY", "")}\"")
+        buildConfigField("String", "GROK_API_KEY", "\"${getSecret("GROK_API_KEY")}\"")
     }
 
     buildTypes {

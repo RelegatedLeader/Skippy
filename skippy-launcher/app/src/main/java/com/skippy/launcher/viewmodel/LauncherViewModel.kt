@@ -26,6 +26,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.json.JSONArray
 import java.util.Locale
 
 sealed class VoiceState {
@@ -807,6 +808,70 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         }
     }
 
+    // ── Grok SKIPPY_ACTIONS parser ─────────────────────────────────────────────
+    //
+    // When Grok is the active model it embeds action blocks like:
+    //   SKIPPY_ACTIONS:[{"type":"todo","content":"Buy milk","priority":"normal"},...]
+    // at the very end of its response.  This function:
+    //   1. Strips that block from the visible text
+    //   2. Executes each action via the Skippy REST API
+    //   3. Updates local state flows so the UI reflects changes immediately
+    //
+    private suspend fun parseAndExecuteGrokActions(response: String): String {
+        val markerIdx = response.indexOf(GrokApi.ACTIONS_MARKER)
+        if (markerIdx == -1) return response
+
+        val jsonStr  = response.substring(markerIdx + GrokApi.ACTIONS_MARKER.length).trim()
+        val cleanText = response.substring(0, markerIdx).trimEnd()
+
+        runCatching {
+            val arr = JSONArray(jsonStr)
+            for (i in 0 until arr.length()) {
+                val obj = arr.getJSONObject(i)
+                when (obj.optString("type").lowercase()) {
+                    "todo" -> {
+                        val content  = obj.optString("content").trim()
+                        val priority = obj.optString("priority", "normal").trim()
+                        if (content.isNotBlank()) {
+                            val created = SkippyRestApi.createTodo(prefs.skippyUrl, content, priority)
+                            if (created != null) _todos.update { listOf(created) + it }
+                        }
+                    }
+                    "reminder" -> {
+                        val content = obj.optString("content").trim()
+                        val due     = obj.optString("dueDate").takeIf { it.isNotBlank() && it != "null" }
+                        if (content.isNotBlank()) {
+                            val created = SkippyRestApi.createReminder(prefs.skippyUrl, content, due)
+                            if (created != null) _reminders.update { listOf(created) + it }
+                        }
+                    }
+                    "note" -> {
+                        val title   = obj.optString("title", "Quick Note").trim()
+                        val content = obj.optString("content").trim()
+                        if (content.isNotBlank()) {
+                            val created = SkippyRestApi.createNote(prefs.skippyUrl, title, content)
+                            if (created != null) _notes.update { listOf(created) + it }
+                        }
+                    }
+                    "memory" -> {
+                        val content    = obj.optString("content").trim()
+                        val category   = obj.optString("category", "preference").trim()
+                        val tagsArr    = obj.optJSONArray("tags")
+                        val tags       = if (tagsArr != null) (0 until tagsArr.length()).map { tagsArr.getString(it) }
+                                         else listOf("auto-learned", "grok")
+                        val importance = obj.optInt("importance", 7)
+                        if (content.isNotBlank()) {
+                            val created = SkippyRestApi.createMemory(prefs.skippyUrl, content, category, tags, importance)
+                            if (created != null) _memories.update { listOf(created) + it }
+                        }
+                    }
+                }
+            }
+        } // silently ignore malformed JSON
+
+        return cleanText
+    }
+
     // ── AI Chat ────────────────────────────────────────────────────────────────
 
     fun askSkippy(text: String, enableVoice: Boolean = false) {
@@ -850,10 +915,11 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
             // Build a trimmed history for Grok — 4 messages keeps cost low
             val grokHistory = chatHistory.takeLast(4)
                 reply = GrokApi.chat(
-                    apiKey      = prefs.grokApiKey,
-                    messages    = grokHistory,
-                    userContext = buildUserContext(),
-                    onChunk     = { chunk ->
+                    apiKey             = prefs.grokApiKey,
+                    messages           = grokHistory,
+                    userContext        = buildUserContext(),
+                    hasTaskCapability  = prefs.skippyUrl.isNotBlank(),
+                    onChunk            = { chunk ->
                         viewModelScope.launch(Dispatchers.Main) {
                             _streamingText.value += chunk
                             if (enableVoice) _voiceState.value = VoiceState.Speaking
@@ -861,9 +927,20 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
                     },
                 )
                 _isGrokStreaming.value = false
-                // Annotate the reply so user knows it's live from Grok
+
+                // Parse and execute any SKIPPY_ACTIONS embedded by Grok
+                // (adds todos, reminders, notes, memories via REST API)
+                reply = parseAndExecuteGrokActions(reply)
+
+                // Refresh all data after Grok actions — same as Claude
+                loadTodos()
+                loadReminders()
+                loadNotes()
+                loadMemories()
+
+                // Annotate the reply so user knows it's live from Skippy/Grok
                 if (!reply.startsWith("⚠")) {
-                    reply = "$reply\n\n*— Grok (live)*"
+                    reply = "$reply\n\n*— Skippy (live)*"
                 }
             } else {
                 // ── Default: route to Skippy backend (Claude) ────────────────────
@@ -916,7 +993,8 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
             _voiceState.value = if (enableVoice) VoiceState.Speaking else VoiceState.Idle
             if (enableVoice) speak(reply)
 
-            // Refresh todos/reminders after chat — Skippy may have created some
+            // Refresh todos/reminders after chat — both Claude and Grok may have created some.
+            // (Grok already calls these above; Claude refresh is done here.)
             if (!useGrok) {
                 loadTodos()
                 loadReminders()
