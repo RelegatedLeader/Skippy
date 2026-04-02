@@ -8,11 +8,6 @@
     <uses-permission android:name="android.permission.READ_CONTACTS" />
     <uses-permission android:name="android.permission.USE_BIOMETRIC" />
     <uses-permission android:name="android.permission.USE_FINGERPRINT" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
-    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
-    <uses-permission android:name="android.permission.DISABLE_KEYGUARD" />
-    <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
     <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES"
         tools:ignore="QueryAllPackagesPermission"
         xmlns:tools="http://schemas.android.com/tools" />
@@ -69,36 +64,25 @@
         </receiver>
 
         <!--
-            Skippy Lockscreen Activity
-            showWhenLocked  = shows over the system keyguard (or with it disabled)
-            turnScreenOn    = can wake the display
-            launchMode      = singleInstance keeps only one instance
-            excludeFromRecents = don't show in recents
+            Dead-code stub — the external lockscreen activity is retired.
+            showWhenLocked / turnScreenOn removed since the activity does finish() immediately.
         -->
         <activity
             android:name=".lockscreen.SkippyLockScreenActivity"
             android:exported="false"
-            android:showWhenLocked="true"
-            android:turnScreenOn="true"
             android:launchMode="singleInstance"
-            android:windowSoftInputMode="adjustResize"
             android:excludeFromRecents="true"
             android:theme="@style/Theme.SkippyLauncher" />
 
         <!--
-            Skippy Lock Service — persistent foreground service that watches for
-            SCREEN_ON and shows our lockscreen instead of the system one.
+            Dead-code stub service — stops itself immediately, never runs foreground.
+            Kept so existing installations don't crash on upgrade.
         -->
         <service
             android:name=".lockscreen.SkippyLockService"
-            android:exported="false"
-            android:foregroundServiceType="specialUse">
-            <property
-                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
-                android:value="lockscreen" />
-        </service>
+            android:exported="false" />
 
-        <!-- Boot receiver — restarts the lock service after device reboots -->
+        <!-- Boot receiver stub — no-op -->
         <receiver
             android:name=".lockscreen.SkippyBootReceiver"
             android:exported="false">
@@ -108,8 +92,8 @@
         </receiver>
 
         <!--
-            Device Admin receiver — grants permission to disable the system keyguard.
-            The user must approve this once in Settings inside the Skippy Launcher.
+            Device Admin receiver — kept for users who previously granted admin.
+            No longer used actively but removing it would break existing installs.
         -->
         <receiver
             android:name=".lockscreen.SkippyDeviceAdminReceiver"
