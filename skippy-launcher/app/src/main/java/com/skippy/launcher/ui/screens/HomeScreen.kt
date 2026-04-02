@@ -2,7 +2,9 @@ package com.skippy.launcher.ui.screens
 
 import android.Manifest
 import android.annotation.SuppressLint
+import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.*
@@ -368,6 +370,7 @@ fun HomeLandingPage(
     onNavigateTo: (Int) -> Unit = {},
     onNavigateToMemory: (tab: Int) -> Unit = {},
 ) {
+    val context   = LocalContext.current
     val weather   by viewModel.weather.collectAsState()
     val apps      by viewModel.apps.collectAsState()
     val todos     by viewModel.todos.collectAsState()
@@ -473,10 +476,18 @@ fun HomeLandingPage(
                 ) {
                     Image(
                         painter = painterResource(R.drawable.skippy_robot),
-                        contentDescription = "Skippy",
+                        contentDescription = "Skippy — tap to open website",
                         modifier = Modifier
                             .size(110.dp)
-                            .offset(y = robotY.dp),
+                            .offset(y = robotY.dp)
+                            .clickable {
+                                val url = prefs.skippyUrl.takeIf { it.startsWith("http") }
+                                    ?: "https://skippy.vercel.app"
+                                context.startActivity(
+                                    Intent(Intent.ACTION_VIEW, Uri.parse(url))
+                                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                )
+                            },
                         contentScale = ContentScale.Fit,
                     )
 
